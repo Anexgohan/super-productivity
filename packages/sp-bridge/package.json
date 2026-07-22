@@ -12,7 +12,9 @@
   },
   "dependencies": {
     "@sp/shared-schema": "*",
-    "@sp/sync-core": "*"
+    "@sp/sync-core": "*",
+    "fastify": "^5.10.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "tsup": "^8.0.0",

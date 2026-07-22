@@ -75,6 +75,39 @@ services:
       - ALL
     mem_limit: ${SUPERSYNC_MEM_LIMIT:-512m}
 
+  sp-bridge:
+    build:
+      context: ../..
+      dockerfile: packages/sp-bridge/Dockerfile
+    container_name: ${STACK_PREFIX:-sp}-bridge
+    restart: unless-stopped
+    environment:
+      - SP_BRIDGE_SYNC_URL=http://supersync:1900
+      - JWT_SECRET=${JWT_SECRET}
+      - SP_SYNC_ENCRYPTION_PASSWORD=${SP_SYNC_ENCRYPTION_PASSWORD}
+      - SP_BRIDGE_API_KEY=${SP_BRIDGE_API_KEY}
+      - SP_BRIDGE_API_PORT=1902
+      - SP_BRIDGE_POLL_INTERVAL_SEC=${SP_BRIDGE_POLL_INTERVAL_SEC:-15}
+      - SP_BRIDGE_DATA_DIR=/app/data
+      - SP_BRIDGE_CLIENT_ID=${SP_BRIDGE_CLIENT_ID:-sp-bridge}
+    ports:
+      - '${SP_BRIDGE_PORT:-18232}:1902'
+    volumes:
+      - ./data/bridge:/app/data
+    depends_on:
+      supersync:
+        condition: service_healthy
+    healthcheck:
+      test:
+        ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:1902/api/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${SP_BRIDGE_MEM_LIMIT:-256m}
+
   postgres:
     image: ${POSTGRES_IMAGE:-postgres:18-alpine}
     container_name: ${STACK_PREFIX:-sp}-postgres

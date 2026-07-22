@@ -32,15 +32,8 @@ const summarize = (state: Record<string, Record<string, unknown>>): void => {
   console.log('─'.repeat(60));
 };
 
-const main = async (): Promise<void> => {
-  const command = process.argv[2] ?? 'dump';
+const runDump = async (): Promise<void> => {
   const cfg = loadConfig();
-
-  if (command !== 'dump') {
-    console.error(`Unknown command: ${command} (M1 supports: dump)`);
-    process.exit(1);
-  }
-
   console.log(`sp-bridge: connecting to ${cfg.syncServerUrl} as "${cfg.clientId}"`);
   const client = new SyncClient(cfg);
   await client.authenticate();
@@ -54,6 +47,39 @@ const main = async (): Promise<void> => {
   console.log(`sp-bridge: materialized to seq ${materializer.lastServerSeq}`);
 
   summarize(materializer.state);
+};
+
+const runServe = async (): Promise<void> => {
+  const cfg = loadConfig();
+  const { StateStore } = await import('./state-store');
+  const { BridgeCore } = await import('./core');
+  const { createRestServer } = await import('./rest');
+
+  const store = new StateStore(cfg);
+  await store.start(cfg.pollIntervalSec * 1000);
+
+  const core = new BridgeCore(store);
+  const app = createRestServer(core, store, cfg.apiKey);
+  await app.listen({ port: cfg.apiPort, host: '0.0.0.0' });
+  console.log(
+    `sp-bridge: REST API on :${cfg.apiPort} (poll every ${cfg.pollIntervalSec}s, seq ${store.lastServerSeq})`,
+  );
+
+  const shutdown = async (): Promise<void> => {
+    store.stop();
+    await app.close();
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => void shutdown());
+  process.on('SIGINT', () => void shutdown());
+};
+
+const main = async (): Promise<void> => {
+  const command = process.argv[2] ?? 'serve';
+  if (command === 'dump') return runDump();
+  if (command === 'serve') return runServe();
+  console.error(`Unknown command: ${command} (supported: serve, dump)`);
+  process.exit(1);
 };
 
 main().catch((err) => {

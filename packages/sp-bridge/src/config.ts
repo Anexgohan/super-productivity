@@ -14,6 +14,12 @@ export interface BridgeConfig {
   clientId: string;
   /** Directory for the persisted cursor + state cache */
   dataDir: string;
+  /** API key required on all non-public REST routes */
+  apiKey: string;
+  /** REST listen port */
+  apiPort: number;
+  /** Op-log poll interval in seconds */
+  pollIntervalSec: number;
 }
 
 const requireEnv = (name: string): string => {
@@ -32,4 +38,7 @@ export const loadConfig = (): BridgeConfig => ({
   encryptionPassword: requireEnv('SP_SYNC_ENCRYPTION_PASSWORD'),
   clientId: process.env.SP_BRIDGE_CLIENT_ID ?? 'sp-bridge',
   dataDir: process.env.SP_BRIDGE_DATA_DIR ?? './data',
+  apiKey: requireEnv('SP_BRIDGE_API_KEY'),
+  apiPort: Number(process.env.SP_BRIDGE_API_PORT ?? 1902),
+  pollIntervalSec: Number(process.env.SP_BRIDGE_POLL_INTERVAL_SEC ?? 15),
 });
