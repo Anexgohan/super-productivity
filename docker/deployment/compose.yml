@@ -16,9 +16,15 @@ services:
     restart: unless-stopped
     ports:
       - '${SP_WEB_PORT:-18230}:80'
-    # Phase 2 wires these into the served frontend (sync pre-configuration):
+    # Zero-setup frontend: entrypoint bakes these into the served config so
+    # fresh browsers arrive pre-configured (and, if enabled, logged in).
     environment:
-      - SUPERSYNC_BASE_URL=${SP_PUBLIC_SYNC_URL:-http://localhost:18231}
+      - SP_SYNC_SERVER_URL=${SP_PUBLIC_SYNC_URL:-http://localhost:18231}
+      - SP_SYNC_EMBED_TOKEN_IN_WEBAPP=${SP_SYNC_EMBED_TOKEN_IN_WEBAPP:-false}
+      - SP_SYNC_ENCRYPTION_PASSWORD=${SP_SYNC_ENCRYPTION_PASSWORD:-}
+      # for the internal token fetch:
+      - JWT_SECRET=${JWT_SECRET}
+      - SP_SYNC_INTERNAL_URL=http://supersync:1900
     depends_on:
       supersync:
         condition: service_healthy
@@ -44,6 +50,11 @@ services:
       # Plain-HTTP LAN mode (our server.ts patch): disables browser https
       # upgrades + HSTS. Set false when the stack sits behind a TLS proxy.
       - ALLOW_INSECURE_HTTP=${ALLOW_INSECURE_HTTP:-false}
+      # Container-first account provisioning (our auto-provision.ts patch):
+      # creates a verified account from env at startup, no email round-trip.
+      - SP_SYNC_AUTO_PROVISION=${SP_SYNC_AUTO_PROVISION:-false}
+      - SP_SYNC_ACCOUNT_EMAIL=${SP_SYNC_ACCOUNT_EMAIL:-}
+      - SP_SYNC_ACCOUNT_PASSWORD=${SP_SYNC_ACCOUNT_PASSWORD:-}
     ports:
       - '${SUPERSYNC_PORT:-18231}:1900'
     volumes:
@@ -83,6 +94,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      # Cold first boot runs initdb (~40s+) before accepting connections;
+      # without a grace window those failures mark the container unhealthy.
+      start_period: 60s
     security_opt:
       - no-new-privileges:true
     mem_limit: ${POSTGRES_MEM_LIMIT:-256m}

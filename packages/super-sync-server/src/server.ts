@@ -24,6 +24,11 @@ import {
   resetWsConnectionService,
 } from './sync/services/websocket-connection.service';
 import { testRoutes } from './test-routes';
+import {
+  autoProvisionAccount,
+  isAutoProvisionEnabled,
+  provisionRoutes,
+} from './auto-provision';
 
 // HTML escape to prevent XSS in generated HTML
 export const escapeHtml = (unsafe: string): string => {
@@ -316,6 +321,15 @@ export const createServer = (
       if (fullConfig.testMode?.enabled) {
         await fastifyServer.register(testRoutes, { prefix: '/api/test' });
         Logger.warn('TEST MODE ENABLED - Test routes available at /api/test/*');
+      }
+
+      // Container-first auto-provisioning (anex/container-parity):
+      // SP_SYNC_AUTO_PROVISION=true → verified account from env at startup +
+      // internal token endpoint for the web container's entrypoint.
+      if (isAutoProvisionEnabled()) {
+        await autoProvisionAccount();
+        await fastifyServer.register(provisionRoutes, { prefix: '/api/internal' });
+        Logger.info('Auto-provision enabled - internal token route at /api/internal/token');
       }
 
       // Page Routes

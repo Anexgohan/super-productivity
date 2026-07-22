@@ -217,6 +217,13 @@ export class SyncConfigService {
                   ...baseConfig.webDav,
                   ...defaultOverride.webDav,
                 },
+                // anex/container-parity: deep-merge superSync like webDav so a
+                // container-served override pre-fills the SuperSync form
+                // (baseUrl/token) without wiping the default baseUrl fallback.
+                superSync: {
+                  ...baseConfig.superSync,
+                  ...defaultOverride.superSync,
+                },
                 encryptKey: '',
               };
             })

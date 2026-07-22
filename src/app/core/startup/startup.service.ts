@@ -34,6 +34,7 @@ import { alertDialog } from '../../util/native-dialogs';
 import { DataInitStateService } from '../data-init/data-init-state.service';
 import { OnboardingHintService } from '../../features/onboarding/onboarding-hint.service';
 import { LocalRestApiHandlerService } from '../electron/local-rest-api-handler.service';
+import { SyncAutoSetupService } from '../../imex/sync/sync-auto-setup.service';
 import { CustomThemeService } from '../theme/custom-theme.service';
 import { UpdateCheckService } from '../update-check/update-check.service';
 import { JiraElectronBridgeService } from '../../features/issue/providers/jira/jira-electron-bridge.service';
@@ -142,6 +143,16 @@ export class StartupService {
       this._updateCheckService.init();
       this._checkAvailableStorage();
       this._initOfflineBanner();
+
+      // Container zero-setup (anex/container-parity): activates SuperSync when
+      // the served config override ships a complete configuration. No-op on
+      // Electron, on configured instances, or without a complete override.
+      this._injector
+        .get(SyncAutoSetupService)
+        .init()
+        .catch((err) =>
+          Log.err({ stage: 'sync-auto-setup', error: (err as Error).message }),
+        );
 
       const miscCfg = this._globalConfigService.misc();
 
