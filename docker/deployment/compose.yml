@@ -1,0 +1,88 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Anex SP stack — self-hosted Super Productivity web + SuperSync server
+#
+# All tunables live in .env (copy .env.example → .env and edit).
+# All paths are relative to this directory → deployable anywhere as-is.
+# Usage (from this directory):
+#   docker compose up -d --build
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  web:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: ${STACK_PREFIX:-sp}-web
+    restart: unless-stopped
+    ports:
+      - '${SP_WEB_PORT:-18230}:80'
+    # Phase 2 wires these into the served frontend (sync pre-configuration):
+    environment:
+      - SUPERSYNC_BASE_URL=${SP_PUBLIC_SYNC_URL:-http://localhost:18231}
+    depends_on:
+      supersync:
+        condition: service_healthy
+
+  supersync:
+    build:
+      context: ../..
+      dockerfile: packages/super-sync-server/Dockerfile
+    container_name: ${STACK_PREFIX:-sp}-supersync
+    restart: unless-stopped
+    environment:
+      # development: upstream hard-fails on non-HTTPS PUBLIC_URL when
+      # NODE_ENV=production. LAN/http deployments need development for now
+      # (candidate patch: explicit ALLOW_HTTP_PUBLIC_URL opt-out).
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=1900
+      - HOST=0.0.0.0
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-supersync}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-supersync}
+      - RUN_MIGRATIONS_ON_STARTUP=${RUN_MIGRATIONS_ON_STARTUP:-true}
+      - JWT_SECRET=${JWT_SECRET}
+      - PUBLIC_URL=${SP_PUBLIC_SYNC_URL:-http://localhost:18231}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:18230}
+      # Plain-HTTP LAN mode (our server.ts patch): disables browser https
+      # upgrades + HSTS. Set false when the stack sits behind a TLS proxy.
+      - ALLOW_INSECURE_HTTP=${ALLOW_INSECURE_HTTP:-false}
+    ports:
+      - '${SUPERSYNC_PORT:-18231}:1900'
+    volumes:
+      - ./data/supersync:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:1900/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: ${SUPERSYNC_MEM_LIMIT:-512m}
+
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:18-alpine}
+    container_name: ${STACK_PREFIX:-sp}-postgres
+    restart: unless-stopped
+    # Single-user tuning — tiny footprint, no host port exposure.
+    command: postgres -c shared_buffers=${PG_SHARED_BUFFERS:-64MB} -c max_connections=${PG_MAX_CONNECTIONS:-20}
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-supersync}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-supersync}
+    volumes:
+      # postgres:18+ manages a versioned subdir; mount the parent (see
+      # docker-library/postgres#37) — NOT the classic /var/lib/postgresql/data
+      - ./data/postgres:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-supersync} -d ${POSTGRES_DB:-supersync}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${POSTGRES_MEM_LIMIT:-256m}

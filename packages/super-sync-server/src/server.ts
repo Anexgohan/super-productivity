@@ -52,7 +52,15 @@ const SENSITIVE_QUERY_PARAM_PATTERN = new RegExp(
   'gi',
 );
 
+// ALLOW_INSECURE_HTTP=true → plain-HTTP (LAN/self-host) mode: drops Helmet's
+// default upgrade-insecure-requests CSP directive and the HSTS header, which
+// otherwise force browsers onto https:// and break all assets/form posts when
+// the server is reached over plain http. Default (unset/false) keeps the
+// upstream secure behavior unchanged.
+const isInsecureHttpAllowed = process.env.ALLOW_INSECURE_HTTP === 'true';
+
 export const SERVER_HELMET_CONFIG = {
+  ...(isInsecureHttpAllowed ? { strictTransportSecurity: false } : {}),
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
@@ -64,6 +72,7 @@ export const SERVER_HELMET_CONFIG = {
       frameAncestors: ["'none'"], // Prevent clickjacking
       formAction: ["'self'"],
       baseUri: ["'self'"],
+      ...(isInsecureHttpAllowed ? { upgradeInsecureRequests: null } : {}),
     },
   },
 };

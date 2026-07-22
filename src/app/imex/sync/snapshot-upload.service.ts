@@ -22,8 +22,8 @@ import {
 } from '../../op-log/sync-providers/provider.interface';
 import { VectorClock } from '../../core/util/vector-clock';
 import { OperationEncryptionService } from '../../op-log/sync/operation-encryption.service';
-import { isCryptoSubtleAvailable } from '@sp/sync-core';
-import { WebCryptoNotAvailableError } from '../../op-log/core/errors/sync-errors';
+// NOTE(anex/container-parity): isCryptoSubtleAvailable / WebCryptoNotAvailableError
+// imports removed with the stale secure-context guard below.
 import { stripLocalOnlySyncSettingsFromAppData } from '../../features/config/local-only-sync-settings.util';
 import { LockService } from '../../op-log/sync/lock.service';
 import { LOCK_NAMES } from '../../op-log/core/operation-log.const';
@@ -208,7 +208,6 @@ export class SnapshotUploadService {
    *
    * Error handling (throw vs return result) remains the caller's responsibility.
    *
-   * @throws WebCryptoNotAvailableError if encryption is enabled but WebCrypto is unavailable
    */
   async deleteAndReuploadWithNewEncryption(options: {
     encryptKey: string | undefined;
@@ -217,14 +216,14 @@ export class SnapshotUploadService {
   }): Promise<SnapshotUploadResult & { existingCfg: SuperSyncPrivateCfg | null }> {
     const { encryptKey, isEncryptionEnabled, logPrefix } = options;
 
-    // Validate crypto availability before any destructive action
-    if (isEncryptionEnabled && !isCryptoSubtleAvailable()) {
-      throw new WebCryptoNotAvailableError(
-        'Cannot enable encryption: WebCrypto API is not available. ' +
-          'Encryption requires a secure context (HTTPS). ' +
-          'On Android, encryption is not supported.',
-      );
-    }
+    // NOTE(anex/container-parity): the former isCryptoSubtleAvailable() guard
+    // here refused to enable encryption in insecure contexts (plain-HTTP LAN
+    // deployments). It is stale: the modern encrypt path needs no WebCrypto —
+    // Argon2id runs on hash-wasm and AES-GCM auto-falls back to @noble/ciphers
+    // (see packages/sync-core/src/encryption/web-crypto.ts). Only decryption of
+    // LEGACY-format (PBKDF2) data still requires crypto.subtle, and that path
+    // throws its own WebCryptoNotAvailableError in encryption/legacy.ts when
+    // actually hit — never for a fresh account enabling encryption anew.
 
     // Capture the pending ops this full-state snapshot subsumes BEFORE taking the
     // state snapshot below, so every captured op is guaranteed to be reflected in
