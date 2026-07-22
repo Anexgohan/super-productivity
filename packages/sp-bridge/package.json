@@ -1,0 +1,22 @@
+{
+  "name": "@sp/sp-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Headless SuperSync peer for containerized Super Productivity: materializes app state from the op-log and exposes a REST API + MCP server without any browser or desktop app",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx src/index.ts",
+    "dump": "tsx src/index.ts dump"
+  },
+  "dependencies": {
+    "@sp/shared-schema": "*",
+    "@sp/sync-core": "*"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}
