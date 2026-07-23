@@ -27,8 +27,66 @@ export type EntityMap = Record<string, Record<string, unknown>>;
 
 const FULL_STATE_OP_TYPES = new Set(['SYNC_IMPORT', 'BACKUP_IMPORT', 'REPAIR']);
 
+/**
+ * Maps AppDataComplete section keys (lowercase, as they appear inside a
+ * full-state SYNC_IMPORT/BACKUP_IMPORT payload) to the canonical UPPER_SNAKE
+ * entityType that incremental ops use. Almost all are camelCase→UPPER_SNAKE;
+ * the two irregulars are `boards`→BOARD and `reminders`→REMINDER (the section
+ * key is pluralized). Derived from src/app/op-log/core/entity-registry.ts.
+ */
+const SECTION_TO_ENTITY_TYPE: Record<string, string> = {
+  task: 'TASK',
+  project: 'PROJECT',
+  tag: 'TAG',
+  note: 'NOTE',
+  simpleCounter: 'SIMPLE_COUNTER',
+  taskRepeatCfg: 'TASK_REPEAT_CFG',
+  metric: 'METRIC',
+  issueProvider: 'ISSUE_PROVIDER',
+  section: 'SECTION',
+  globalConfig: 'GLOBAL_CONFIG',
+  timeTracking: 'TIME_TRACKING',
+  menuTree: 'MENU_TREE',
+  planner: 'PLANNER',
+  boards: 'BOARD',
+  reminders: 'REMINDER',
+  pluginUserData: 'PLUGIN_USER_DATA',
+  pluginMetadata: 'PLUGIN_METADATA',
+  archiveYoung: 'ARCHIVE_YOUNG',
+  archiveOld: 'ARCHIVE_OLD',
+};
+
 const isUnsafeKey = (key: string): boolean =>
   key === '__proto__' || key === 'constructor' || key === 'prototype';
+
+/**
+ * Normalizes a full-state AppDataComplete object into the flat, UPPER_SNAKE
+ * representation the rest of the bridge uses. NgRx entity-collection sections
+ * ({ ids, entities }) collapse to their `entities` map (so reads are
+ * `state.TASK[id]`, identical to how incremental ops build state); singleton
+ * sections (globalConfig, boards, planner, menuTree, …) are stored whole.
+ */
+const normalizeFullState = (fullState: Record<string, unknown>): EntityMap => {
+  const out: EntityMap = {};
+  for (const [sectionKey, value] of Object.entries(fullState)) {
+    if (isUnsafeKey(sectionKey)) continue;
+    const canonical =
+      SECTION_TO_ENTITY_TYPE[sectionKey] ?? sectionKey.toUpperCase();
+    if (
+      value &&
+      typeof value === 'object' &&
+      'entities' in (value as Record<string, unknown>) &&
+      'ids' in (value as Record<string, unknown>)
+    ) {
+      out[canonical] = {
+        ...((value as { entities: Record<string, unknown> }).entities),
+      };
+    } else if (value && typeof value === 'object') {
+      out[canonical] = value as Record<string, unknown>;
+    }
+  }
+  return out;
+};
 
 const asRecord = (v: unknown): Record<string, unknown> =>
   typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {};
@@ -114,7 +172,10 @@ export class Materializer {
   private async _applyOp(op: SuperSyncOperation): Promise<void> {
     const payload = await this._decryptPayload(op);
 
-    // 1) Full-state ops replace everything (see op-replay.ts for rationale)
+    // 1) Full-state ops replace everything (see op-replay.ts for rationale).
+    //    Payload is either { appDataComplete: {...} } or the AppDataComplete
+    //    directly; normalizeFullState collapses NgRx sections to flat maps so
+    //    reads match the incremental-op representation.
     if (FULL_STATE_OP_TYPES.has(op.opType)) {
       const fullState =
         payload && typeof payload === 'object' && 'appDataComplete' in payload
@@ -123,11 +184,7 @@ export class Materializer {
       if (!fullState || typeof fullState !== 'object') {
         throw new Error(`sp-bridge: ${op.opType} op ${op.id} has non-object payload`);
       }
-      this._state = {};
-      for (const key of Object.keys(fullState as Record<string, unknown>)) {
-        if (isUnsafeKey(key)) continue;
-        this._state[key] = (fullState as Record<string, Record<string, unknown>>)[key];
-      }
+      this._state = normalizeFullState(fullState as Record<string, unknown>);
       return;
     }
 
@@ -175,6 +232,199 @@ export class Materializer {
   private _applyFromActionPayload(op: SuperSyncOperation, payload: unknown): void {
     const entityType = op.entityType;
     if (isUnsafeKey(entityType)) return;
+
+    // moveToOtherProject is multi-entity (task.projectId + both projects'
+    // taskIds). A generic UPD extract misses it, so mirror the client
+    // meta-reducer here for read accuracy. The wire op itself is unchanged.
+    if (op.actionType === '[Task Shared] moveToOtherProject') {
+      const action = asRecord(extractActionPayload(payload));
+      const taskId = op.entityId;
+      const targetProjectId = action.targetProjectId as string | undefined;
+      if (taskId && targetProjectId && !isUnsafeKey(taskId)) {
+        const task = asRecord((this._state.TASK ??= {})[taskId]);
+        const oldProjectId = task.projectId as string | undefined;
+        task.projectId = targetProjectId;
+        this._state.TASK[taskId] = task;
+        const projects = (this._state.PROJECT ??= {});
+        if (oldProjectId && projects[oldProjectId]) {
+          const p = asRecord(projects[oldProjectId]);
+          if (Array.isArray(p.taskIds)) {
+            p.taskIds = (p.taskIds as string[]).filter((i) => i !== taskId);
+          }
+        }
+        if (projects[targetProjectId]) {
+          const p = asRecord(projects[targetProjectId]);
+          if (Array.isArray(p.taskIds) && !(p.taskIds as string[]).includes(taskId)) {
+            p.taskIds = [...(p.taskIds as string[]), taskId];
+          }
+        }
+      }
+      return;
+    }
+
+    // Task hierarchy + TODAY-list actions: the wire ops carry action props, not
+    // an entity diff, so mirror the relevant client meta-reducer effects here
+    // for read accuracy (the wire op itself is unchanged and other clients apply
+    // the authoritative cascade themselves).
+    if (op.actionType === '[Task Shared] addTask') {
+      const action = asRecord(extractActionPayload(payload));
+      const task = asRecord(action.task);
+      const id = (task.id as string) ?? op.entityId;
+      if (id && !isUnsafeKey(id)) {
+        (this._state.TASK ??= {})[id] = task;
+        const isBottom = action.isAddToBottom === true;
+        // Membership cascades only ever UPDATE entities that already exist.
+        // On a virgin deployment (API used before any client has initialized
+        // the default data) the referenced project/tag may not exist yet —
+        // inventing a stub here would serve a malformed entity with no id/title
+        // from the read surface. The uploaded op is unaffected either way, and
+        // the real entity arrives once a client initializes it.
+        const projectId = task.projectId as string | undefined;
+        const existingProject =
+          projectId && !isUnsafeKey(projectId) ? this._state.PROJECT?.[projectId] : undefined;
+        if (projectId && existingProject) {
+          const project = asRecord(existingProject);
+          const key = action.isAddToBacklog === true ? 'backlogTaskIds' : 'taskIds';
+          const list = Array.isArray(project[key]) ? (project[key] as string[]) : [];
+          if (!list.includes(id)) project[key] = isBottom ? [...list, id] : [id, ...list];
+          this._state.PROJECT[projectId] = project;
+        }
+        // Keep each referenced tag's ordering list in sync for created tasks.
+        const tagIds = Array.isArray(task.tagIds) ? (task.tagIds as string[]) : [];
+        for (const tagId of tagIds) {
+          if (isUnsafeKey(tagId)) continue;
+          const existingTag = this._state.TAG?.[tagId];
+          if (!existingTag) continue;
+          const tag = asRecord(existingTag);
+          const list = Array.isArray(tag.taskIds) ? (tag.taskIds as string[]) : [];
+          if (!list.includes(id)) {
+            tag.taskIds = isBottom ? [...list, id] : [id, ...list];
+            this._state.TAG[tagId] = tag;
+          }
+        }
+      }
+      return;
+    }
+    if (op.actionType === '[Task] Add SubTask') {
+      const action = asRecord(extractActionPayload(payload));
+      const task = asRecord(action.task);
+      const parentId = action.parentId as string | undefined;
+      const id = (task.id as string) ?? op.entityId;
+      if (id && !isUnsafeKey(id)) {
+        (this._state.TASK ??= {})[id] = task;
+        // Only attach to a parent that exists (never invent one — see addTask).
+        if (parentId && !isUnsafeKey(parentId) && this._state.TASK[parentId]) {
+          const parent = asRecord(this._state.TASK[parentId]);
+          const sub = Array.isArray(parent.subTaskIds) ? (parent.subTaskIds as string[]) : [];
+          if (!sub.includes(id)) parent.subTaskIds = [...sub, id];
+          // A subtask inherits the parent's project membership.
+          if (parent.projectId) (this._state.TASK[id] as Record<string, unknown>).projectId = parent.projectId;
+          this._state.TASK[parentId] = parent;
+        }
+      }
+      return;
+    }
+    if (op.actionType === '[Task Shared] convertToSubTask') {
+      const action = asRecord(extractActionPayload(payload));
+      const taskId = (action.taskId as string) ?? op.entityId;
+      const targetParentId = action.targetParentId as string | undefined;
+      const tasks = (this._state.TASK ??= {});
+      if (taskId && targetParentId && !isUnsafeKey(taskId) && !isUnsafeKey(targetParentId)) {
+        const task = asRecord(tasks[taskId]);
+        const oldProjectId = task.projectId as string | undefined;
+        const parent = asRecord(tasks[targetParentId]);
+        task.parentId = targetParentId;
+        if (parent.projectId) task.projectId = parent.projectId;
+        tasks[taskId] = task;
+        const sub = Array.isArray(parent.subTaskIds) ? (parent.subTaskIds as string[]) : [];
+        if (!sub.includes(taskId)) parent.subTaskIds = [...sub, taskId];
+        tasks[targetParentId] = parent;
+        // Drop it from its former project's regular + backlog lists.
+        this._removeTaskFromProjectLists(oldProjectId, taskId);
+      }
+      return;
+    }
+    if (op.actionType === '[Task Shared] convertToMainTask') {
+      const action = asRecord(extractActionPayload(payload));
+      const task = asRecord(action.task);
+      const taskId = (task.id as string) ?? op.entityId;
+      const tasks = (this._state.TASK ??= {});
+      if (taskId && !isUnsafeKey(taskId)) {
+        const existing = asRecord(tasks[taskId]);
+        const oldParentId = existing.parentId as string | undefined;
+        delete existing.parentId;
+        tasks[taskId] = existing;
+        // Detach from the former parent's subtask list.
+        if (oldParentId && tasks[oldParentId]) {
+          const parent = asRecord(tasks[oldParentId]);
+          if (Array.isArray(parent.subTaskIds)) {
+            parent.subTaskIds = (parent.subTaskIds as string[]).filter((i) => i !== taskId);
+          }
+        }
+        // Re-attach to its project's regular list (only if that project exists).
+        const projectId = existing.projectId as string | undefined;
+        const proj =
+          projectId && !isUnsafeKey(projectId) ? this._state.PROJECT?.[projectId] : undefined;
+        if (projectId && proj) {
+          const project = asRecord(proj);
+          const list = Array.isArray(project.taskIds) ? (project.taskIds as string[]) : [];
+          if (!list.includes(taskId)) project.taskIds = [...list, taskId];
+          this._state.PROJECT[projectId] = project;
+        }
+      }
+      return;
+    }
+    if (
+      op.actionType === '[Task Shared] planTasksForToday' ||
+      op.actionType === '[Task Shared] removeTasksFromTodayTag'
+    ) {
+      const action = asRecord(extractActionPayload(payload));
+      const taskIds = Array.isArray(action.taskIds) ? (action.taskIds as string[]) : [];
+      // Only update an existing TODAY tag — never invent one (see addTask).
+      const existingToday = this._state.TAG?.TODAY;
+      if (!existingToday) return;
+      const today = asRecord(existingToday);
+      const current = Array.isArray(today.taskIds) ? (today.taskIds as string[]) : [];
+      if (op.actionType === '[Task Shared] planTasksForToday') {
+        const add = taskIds.filter((id) => !current.includes(id));
+        today.taskIds = [...current, ...add];
+      } else {
+        const remove = new Set(taskIds);
+        today.taskIds = current.filter((id) => !remove.has(id));
+      }
+      this._state.TAG.TODAY = today;
+      return;
+    }
+
+    if (op.actionType === '[TaskAttachment] Add TaskAttachment') {
+      const action = asRecord(extractActionPayload(payload));
+      const taskId = (action.taskId as string) ?? op.entityId;
+      const attachment = asRecord(action.taskAttachment);
+      if (taskId && !isUnsafeKey(taskId)) {
+        const task = asRecord((this._state.TASK ??= {})[taskId]);
+        const list = Array.isArray(task.attachments) ? (task.attachments as unknown[]) : [];
+        task.attachments = [...list, attachment];
+        this._state.TASK[taskId] = task;
+      }
+      return;
+    }
+    if (op.actionType === '[Task Shared] deleteProject') {
+      const action = asRecord(extractActionPayload(payload));
+      const projectId = (action.projectId as string) ?? op.entityId;
+      const allTaskIds = Array.isArray(action.allTaskIds)
+        ? (action.allTaskIds as string[])
+        : [];
+      if (projectId && !isUnsafeKey(projectId)) {
+        delete this._state.PROJECT?.[projectId];
+        const tasks = this._state.TASK ?? {};
+        for (const id of allTaskIds) {
+          if (!isUnsafeKey(id)) delete tasks[id];
+        }
+        // Scrub the deleted tasks from tag/today/planner lists (project is gone).
+        this._cascadeTaskDeletion(allTaskIds, {});
+      }
+      return;
+    }
 
     // Singletons that aren't entity maps: store as one keyed record so REST/
     // MCP consumers can read them; merged shallowly per update.
@@ -225,15 +475,104 @@ export class Materializer {
           : op.entityId
             ? [op.entityId]
             : [];
+        // Capture parent links before deletion so we can detach subtasks.
+        const parentOf: Record<string, string | undefined> =
+          entityType === 'TASK'
+            ? Object.fromEntries(
+                ids.map((id) => [id, asRecord(bucket[id]).parentId as string | undefined]),
+              )
+            : {};
         for (const id of ids) {
           if (isUnsafeKey(id)) continue;
           delete bucket[id];
+        }
+        // Mirror the client meta-reducer cascade: a deleted tag is stripped
+        // from every task's tagIds, so bridge reads don't show dangling refs.
+        if (entityType === 'TAG') {
+          this._cascadeTagRemoval(ids);
+        }
+        if (entityType === 'TASK') {
+          this._cascadeTaskDeletion(ids, parentOf);
         }
         break;
       }
       default:
         this._applyLegacy(op, payload);
         break;
+    }
+  }
+
+  /** Removes a task id from a project's regular + backlog ordering lists. */
+  private _removeTaskFromProjectLists(projectId: string | undefined, taskId: string): void {
+    if (!projectId || isUnsafeKey(projectId)) return;
+    const project = this._state.PROJECT?.[projectId];
+    if (!project) return;
+    const rec = asRecord(project);
+    for (const key of ['taskIds', 'backlogTaskIds']) {
+      if (Array.isArray(rec[key])) {
+        rec[key] = (rec[key] as string[]).filter((i) => i !== taskId);
+      }
+    }
+  }
+
+  /**
+   * Strips deleted task ids from every list that can reference them (parent
+   * subTaskIds, project regular/backlog lists, tag task lists incl. TODAY, and
+   * planner days), so bridge reads never show dangling task references.
+   */
+  private _cascadeTaskDeletion(
+    taskIds: string[],
+    parentOf: Record<string, string | undefined>,
+  ): void {
+    const removed = new Set(taskIds);
+    // 1) Detach from parents' subtask lists.
+    const tasks = this._state.TASK ?? {};
+    for (const id of taskIds) {
+      const parentId = parentOf[id];
+      if (parentId && tasks[parentId]) {
+        const parent = asRecord(tasks[parentId]);
+        if (Array.isArray(parent.subTaskIds)) {
+          parent.subTaskIds = (parent.subTaskIds as string[]).filter((i) => !removed.has(i));
+        }
+      }
+    }
+    // 2) Strip from project lists.
+    for (const project of Object.values(this._state.PROJECT ?? {})) {
+      const rec = asRecord(project);
+      for (const key of ['taskIds', 'backlogTaskIds']) {
+        if (Array.isArray(rec[key]) && (rec[key] as string[]).some((i) => removed.has(i))) {
+          rec[key] = (rec[key] as string[]).filter((i) => !removed.has(i));
+        }
+      }
+    }
+    // 3) Strip from tag lists (includes TODAY).
+    for (const tag of Object.values(this._state.TAG ?? {})) {
+      const rec = asRecord(tag);
+      if (Array.isArray(rec.taskIds) && (rec.taskIds as string[]).some((i) => removed.has(i))) {
+        rec.taskIds = (rec.taskIds as string[]).filter((i) => !removed.has(i));
+      }
+    }
+    // 4) Strip from planner days.
+    const planner = this._state.PLANNER ? asRecord(this._state.PLANNER.days) : null;
+    if (planner) {
+      for (const [day, list] of Object.entries(planner)) {
+        if (Array.isArray(list) && list.some((i) => removed.has(i as string))) {
+          planner[day] = (list as string[]).filter((i) => !removed.has(i));
+        }
+      }
+    }
+  }
+
+  /** Strips deleted tag ids from every task's tagIds (read-accuracy cascade). */
+  private _cascadeTagRemoval(tagIds: string[]): void {
+    const tasks = this._state.TASK;
+    if (!tasks) return;
+    const removed = new Set(tagIds);
+    for (const task of Object.values(tasks)) {
+      const rec = asRecord(task);
+      if (Array.isArray(rec.tagIds) && rec.tagIds.some((t) => removed.has(t as string))) {
+        rec.tagIds = (rec.tagIds as string[]).filter((t) => !removed.has(t));
+      }
     }
   }
 

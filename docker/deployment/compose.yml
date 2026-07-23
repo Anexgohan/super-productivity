@@ -99,7 +99,7 @@ services:
         condition: service_healthy
     healthcheck:
       test:
-        ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:1902/api/health']
+        ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:1902/api/health']
       interval: 30s
       timeout: 5s
       retries: 3
