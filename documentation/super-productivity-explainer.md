@@ -323,6 +323,67 @@ on its own instead of crash-looping until the sync server is ready.
 
 ---
 
+## Publishing images (GHCR) and deploying elsewhere
+
+The dev box builds from source. A real deployment target should not have to —
+it should pull finished images. That is what
+`.github/workflows/publish-containers.yml` is for.
+
+**Three images, published multi-arch to GHCR:**
+
+| Image                            | From                                    |
+| -------------------------------- | --------------------------------------- |
+| `ghcr.io/anexgohan/sp-web`       | root `Dockerfile` (the Angular app)     |
+| `ghcr.io/anexgohan/sp-bridge`    | `packages/sp-bridge/Dockerfile`         |
+| `ghcr.io/anexgohan/sp-supersync` | `packages/super-sync-server/Dockerfile` |
+
+We publish our **own** supersync rather than reusing upstream's image because
+this fork patches it (`ALLOW_INSECURE_HTTP`, container auto-provisioning, the
+plain-HTTP `server.ts` fix) — upstream's build has none of those.
+
+**Publishing is release-driven, not per-commit.** Push a version tag and all
+three images build and publish at that version:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0     # ← triggers the workflow
+```
+
+| You push        | Images are tagged                        |
+| --------------- | ---------------------------------------- |
+| `v1.2.3`        | `1.2.3`, `1.2`, `latest`, `sha-<short>`  |
+| `v1.2.3-beta`   | `1.2.3-beta`, `sha-<short>` (not latest) |
+| manual dispatch | the version you enter, or `sha-<short>`  |
+
+A `-beta`/`-rc` suffix keeps a build off `latest` automatically, so `latest`
+only ever moves to a stable release.
+
+**Two design choices worth knowing:**
+
+- **Each architecture builds on its own native runner** (`ubuntu-24.04` for
+  amd64, `ubuntu-24.04-arm` for arm64) rather than emulating arm64 under QEMU.
+  The web image runs a full Angular build; emulated, that would go from ~10 min
+  to 40+. The two per-arch builds are then stitched into one multi-arch tag by
+  **digest**, so no `-amd64`/`-arm64` tags litter the package list.
+- **Images carry no secrets.** The sync token and E2E passphrase are injected at
+  runtime by the entrypoint, never baked at build. That is what makes publishing
+  them publicly safe — a pulled image is inert until an operator supplies `.env`.
+
+**Deploying on another host** then needs no source tree and no build toolchain —
+only `compose.yml` pointed at the published images, an `.env`, and empty `data/`
+directories:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+One first-time step: GHCR creates packages **private** by default, so after the
+first publish each of the three must be flipped to public once (package settings,
+or `gh` API). Until then a puller needs a GitHub token with `read:packages`.
+
+---
+
 ## Mental model in six bullets
 
 - The **container owns the data**; browsers are throwaway views; agents use REST.

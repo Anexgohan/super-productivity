@@ -1,0 +1,170 @@
+# Publishes the three deployment images to GHCR as multi-arch (amd64 + arm64).
+#
+# Design (anex/container-parity):
+#  - Each arch builds on its OWN native runner — arm64 on ubuntu-24.04-arm, not
+#    QEMU emulation. The web image runs a full Angular build; emulated arm64
+#    would turn ~10 min into 40+. (Inspiration: Pankha's release pipeline.)
+#  - Multi-arch is assembled by DIGEST, not by leftover `-amd64`/`-arm64` tags:
+#    each build pushes an untagged image by digest, then one merge step per
+#    image stitches the two into a single tag with `imagetools`. Keeps the
+#    package list clean.
+#  - Auth is the automatic GITHUB_TOKEN — no secret to create or rotate.
+#  - The images bake NO secrets: the sync token and E2E passphrase are injected
+#    at runtime by the entrypoint, which is why publishing them public is safe.
+#
+# We publish our OWN supersync because this fork patches it (ALLOW_INSECURE_HTTP,
+# container auto-provision, the plain-HTTP server.ts fix) — upstream's published
+# image lacks those.
+name: Publish containers
+run-name: 'publish-containers ${{ github.event.inputs.version || github.ref_name }}'
+
+# Release-driven, like Pankha: publishing is a deliberate act (cut a version
+# tag), not a side effect of every commit. Push a `vX.Y.Z` tag and all three
+# images publish at that version; a `-beta`/`-rc` suffix keeps them off `latest`.
+on:
+  push:
+    tags:
+      - 'v*'
+  # Manual trigger for the first publish, a test build, or an on-demand rebuild.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to tag the images with (e.g. v1.0.0). Omit for a sha-only test build.'
+        required: false
+      no_cache:
+        description: 'Build without cache'
+        type: boolean
+        default: false
+
+env:
+  # GHCR image names must be lowercase; this fork's owner already is.
+  REGISTRY_NS: ghcr.io/anexgohan
+
+jobs:
+  build:
+    name: build ${{ matrix.image.name }} (${{ matrix.platform.arch }})
+    runs-on: ${{ matrix.platform.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      # One image failing shouldn't cancel the others' builds.
+      fail-fast: false
+      matrix:
+        image:
+          - name: sp-web
+            file: Dockerfile
+          - name: sp-bridge
+            file: packages/sp-bridge/Dockerfile
+          - name: sp-supersync
+            file: packages/super-sync-server/Dockerfile
+        platform:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm # native arm64 runner — no QEMU
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Upstream installs a dependency from git+ssh; force HTTPS so `npm ci`
+      # inside the build works without an SSH key.
+      - name: Use HTTPS for git deps
+        run: >
+          git config --global url."https://github.com/".insteadOf
+          ssh://git@github.com/
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.image.file }}
+          platforms: linux/${{ matrix.platform.arch }}
+          # Skip the provenance attestation, which otherwise adds an
+          # unknown/unknown entry to the manifest and confuses `imagetools`.
+          provenance: false
+          no-cache: ${{ inputs.no_cache || false }}
+          cache-from: type=gha,scope=${{ matrix.image.name }}-${{ matrix.platform.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}-${{ matrix.platform.arch }}
+          outputs: type=image,name=${{ env.REGISTRY_NS }}/${{ matrix.image.name }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          echo "${{ steps.build.outputs.digest }}" > "/tmp/digests/${{ matrix.platform.arch }}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.image.name }}-${{ matrix.platform.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+          if-no-files-found: error
+
+  merge:
+    name: merge ${{ matrix.image }}
+    runs-on: ubuntu-24.04
+    needs: build
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [sp-web, sp-bridge, sp-supersync]
+
+    steps:
+      - name: Download this image's digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digest-${{ matrix.image }}-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_NS }}/${{ matrix.image }}
+          # `flavor: latest=auto` (the default) applies `:latest` only for a
+          # non-prerelease semver tag, so `v1.2.3` updates latest but
+          # `v1.2.3-beta` does not — Pankha's stable/prerelease split, for free.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=${{ github.event.inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version != '' }}
+            type=sha,prefix=sha-,format=short
+
+      - name: Create multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(for f in *; do echo "${{ env.REGISTRY_NS }}/${{ matrix.image }}@$(cat "$f")"; done)
+
+      - name: Inspect result
+        run: docker buildx imagetools inspect ${{ env.REGISTRY_NS }}/${{ matrix.image }}:latest
