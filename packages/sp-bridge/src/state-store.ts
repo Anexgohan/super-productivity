@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import type { BridgeConfig } from './config';
 import { SyncClient } from './sync-client';
 import { Materializer, type EntityMap } from './materializer';
+import type { SuperSyncOperation } from '@sp/shared-schema';
 
 const CACHE_FILE = 'bridge-state-cache.json';
 
@@ -104,5 +105,29 @@ export class StateStore {
     const tmp = `${this._cachePath}.tmp`;
     writeFileSync(tmp, JSON.stringify(this._materializer.toCache()));
     renameSync(tmp, this._cachePath);
+  }
+
+  private _ownClockFloor = 0;
+
+  /**
+   * Vector clock for the bridge's next write: component-wise max of everything
+   * seen, with the bridge's own component incremented. A local floor guards
+   * against reusing a value before our own ops round-trip back from the server.
+   */
+  nextWriteClock(): Record<string, number> {
+    const clock = this._materializer.mergedClock;
+    const own = Math.max(clock[this.cfg.clientId] ?? 0, this._ownClockFloor) + 1;
+    this._ownClockFloor = own;
+    clock[this.cfg.clientId] = own;
+    return clock;
+  }
+
+  /**
+   * Uploads ops, then refreshes so the write round-trips through the server
+   * and materializes exactly as every other client will see it.
+   */
+  async submitOps(ops: SuperSyncOperation[]): Promise<void> {
+    await this._client.uploadOps(ops, this._materializer.lastServerSeq);
+    await this.refresh();
   }
 }

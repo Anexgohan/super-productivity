@@ -31,6 +31,12 @@ const DOCS = {
     'GET /api/entities': 'list materialized entity types (raw superset access)',
     'GET /api/entities/:type': 'raw entity map for a type',
     'POST /api/sync/refresh': 'force an op-log pull now',
+    'POST /api/tasks':
+      'create task; body: {title (required), projectId?, notes?, timeEstimate?, tagIds?, dueDay?, dueWithTime?}',
+    'PATCH /api/tasks/:id':
+      'update task; body: partial of {title, notes, isDone, doneOn, timeEstimate, timeSpent, projectId, tagIds, dueDay, dueWithTime}',
+    'POST /api/tasks/:id/complete': 'mark task done (sets doneOn)',
+    'DELETE /api/tasks/:id': 'delete task (refuses while subtasks exist)',
   },
 } as const;
 
@@ -108,6 +114,50 @@ export const createRestServer = (
   app.post('/api/sync/refresh', async () => {
     await store.refresh();
     return core.status();
+  });
+
+  // ── Writes ────────────────────────────────────────────────────────────────
+  const sendError = (reply: { status: (c: number) => { send: (b: unknown) => unknown } }, err: unknown): unknown => {
+    const e = err as { statusCode?: number; message?: string };
+    return reply
+      .status(e.statusCode ?? 500)
+      .send({ error: e.message ?? 'Internal error' });
+  };
+
+  app.post<{ Body: Record<string, unknown> }>('/api/tasks', async (req, reply) => {
+    try {
+      const created = await core.createTask((req.body ?? {}) as never);
+      return reply.status(201).send(created);
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    '/api/tasks/:id',
+    async (req, reply) => {
+      try {
+        return await core.updateTask(req.params.id, (req.body ?? {}) as Record<string, unknown>);
+      } catch (err) {
+        return sendError(reply, err);
+      }
+    },
+  );
+
+  app.post<{ Params: { id: string } }>('/api/tasks/:id/complete', async (req, reply) => {
+    try {
+      return await core.completeTask(req.params.id);
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/tasks/:id', async (req, reply) => {
+    try {
+      return await core.deleteTask(req.params.id);
+    } catch (err) {
+      return sendError(reply, err);
+    }
   });
 
   return app;

@@ -36,6 +36,8 @@ const asRecord = (v: unknown): Record<string, unknown> =>
 export class Materializer {
   private _state: EntityMap = {};
   private _lastServerSeq = 0;
+  /** Component-wise max of every vector clock seen — basis for write clocks. */
+  private _mergedClock: Record<string, number> = {};
 
   constructor(private readonly encryptionPassword: string) {}
 
@@ -47,14 +49,31 @@ export class Materializer {
     return this._state;
   }
 
-  /** Restores from a persisted cache written by toCache(). */
-  restoreFromCache(cache: { state: EntityMap; lastServerSeq: number }): void {
-    this._state = cache.state;
-    this._lastServerSeq = cache.lastServerSeq;
+  get mergedClock(): Record<string, number> {
+    return { ...this._mergedClock };
   }
 
-  toCache(): { state: EntityMap; lastServerSeq: number } {
-    return { state: this._state, lastServerSeq: this._lastServerSeq };
+  /** Restores from a persisted cache written by toCache(). */
+  restoreFromCache(cache: {
+    state: EntityMap;
+    lastServerSeq: number;
+    mergedClock?: Record<string, number>;
+  }): void {
+    this._state = cache.state;
+    this._lastServerSeq = cache.lastServerSeq;
+    this._mergedClock = cache.mergedClock ?? {};
+  }
+
+  toCache(): {
+    state: EntityMap;
+    lastServerSeq: number;
+    mergedClock: Record<string, number>;
+  } {
+    return {
+      state: this._state,
+      lastServerSeq: this._lastServerSeq,
+      mergedClock: this._mergedClock,
+    };
   }
 
   /**
@@ -66,6 +85,15 @@ export class Materializer {
       await this._applyOp(row.op as SuperSyncOperation);
       if (row.serverSeq > this._lastServerSeq) {
         this._lastServerSeq = row.serverSeq;
+      }
+      const clock = (row.op as SuperSyncOperation).vectorClock;
+      if (clock && typeof clock === 'object') {
+        for (const [component, value] of Object.entries(clock)) {
+          if (typeof value !== 'number' || isUnsafeKey(component)) continue;
+          if ((this._mergedClock[component] ?? 0) < value) {
+            this._mergedClock[component] = value;
+          }
+        }
       }
     }
   }

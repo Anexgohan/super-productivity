@@ -4,6 +4,12 @@
  * no MCP layer; agents consume the API directly).
  */
 import type { StateStore } from './state-store';
+import {
+  ALLOWED_TASK_FIELDS,
+  buildTaskEntity,
+  OpFactory,
+  type NewTaskInput,
+} from './op-factory';
 
 export interface TaskFilter {
   isDone?: boolean;
@@ -18,7 +24,10 @@ const asRecord = (v: unknown): Record<string, unknown> =>
   typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {};
 
 export class BridgeCore {
-  constructor(private readonly store: StateStore) {}
+  constructor(
+    private readonly store: StateStore,
+    private readonly ops: OpFactory,
+  ) {}
 
   private _bucket(type: string): Record<string, Record<string, unknown>> {
     return (this.store.state[type] ?? {}) as Record<string, Record<string, unknown>>;
@@ -102,6 +111,69 @@ export class BridgeCore {
 
   rawEntities(type: string): Record<string, unknown> | undefined {
     return this.store.state[type];
+  }
+
+  // ── Writes ────────────────────────────────────────────────────────────────
+  // Every write is a real sync op (cloned from live client op shapes), uploaded
+  // to the server and round-tripped back through refresh() — the bridge state
+  // you read after a write is what every other client will materialize.
+
+  async createTask(input: NewTaskInput): Promise<Record<string, unknown>> {
+    if (!input.title || typeof input.title !== 'string') {
+      throw Object.assign(new Error('title (string) is required'), { statusCode: 400 });
+    }
+    if (input.projectId && !this._bucket('PROJECT')[input.projectId]) {
+      throw Object.assign(new Error(`Unknown projectId: ${input.projectId}`), {
+        statusCode: 400,
+      });
+    }
+    const task = buildTaskEntity(input);
+    const op = await this.ops.addTask(task, this.store.nextWriteClock());
+    await this.store.submitOps([op]);
+    return this.getTask(task.id as string) ?? task;
+  }
+
+  async updateTask(
+    id: string,
+    changes: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const existing = this.getTask(id);
+    if (!existing) {
+      throw Object.assign(new Error('Task not found'), { statusCode: 404 });
+    }
+    const rejected = Object.keys(changes).filter((k) => !ALLOWED_TASK_FIELDS.has(k));
+    if (rejected.length > 0) {
+      throw Object.assign(
+        new Error(`Field(s) not writable via API: ${rejected.join(', ')}`),
+        { statusCode: 400 },
+      );
+    }
+    if (Object.keys(changes).length === 0) {
+      throw Object.assign(new Error('No changes given'), { statusCode: 400 });
+    }
+    const op = await this.ops.updateTask(id, changes, this.store.nextWriteClock());
+    await this.store.submitOps([op]);
+    return this.getTask(id) ?? existing;
+  }
+
+  async completeTask(id: string): Promise<Record<string, unknown>> {
+    return this.updateTask(id, { isDone: true, doneOn: Date.now() });
+  }
+
+  async deleteTask(id: string): Promise<{ deleted: string }> {
+    const existing = this.getTask(id);
+    if (!existing) {
+      throw Object.assign(new Error('Task not found'), { statusCode: 404 });
+    }
+    if (Array.isArray(existing.subTaskIds) && existing.subTaskIds.length > 0) {
+      throw Object.assign(
+        new Error('Task has subtasks; delete them first (safety guard)'),
+        { statusCode: 409 },
+      );
+    }
+    const op = await this.ops.deleteTask(existing, this.store.nextWriteClock());
+    await this.store.submitOps([op]);
+    return { deleted: id };
   }
 
   status(): Record<string, unknown> {

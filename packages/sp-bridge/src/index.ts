@@ -55,10 +55,12 @@ const runServe = async (): Promise<void> => {
   const { BridgeCore } = await import('./core');
   const { createRestServer } = await import('./rest');
 
+  const { OpFactory } = await import('./op-factory');
+
   const store = new StateStore(cfg);
   await store.start(cfg.pollIntervalSec * 1000);
 
-  const core = new BridgeCore(store);
+  const core = new BridgeCore(store, new OpFactory(cfg.clientId, cfg.encryptionPassword));
   const app = createRestServer(core, store, cfg.apiKey);
   await app.listen({ port: cfg.apiPort, host: '0.0.0.0' });
   console.log(

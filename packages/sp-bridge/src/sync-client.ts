@@ -4,6 +4,8 @@
  */
 import {
   SuperSyncDownloadOpsResponseSchema,
+  SuperSyncUploadOpsResponseSchema,
+  type SuperSyncOperation,
   type SuperSyncServerOperation,
 } from '@sp/shared-schema';
 import type { BridgeConfig } from './config';
@@ -73,5 +75,35 @@ export class SyncClient {
     }
 
     return { ops: all, latestSeq };
+  }
+
+  /**
+   * Uploads ops. The server validates each op independently and reports
+   * per-op results; any rejection here is surfaced as an error (the bridge
+   * never silently drops a write).
+   */
+  async uploadOps(
+    ops: SuperSyncOperation[],
+    lastKnownServerSeq: number,
+  ): Promise<{ latestSeq: number }> {
+    const res = await fetch(`${this.cfg.syncServerUrl}/api/sync/ops`, {
+      method: 'POST',
+      headers: { ...this._authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ops, clientId: this.cfg.clientId, lastKnownServerSeq }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`sp-bridge: op upload failed (${res.status}) ${body.slice(0, 300)}`);
+    }
+    const parsed = SuperSyncUploadOpsResponseSchema.parse(await res.json());
+    const results = (parsed as { results?: { accepted?: boolean; error?: string }[] })
+      .results;
+    const rejected = (results ?? []).filter((r) => r.accepted === false);
+    if (rejected.length > 0) {
+      throw new Error(
+        `sp-bridge: ${rejected.length} op(s) rejected: ${JSON.stringify(rejected).slice(0, 300)}`,
+      );
+    }
+    return { latestSeq: (parsed as { latestSeq?: number }).latestSeq ?? 0 };
   }
 }
