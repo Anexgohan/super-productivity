@@ -49,6 +49,28 @@ export class StateStore {
     return join(this.cfg.dataDir, CACHE_FILE);
   }
 
+  /**
+   * Authenticates, waiting out a sync server that is not listening yet.
+   *
+   * Bounded rather than infinite: a genuinely wrong JWT_SECRET or a missing
+   * SP_SYNC_AUTO_PROVISION should still surface as a failed start, not as a
+   * bridge that sits there looking alive while never syncing.
+   */
+  private async _connectWithRetry(attempts = 15, delayMs = 2_000): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await this._client.authenticate();
+        return;
+      } catch (err) {
+        if (attempt >= attempts) throw err;
+        console.warn(
+          `sp-bridge: sync server not ready (${(err as Error).message}); retry ${attempt}/${attempts}`,
+        );
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+  }
+
   async start(pollIntervalMs: number): Promise<void> {
     mkdirSync(this.cfg.dataDir, { recursive: true });
     if (existsSync(this._cachePath)) {
@@ -63,7 +85,12 @@ export class StateStore {
       }
     }
 
-    await this._client.authenticate();
+    // The sync server may still be coming up — `depends_on: service_healthy`
+    // orders a `compose up`, but NOT a `compose restart`, which starts every
+    // container at once. Without this the first fetch throws, the process
+    // exits, and the container crash-loops (recovering, but printing alarming
+    // "fetch failed" lines) until the sync server is ready.
+    await this._connectWithRetry();
     await this.refresh();
 
     // Live push; the poll below stays on as a fallback.

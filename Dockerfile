@@ -1,3 +1,7 @@
+# syntax=docker/dockerfile:1.7-labs
+# (labs syntax is needed for COPY --exclude, used below to keep deployment
+#  config out of the Angular build's cache key)
+
 # Build stage
 FROM --platform=$BUILDPLATFORM node:22 AS build
 
@@ -43,8 +47,18 @@ COPY tools/ ./tools/
 RUN npm ci --ignore-scripts || npm i --ignore-scripts
 RUN npm run prepare
 
-# Copy source and build
-COPY . .
+# Copy source and build.
+#
+# The excluded paths are deployment config, consumed only by the runtime stage
+# below (or by nothing in the image at all). Without these exclusions they sit
+# in this layer's cache key, so editing an nginx directive or one line of the
+# entrypoint invalidates it and forces a full ~10-minute Angular rebuild for a
+# change that never reaches the compiled app.
+COPY --exclude=nginx \
+     --exclude=docker-entrypoint.sh \
+     --exclude=docker \
+     --exclude=documentation \
+     . .
 # Pass build args as environment variables for the build commands
 RUN UNSPLASH_KEY=$UNSPLASH_KEY UNSPLASH_CLIENT_ID=$UNSPLASH_CLIENT_ID npm run env && npm run lint && npm run buildFrontend:prodWeb
 

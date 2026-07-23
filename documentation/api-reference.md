@@ -21,17 +21,22 @@ X-Api-Key: <key>
 
 Missing or wrong key → `401 {"error":"Unauthorized"}`.
 
+Leave `SP_BRIDGE_API_KEY` unset and the bridge mints an `spb_`-prefixed key on
+first boot, storing only its SHA-256 hash and printing the key once to its log.
+Keys are always verified as digests, in constant time. A browser session cookie
+is accepted in place of a key, which is how the web app calls the bridge.
+
 **Content type** — send `Content-Type: application/json` on requests **that have
-a body**. Do *not* send it on bodyless `DELETE`s; the server rejects an empty
+a body**. Do _not_ send it on bodyless `DELETE`s; the server rejects an empty
 body declared as JSON (`400 FST_ERR_CTP_EMPTY_JSON_BODY`).
 
 **Errors** — a uniform shape: `{"error": "<message>"}` with the status code.
 
-| Code | Meaning |
-|---|---|
-| `400` | bad input — missing/invalid field, unwritable field, unknown reference |
-| `401` | missing or invalid API key |
-| `404` | entity not found |
+| Code  | Meaning                                                                  |
+| ----- | ------------------------------------------------------------------------ |
+| `400` | bad input — missing/invalid field, unwritable field, unknown reference   |
+| `401` | missing or invalid API key                                               |
+| `404` | entity not found                                                         |
 | `409` | refused by a safety guard (e.g. deleting a task that still has subtasks) |
 
 **Freshness** — reads reflect the last op-log poll (default 15s). Call
@@ -78,6 +83,7 @@ ordering, attachments — have their own endpoints.)
 ## Service
 
 ### `GET /api/health`
+
 Liveness probe. **No auth.**
 
 ```bash
@@ -86,15 +92,18 @@ curl http://192.168.100.237:18232/api/health
 ```
 
 ### `GET /api/docs`
+
 Machine-readable map of every route. **No auth.** Lets an agent discover the
 surface without this document.
 
 ### `GET /api/status`
+
 Sync cursor, last sync time, last error, and per-type entity counts.
 
 ```bash
 curl -H "X-Api-Key: $KEY" http://host:18232/api/status
 ```
+
 ```json
 {
   "lastServerSeq": 23,
@@ -103,9 +112,11 @@ curl -H "X-Api-Key: $KEY" http://host:18232/api/status
   "entityCounts": { "TASK": 26, "PROJECT": 2, "TAG": 14, "...": 0 }
 }
 ```
-*Replaces MCP `check_connection` / `debug_directories`.*
+
+_Replaces MCP `check_connection` / `debug_directories`._
 
 ### `POST /api/sync/refresh`
+
 Forces an immediate op-log pull instead of waiting for the next poll. Returns the
 same body as `/api/status`. No request body.
 
@@ -114,23 +125,24 @@ same body as `/api/status`. No request body.
 ## Reading tasks
 
 ### `GET /api/tasks`
+
 Lists tasks. All filters are query parameters and combine with AND.
 
-| Filter | Type | Notes |
-|---|---|---|
-| `isDone` | `true`/`false` | completion state |
-| `projectId` | string | tasks in one project |
-| `tagId` | string | tasks carrying a tag — **use this to read a Kanban column** |
-| `dueDay` | `YYYY-MM-DD` | exact due date |
-| `parentId` | string \| `null` | `null` (literal string) = top-level only |
-| `search` | string | case-insensitive match on title *and* notes |
-| `overdue` | `true` | not done and due before today |
-| `unscheduled` | `true` | no due date, not on Today, not on the Planner |
-| `plannedForToday` | `true` | on the Today list, or due today |
-| `parentsOnly` | `true` | excludes subtasks |
-| `recurringOnly` | `true` | only tasks from a repeat config |
-| `today` | `YYYY-MM-DD` | overrides "today" for the date-relative filters above |
-| `fields` | comma list | project only these fields (`id` always included) |
+| Filter            | Type             | Notes                                                       |
+| ----------------- | ---------------- | ----------------------------------------------------------- |
+| `isDone`          | `true`/`false`   | completion state                                            |
+| `projectId`       | string           | tasks in one project                                        |
+| `tagId`           | string           | tasks carrying a tag — **use this to read a Kanban column** |
+| `dueDay`          | `YYYY-MM-DD`     | exact due date                                              |
+| `parentId`        | string \| `null` | `null` (literal string) = top-level only                    |
+| `search`          | string           | case-insensitive match on title _and_ notes                 |
+| `overdue`         | `true`           | not done and due before today                               |
+| `unscheduled`     | `true`           | no due date, not on Today, not on the Planner               |
+| `plannedForToday` | `true`           | on the Today list, or due today                             |
+| `parentsOnly`     | `true`           | excludes subtasks                                           |
+| `recurringOnly`   | `true`           | only tasks from a repeat config                             |
+| `today`           | `YYYY-MM-DD`     | overrides "today" for the date-relative filters above       |
+| `fields`          | comma list       | project only these fields (`id` always included)            |
 
 ```bash
 # overdue, trimmed to the fields an agent actually needs
@@ -141,58 +153,78 @@ curl -H "X-Api-Key: $KEY" \
 curl -H "X-Api-Key: $KEY" \
   "http://host:18232/api/tasks?tagId=KANBAN_IN_PROGRESS"
 ```
-*Replaces MCP `get_tasks` (including its advanced filters).*
+
+_Replaces MCP `get_tasks` (including its advanced filters)._
 
 ### `GET /api/tasks/:id`
+
 One task by id. `404` if unknown.
 
 ### `GET /api/current-task`
+
 Always returns `null` with an explanatory note — the active task is device-local
 UI state that never syncs, so a headless peer has none. Documented rather than
 faked.
 
 ```json
-{ "currentTask": null, "note": "No active task: the headless bridge tracks no running timer..." }
+{
+  "currentTask": null,
+  "note": "No active task: the headless bridge tracks no running timer..."
+}
 ```
-*Replaces MCP `get_current_task`.*
+
+_Replaces MCP `get_current_task`._
 
 ### `GET /api/task-repeat-cfgs`
-Lists recurring-task configurations. *Replaces MCP `get_task_repeat_cfgs`.*
+
+Lists recurring-task configurations. _Replaces MCP `get_task_repeat_cfgs`._
 
 ### `GET /api/planner`
+
 The future-day scheduling board: `{ "YYYY-MM-DD": ["taskId", ...] }`.
 
 ### `GET /api/worklog`
+
 Time spent per day, aggregated from `timeSpentOnDay` across tasks.
 
-| Query | Type |
-|---|---|
+| Query  | Type                     |
+| ------ | ------------------------ |
 | `from` | `YYYY-MM-DD` (inclusive) |
-| `to` | `YYYY-MM-DD` (inclusive) |
+| `to`   | `YYYY-MM-DD` (inclusive) |
 
 ```json
-{ "2026-07-21": { "totalTimeSpent": 5400000,
-                  "tasks": [{ "id": "...", "title": "...", "timeSpent": 5400000 }] } }
+{
+  "2026-07-21": {
+    "totalTimeSpent": 5400000,
+    "tasks": [{ "id": "...", "title": "...", "timeSpent": 5400000 }]
+  }
+}
 ```
-*Replaces MCP `get_worklog`.*
+
+_Replaces MCP `get_worklog`._
 
 ---
 
 ## Reading other entities
 
 ### `GET /api/projects`
-All projects. *Replaces MCP `get_projects`.*
+
+All projects. _Replaces MCP `get_projects`._
 
 ### `GET /api/tags`
-All tags, including `color` and `icon`. *Replaces MCP `get_tags`.*
+
+All tags, including `color` and `icon`. _Replaces MCP `get_tags`._
 
 ### `GET /api/config`
+
 Global configuration, keyed by section.
 
 ### `GET /api/entities`
+
 Lists every materialized entity type available for raw access.
 
 ### `GET /api/entities/:type`
+
 Raw entity map for one type (`TASK`, `TAG`, `PROJECT`, `BOARD`, `PLANNER`,
 `ISSUE_PROVIDER`, …). This is the escape hatch for anything the typed endpoints
 don't expose — e.g. reading a board's `includedTagIds`. `404` on unknown type.
@@ -207,13 +239,14 @@ curl -H "X-Api-Key: $KEY" http://host:18232/api/entities/BOARD
 ## Task lifecycle
 
 ### `POST /api/tasks`
+
 Creates a task. → `201` with the created task.
 
-| Field | Required | Notes |
-|---|---|---|
-| `title` | ✅ | |
-| `projectId` | | defaults to `INBOX_PROJECT`; must exist |
-| `notes`, `timeEstimate`, `tagIds`, `dueDay`, `dueWithTime` | | |
+| Field                                                      | Required | Notes                                   |
+| ---------------------------------------------------------- | -------- | --------------------------------------- |
+| `title`                                                    | ✅       |                                         |
+| `projectId`                                                |          | defaults to `INBOX_PROJECT`; must exist |
+| `notes`, `timeEstimate`, `tagIds`, `dueDay`, `dueWithTime` |          |                                         |
 
 ```bash
 curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
@@ -224,17 +257,18 @@ curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
 > **Note:** a task created through the API lands in its **project**, not on the
 > Today list. Put it on Today explicitly with `POST /api/today/plan`.
 
-*Replaces MCP `create_task`.*
+_Replaces MCP `create_task`._
 
 ### `POST /api/tasks/from-syntax`
+
 Creates a task from a single short-syntax string. → `201`.
 
-| Token | Effect |
-|---|---|
-| `#tag` | adds the tag — **created automatically if it doesn't exist** |
-| `+Project` | moves to that project **by title**; must already exist (else `400`) |
-| `@today` \| `@tomorrow` \| `@YYYY-MM-DD` | sets `dueDay` |
-| `1h` / `30m` / `1h30m` | sets `timeEstimate` (bare token) |
+| Token                                    | Effect                                                              |
+| ---------------------------------------- | ------------------------------------------------------------------- |
+| `#tag`                                   | adds the tag — **created automatically if it doesn't exist**        |
+| `+Project`                               | moves to that project **by title**; must already exist (else `400`) |
+| `@today` \| `@tomorrow` \| `@YYYY-MM-DD` | sets `dueDay`                                                       |
+| `1h` / `30m` / `1h30m`                   | sets `timeEstimate` (bare token)                                    |
 
 Remaining words become the title. Body: `{"text": "...", "projectId": "..."}`
 (`projectId` is the fallback when no `+Project` is given).
@@ -246,21 +280,25 @@ curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
 ```
 
 ### `PATCH /api/tasks/:id`
+
 Updates a task. Body is a partial of the writable fields (see Conventions).
 Unknown/unwritable fields → `400` listing them; empty body → `400`.
 
-*Replaces MCP `update_task`.*
+_Replaces MCP `update_task`._
 
 ### `POST /api/tasks/:id/complete`
+
 Marks done, setting `doneOn` to now. No body.
-*Replaces MCP `complete_task`.*
+_Replaces MCP `complete_task`._
 
 ### `POST /api/tasks/:id/complete-on`
+
 Marks done with an explicit completion date, so the card sorts on the intended
 day. Body: `{"doneOn": "YYYY-MM-DD"}` (other formats → `400`).
-*Replaces MCP `complete_task_on`.*
+_Replaces MCP `complete_task_on`._
 
 ### `DELETE /api/tasks/:id`
+
 Deletes a task. Returns `{"deleted": "<id>"}`.
 
 **Guard:** `409` if the task still has live subtasks — delete them first. (Stale
@@ -270,7 +308,8 @@ the task from its parent, project lists, tag lists, and the Planner.
 ```bash
 curl -H "X-Api-Key: $KEY" -X DELETE http://host:18232/api/tasks/<id>
 ```
-*Replaces MCP `delete_task`.*
+
+_Replaces MCP `delete_task`._
 
 ---
 
@@ -280,10 +319,12 @@ Both routes build one operation per task and upload them together — cheaper an
 more consistent than looping single calls.
 
 ### `POST /api/tasks/bulk/complete`
+
 Body: `{"taskIds": ["id1","id2"]}` → `{"completed":[...]}`.
-*Replaces MCP `bulk_complete_tasks`.*
+_Replaces MCP `bulk_complete_tasks`._
 
 ### `POST /api/tasks/bulk/update`
+
 Body: `{"updates":[{"id":"id1","title":"New","isDone":true}, ...]}` — each entry
 is an id plus the writable fields to change. Returns the updated tasks.
 
@@ -295,13 +336,15 @@ curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
   -X POST http://host:18232/api/tasks/bulk/update \
   -d '{"updates":[{"id":"a1","timeEstimate":3600000},{"id":"b2","notes":"revised"}]}'
 ```
-*Replaces MCP `bulk_update_tasks`.*
+
+_Replaces MCP `bulk_update_tasks`._
 
 ---
 
 ## Hierarchy
 
 ### `POST /api/tasks/with-subtasks`
+
 Creates a parent task and its subtasks in one upload. → `201` with the parent.
 
 Body: the `POST /api/tasks` fields plus `subTasks: ["title", ...]`.
@@ -311,9 +354,11 @@ curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
   -X POST http://host:18232/api/tasks/with-subtasks \
   -d '{"title":"Release v2","projectId":"N_rey...","subTasks":["Cut branch","Write notes","Tag"]}'
 ```
-*Replaces MCP `create_task_with_subtasks`.*
+
+_Replaces MCP `create_task_with_subtasks`._
 
 ### `POST /api/tasks/:id/subtasks`
+
 Adds one subtask under an existing top-level task. → `201` with the subtask.
 Body: `{"title": "...", "notes": ..., "timeEstimate": ...}`.
 
@@ -321,6 +366,7 @@ Subtasks **inherit the parent's project** and carry no tags of their own.
 Nesting under a task that is itself a subtask → `400` (one level only).
 
 ### `POST /api/tasks/:id/reparent`
+
 Moves a task in the hierarchy. Body: `{"parentId": "<id>" | null}`.
 
 - `parentId: "<id>"` — nest under that task.
@@ -330,16 +376,17 @@ Refused with `400`/`409` if: the task is already top-level (on promote), the
 target is itself a subtask, a task would become its own parent, or the task has
 its own subtasks.
 
-*Replaces MCP `reparent_task`.*
+_Replaces MCP `reparent_task`._
 
 ### `POST /api/tasks/reorder`
+
 Reorders one list. Body: `taskIds` plus **exactly one** container:
 
-| Container | Reorders |
-|---|---|
+| Container              | Reorders                |
+| ---------------------- | ----------------------- |
 | `{"projectId": "..."}` | the project's task list |
-| `{"parentId": "..."}` | that parent's subtasks |
-| `{"today": true}` | the Today list |
+| `{"parentId": "..."}`  | that parent's subtasks  |
+| `{"today": true}`      | the Today list          |
 
 `taskIds` must be a **permutation of the list's current members** — reorder only,
 no adds or removals (otherwise `400`). Zero or multiple containers → `400`.
@@ -349,7 +396,8 @@ curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
   -X POST http://host:18232/api/tasks/reorder \
   -d '{"parentId":"<parent>","taskIds":["c","b","a"]}'
 ```
-*Replaces MCP `reorder_tasks`.*
+
+_Replaces MCP `reorder_tasks`._
 
 ---
 
@@ -359,6 +407,7 @@ Board columns are tag-driven: a task is in a column because it carries that
 column's tag. These endpoints are therefore how you move cards.
 
 ### `POST /api/tasks/:id/tags`
+
 Adds a tag to a task, preserving its other tags. Body: `{"tagId": "..."}`.
 Idempotent. Unknown tag → `400`.
 
@@ -368,24 +417,28 @@ curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
   -X POST http://host:18232/api/tasks/<taskId>/tags \
   -d '{"tagId":"KANBAN_IN_PROGRESS"}'
 ```
-*Replaces MCP `add_tag_to_task`.*
+
+_Replaces MCP `add_tag_to_task`._
 
 ### `DELETE /api/tasks/:id/tags/:tagId`
+
 Removes one tag, preserving the rest. Idempotent.
-*Replaces MCP `remove_tag_from_task`.*
+_Replaces MCP `remove_tag_from_task`._
 
 ### `POST /api/tasks/:id/move`
+
 Moves a top-level task to another project, updating both projects' lists. Body:
 `{"projectId": "..."}`. Subtasks cannot be moved directly (`400`) — they follow
 their parent.
 
-*Replaces MCP `move_task_to_project`.*
+_Replaces MCP `move_task_to_project`._
 
 ---
 
 ## Today list
 
 ### `POST /api/today/plan`
+
 Adds tasks to the Today list. Body:
 `{"taskIds": ["..."], "today": "YYYY-MM-DD"}` (`today` optional, defaults to the
 server's current date). Unknown id → `404`.
@@ -394,9 +447,11 @@ server's current date). Unknown id → `404`.
 curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
   -X POST http://host:18232/api/today/plan -d '{"taskIds":["a1","b2"]}'
 ```
-*Replaces MCP `plan_tasks_for_today`.*
+
+_Replaces MCP `plan_tasks_for_today`._
 
 ### `POST /api/today/remove`
+
 Removes tasks from the Today list. Body: `{"taskIds": ["..."]}`.
 
 Read the list back with `GET /api/tasks?plannedForToday=true`.
@@ -406,6 +461,7 @@ Read the list back with `GET /api/tasks?plannedForToday=true`.
 ## Links & issues
 
 ### `POST /api/tasks/:id/links`
+
 Attaches a link to a task (appended to `attachments`).
 Body: `{"url": "https://...", "title": "optional label"}` — `title` defaults to
 the URL.
@@ -415,35 +471,40 @@ curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
   -X POST http://host:18232/api/tasks/<id>/links \
   -d '{"url":"https://github.com/org/repo/pull/42","title":"PR #42"}'
 ```
-*Replaces MCP `add_link_to_task`.*
+
+_Replaces MCP `add_link_to_task`._
 
 ### `POST /api/tasks/:id/issue-link`
+
 Links a task to an external issue so the issue panel recognizes it.
 
-| Field | Required |
-|---|---|
-| `issueId` | ✅ |
-| `issueType` | ✅ (e.g. `GITHUB`) |
+| Field             | Required                                        |
+| ----------------- | ----------------------------------------------- |
+| `issueId`         | ✅                                              |
+| `issueType`       | ✅ (e.g. `GITHUB`)                              |
 | `issueProviderId` | ✅ — must be a configured provider (else `400`) |
-| `issuePoints` | |
+| `issuePoints`     |                                                 |
 
 Find provider ids via `GET /api/entities/ISSUE_PROVIDER`.
-*Replaces MCP `link_task_to_issue`.*
+_Replaces MCP `link_task_to_issue`._
 
 ---
 
 ## Tags
 
 ### `POST /api/tags`
+
 Creates a tag. → `201`. Body: `{"title": "...", "icon": "...", "color": "#rrggbb"}`.
-*Replaces MCP `create_tag`.*
+_Replaces MCP `create_tag`._
 
 ### `PATCH /api/tags/:id`
+
 Updates a tag. Writable: `title`, `color`, `icon`. Changing `color` also syncs the
 tag's theme so the UI recolors.
-*Replaces MCP `update_tag`.*
+_Replaces MCP `update_tag`._
 
 ### `DELETE /api/tags/:id`
+
 Deletes a tag and **cascades**: it is stripped from every task that carried it.
 The virtual `TODAY` tag is protected (`400`).
 
@@ -452,15 +513,18 @@ The virtual `TODAY` tag is protected (`400`).
 ## Projects
 
 ### `POST /api/projects`
+
 Creates a project. → `201`. Body:
 `{"title": "...", "color": "#rrggbb", "isEnableBacklog": false}`.
-*Replaces MCP `create_project`.*
+_Replaces MCP `create_project`._
 
 ### `PATCH /api/projects/:id`
+
 Updates a project. Writable: `title`, `isEnableBacklog`, `isArchived`.
-*Replaces MCP `update_project`.*
+_Replaces MCP `update_project`._
 
 ### `DELETE /api/projects/:id`
+
 Deletes a project **and all of its tasks** (including subtasks) and notes, as one
 delete-wins operation so it cannot be resurrected by a stale peer.
 
@@ -478,9 +542,9 @@ Returns `{"deleted": "<id>", "taskCount": <n>}`. `INBOX_PROJECT` is protected
 These MCP tools have no API equivalent because they describe device-local or
 desktop-only behaviour. The API reports their absence rather than simulating it.
 
-| MCP tool | Why not | Use instead |
-|---|---|---|
-| `start_task` / `stop_task` | running timer is local UI state | set `timeSpent` via `PATCH /api/tasks/:id` |
-| `show_notification` | desktop UI action | — |
-| `get_current_task` | never syncs | `GET /api/current-task` (returns `null` + note) |
-| `check_connection`, `debug_directories` | MCP transport diagnostics; transport is gone | `GET /api/health`, `GET /api/status` |
+| MCP tool                                | Why not                                      | Use instead                                     |
+| --------------------------------------- | -------------------------------------------- | ----------------------------------------------- |
+| `start_task` / `stop_task`              | running timer is local UI state              | set `timeSpent` via `PATCH /api/tasks/:id`      |
+| `show_notification`                     | desktop UI action                            | —                                               |
+| `get_current_task`                      | never syncs                                  | `GET /api/current-task` (returns `null` + note) |
+| `check_connection`, `debug_directories` | MCP transport diagnostics; transport is gone | `GET /api/health`, `GET /api/status`            |

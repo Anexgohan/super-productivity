@@ -58,6 +58,8 @@ server {
         proxy_set_header X-Original-URI  $request_uri;
     }
 
+    # Relative Location (see absolute_redirect above) keeps ?next= a plain
+    # same-origin path, so the post-login hop cannot be pointed off-site.
     location @login_redirect {
         return 302 /login?next=$request_uri;
     }

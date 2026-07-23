@@ -16,6 +16,7 @@ import type { StateStore } from './state-store';
 import type { AuthStore } from './auth/store';
 import type { SessionManager } from './auth/session';
 import { registerAuthRoutes, sessionFromRequest } from './auth/routes';
+import { verifyApiKey } from './auth/api-key';
 
 const DOCS = {
   name: 'sp-bridge API',
@@ -86,10 +87,21 @@ const DOCS = {
   },
 } as const;
 
-const isAuthorized = (req: FastifyRequest, apiKey: string): boolean => {
+/**
+ * Machine auth. Both header forms stay supported; each candidate is checked
+ * against the stored DIGEST rather than the key itself (see auth/api-key.ts).
+ */
+const isAuthorized = (req: FastifyRequest, apiKeyHash: string): boolean => {
+  const candidates: string[] = [];
   const header = req.headers.authorization;
-  if (header === `Bearer ${apiKey}`) return true;
-  return req.headers['x-api-key'] === apiKey;
+  if (typeof header === 'string' && header.startsWith('Bearer ')) {
+    candidates.push(header.slice('Bearer '.length));
+  }
+  const xApiKey = req.headers['x-api-key'];
+  if (typeof xApiKey === 'string') {
+    candidates.push(xApiKey);
+  }
+  return candidates.some((candidate) => verifyApiKey(candidate, apiKeyHash));
 };
 
 export interface AuthWiring {
@@ -144,7 +156,7 @@ const PUBLIC_PATHS = new Set([
 export const createRestServer = (
   core: BridgeCore,
   store: StateStore,
-  apiKey: string,
+  apiKeyHash: string,
   auth?: AuthWiring,
   internal?: InternalWiring,
 ): FastifyInstance => {
@@ -174,7 +186,7 @@ export const createRestServer = (
     if (PUBLIC_PATHS.has(url)) return;
     // Machine clients present the API key; browsers present a session cookie.
     // Either is sufficient — they authenticate different kinds of caller.
-    if (isAuthorized(req, apiKey)) return;
+    if (isAuthorized(req, apiKeyHash)) return;
     if (auth && sessionFromRequest(req, auth.sessions)) return;
     return reply.status(401).send({ error: 'Unauthorized' });
   });

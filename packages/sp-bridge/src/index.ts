@@ -50,6 +50,51 @@ const runDump = async (): Promise<void> => {
   summarize(materializer.state);
 };
 
+/**
+ * Resolves the digest the REST layer compares presented keys against.
+ *
+ * An admin-set SP_BRIDGE_API_KEY wins — existing deployments and scripts keep
+ * working, and the value stays theirs to rotate. With none set, the bridge
+ * mints one and persists only the hash, so the plaintext exists exactly once:
+ * in the startup log the operator copies it from.
+ */
+const resolveApiKeyHash = async (
+  configured: string,
+  authStore:
+    | { getOrCreateSetting: (k: string, c: () => string) => Promise<string> }
+    | undefined,
+): Promise<string> => {
+  const { hashApiKey, mintApiKey, API_KEY_HASH_SETTING_KEY } =
+    await import('./auth/api-key');
+
+  if (configured) {
+    return hashApiKey(configured);
+  }
+  if (!authStore) {
+    throw new Error(
+      'sp-bridge: set SP_BRIDGE_API_KEY, or provide DATABASE_URL so a key can be minted and its hash persisted',
+    );
+  }
+
+  const minted = mintApiKey();
+  const storedHash = await authStore.getOrCreateSetting(API_KEY_HASH_SETTING_KEY, () =>
+    hashApiKey(minted),
+  );
+  if (storedHash === hashApiKey(minted)) {
+    console.log(
+      `sp-bridge: minted API key (shown once, store it now): ${minted}\n` +
+        'sp-bridge: set SP_BRIDGE_API_KEY in .env to choose the value yourself instead.',
+    );
+  } else {
+    // A key already exists and its plaintext is unrecoverable by design.
+    console.log(
+      'sp-bridge: using the previously minted API key (its hash is stored; the key itself is not).\n' +
+        'sp-bridge: lost it? set SP_BRIDGE_API_KEY in .env to take over.',
+    );
+  }
+  return storedHash;
+};
+
 const runServe = async (): Promise<void> => {
   const cfg = loadConfig();
   const { StateStore } = await import('./state-store');
@@ -109,8 +154,10 @@ const runServe = async (): Promise<void> => {
     internal = { secret: cfg.jwtSecret, webappToken: () => webappToken.get() };
   }
 
+  const apiKeyHash = await resolveApiKeyHash(cfg.apiKey, authStore);
+
   const core = new BridgeCore(store, new OpFactory(cfg.clientId, cfg.encryptionPassword));
-  const app = createRestServer(core, store, cfg.apiKey, auth, internal);
+  const app = createRestServer(core, store, apiKeyHash, auth, internal);
   await app.listen({ port: cfg.apiPort, host: '0.0.0.0' });
   console.log(
     `sp-bridge: REST API on :${cfg.apiPort} (poll every ${cfg.pollIntervalSec}s, seq ${store.lastServerSeq})`,

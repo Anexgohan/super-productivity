@@ -14,7 +14,11 @@ export interface BridgeConfig {
   clientId: string;
   /** Directory for the persisted cursor + state cache */
   dataDir: string;
-  /** API key required on all non-public REST routes */
+  /**
+   * API key required on all non-public REST routes. Optional: leave it unset
+   * and the bridge mints one on first boot, storing only its digest (the
+   * plaintext is printed once). Setting it keeps admin control of the value.
+   */
   apiKey: string;
   /** REST listen port */
   apiPort: number;
@@ -56,7 +60,7 @@ export const loadConfig = (): BridgeConfig => ({
   encryptionPassword: requireEnv('SP_SYNC_ENCRYPTION_PASSWORD'),
   clientId: process.env.SP_BRIDGE_CLIENT_ID ?? 'sp-bridge',
   dataDir: process.env.SP_BRIDGE_DATA_DIR ?? './data',
-  apiKey: requireEnv('SP_BRIDGE_API_KEY'),
+  apiKey: process.env.SP_BRIDGE_API_KEY ?? '',
   apiPort: Number(process.env.SP_BRIDGE_API_PORT ?? 1902),
   pollIntervalSec: Number(process.env.SP_BRIDGE_POLL_INTERVAL_SEC ?? 15),
   authEnabled: process.env.SP_AUTH_ENABLED !== 'false',
