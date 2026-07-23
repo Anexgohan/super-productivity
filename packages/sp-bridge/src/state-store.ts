@@ -7,21 +7,34 @@ import { join } from 'node:path';
 import type { BridgeConfig } from './config';
 import { SyncClient } from './sync-client';
 import { Materializer, type EntityMap } from './materializer';
+import { SyncWebSocket } from './ws-client';
 import type { SuperSyncOperation } from '@sp/shared-schema';
 
 const CACHE_FILE = 'bridge-state-cache.json';
+/**
+ * Poll interval once the websocket is carrying live pushes. The poll becomes a
+ * safety net for missed/dropped sockets rather than the primary mechanism, so a
+ * long interval keeps it cheap without risking staleness.
+ */
+const WS_FALLBACK_POLL_MS = 5 * 60_000;
 
 export class StateStore {
   private readonly _client: SyncClient;
   private readonly _materializer: Materializer;
   private _timer: NodeJS.Timeout | null = null;
   private _refreshInFlight: Promise<void> | null = null;
+  private _ws: SyncWebSocket | null = null;
   lastSyncAt = 0;
   lastError: string | null = null;
 
   constructor(private readonly cfg: BridgeConfig) {
     this._client = new SyncClient(cfg);
     this._materializer = new Materializer(cfg.encryptionPassword);
+  }
+
+  /** True while live push is active (see /api/status). */
+  get isLive(): boolean {
+    return this._ws?.isConnected ?? false;
   }
 
   get state(): EntityMap {
@@ -53,13 +66,34 @@ export class StateStore {
     await this._client.authenticate();
     await this.refresh();
 
-    this._timer = setInterval(() => {
-      void this.refresh().catch(() => undefined);
-    }, pollIntervalMs);
+    // Live push; the poll below stays on as a fallback.
+    this._ws = new SyncWebSocket({
+      syncServerUrl: this.cfg.syncServerUrl,
+      clientId: this.cfg.clientId,
+      getToken: () => this._client.token,
+      onNewOps: () => {
+        void this.refresh().catch(() => undefined);
+      },
+      onAuthFailure: () => this._client.authenticate(),
+    });
+    this._ws.start();
+
+    // Once live, poll rarely — but never stop entirely, so a silently dead
+    // socket degrades to "slightly stale" instead of "permanently stale".
+    this._timer = setInterval(
+      () => {
+        if (this.isLive && Date.now() - this.lastSyncAt < WS_FALLBACK_POLL_MS) {
+          return;
+        }
+        void this.refresh().catch(() => undefined);
+      },
+      Math.min(pollIntervalMs, 30_000),
+    );
   }
 
   stop(): void {
     if (this._timer) clearInterval(this._timer);
+    this._ws?.stop();
   }
 
   /**

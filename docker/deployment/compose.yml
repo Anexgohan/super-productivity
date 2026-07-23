@@ -19,14 +19,23 @@ services:
     # Zero-setup frontend: entrypoint bakes these into the served config so
     # fresh browsers arrive pre-configured (and, if enabled, logged in).
     environment:
-      - SP_SYNC_SERVER_URL=${SP_PUBLIC_SYNC_URL:-http://localhost:18231}
-      - SP_SYNC_EMBED_TOKEN_IN_WEBAPP=${SP_SYNC_EMBED_TOKEN_IN_WEBAPP:-false}
+      # Derived from SP_PUBLIC_HOST so .env carries the address once. Set
+      # SP_PUBLIC_SYNC_URL explicitly to override (e.g. behind a TLS proxy).
+      - SP_SYNC_SERVER_URL=${SP_PUBLIC_SYNC_URL:-http://${SP_PUBLIC_HOST:-localhost}:${SUPERSYNC_PORT:-18231}}
+      - SP_SYNC_EMBED_TOKEN_IN_WEBAPP=${SP_SYNC_EMBED_TOKEN_IN_WEBAPP:-true}
       - SP_SYNC_ENCRYPTION_PASSWORD=${SP_SYNC_ENCRYPTION_PASSWORD:-}
-      # for the internal token fetch:
+      # Authenticates the entrypoint's token fetch against sp-bridge, which
+      # holds the same secret. No separate credential to manage.
       - JWT_SECRET=${JWT_SECRET}
-      - SP_SYNC_INTERNAL_URL=http://supersync:1900
+      # Session gate: nginx checks each request against the bridge, and serves
+      # the login page from this same origin. Set false to serve the app
+      # unauthenticated (the pre-auth behaviour).
+      - SP_AUTH_ENABLED=${SP_AUTH_ENABLED:-true}
+      - SP_BRIDGE_INTERNAL_URL=http://sp-bridge:1902
     depends_on:
       supersync:
+        condition: service_healthy
+      sp-bridge:
         condition: service_healthy
 
   supersync:
@@ -45,14 +54,15 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-supersync}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-supersync}
       - RUN_MIGRATIONS_ON_STARTUP=${RUN_MIGRATIONS_ON_STARTUP:-true}
       - JWT_SECRET=${JWT_SECRET}
-      - PUBLIC_URL=${SP_PUBLIC_SYNC_URL:-http://localhost:18231}
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:18230}
+      - PUBLIC_URL=${SP_PUBLIC_SYNC_URL:-http://${SP_PUBLIC_HOST:-localhost}:${SUPERSYNC_PORT:-18231}}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://${SP_PUBLIC_HOST:-localhost}:${SP_WEB_PORT:-18230}}
       # Plain-HTTP LAN mode (our server.ts patch): disables browser https
       # upgrades + HSTS. Set false when the stack sits behind a TLS proxy.
       - ALLOW_INSECURE_HTTP=${ALLOW_INSECURE_HTTP:-false}
       # Container-first account provisioning (our auto-provision.ts patch):
       # creates a verified account from env at startup, no email round-trip.
-      - SP_SYNC_AUTO_PROVISION=${SP_SYNC_AUTO_PROVISION:-false}
+      # Inert unless an account email+password is also supplied.
+      - SP_SYNC_AUTO_PROVISION=${SP_SYNC_AUTO_PROVISION:-true}
       - SP_SYNC_ACCOUNT_EMAIL=${SP_SYNC_ACCOUNT_EMAIL:-}
       - SP_SYNC_ACCOUNT_PASSWORD=${SP_SYNC_ACCOUNT_PASSWORD:-}
     ports:
@@ -64,7 +74,14 @@ services:
         condition: service_healthy
     healthcheck:
       test:
-        ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:1900/health']
+        [
+          'CMD',
+          'wget',
+          '--no-verbose',
+          '--tries=1',
+          '--spider',
+          'http://localhost:1900/health',
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -90,6 +107,14 @@ services:
       - SP_BRIDGE_POLL_INTERVAL_SEC=${SP_BRIDGE_POLL_INTERVAL_SEC:-15}
       - SP_BRIDGE_DATA_DIR=/app/data
       - SP_BRIDGE_CLIENT_ID=${SP_BRIDGE_CLIENT_ID:-sp-bridge}
+      # Browser auth (accounts + sessions) lives in the SAME postgres, under its
+      # own `bridge` schema — one database, one backup.
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-supersync}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-supersync}
+      - SP_AUTH_ENABLED=${SP_AUTH_ENABLED:-true}
+      # Where to send a browser after it logs in at the bridge-hosted page.
+      - SP_PUBLIC_WEB_URL=${CORS_ORIGINS:-http://${SP_PUBLIC_HOST:-localhost}:${SP_WEB_PORT:-18230}}
+      - SP_AUTH_SESSION_TTL_H=${SP_AUTH_SESSION_TTL_H:-720}
+      - ALLOW_INSECURE_HTTP=${ALLOW_INSECURE_HTTP:-false}
     ports:
       - '${SP_BRIDGE_PORT:-18232}:1902'
     volumes:
@@ -97,9 +122,18 @@ services:
     depends_on:
       supersync:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     healthcheck:
       test:
-        ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:1902/api/health']
+        [
+          'CMD',
+          'wget',
+          '--no-verbose',
+          '--tries=1',
+          '--spider',
+          'http://127.0.0.1:1902/api/health',
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -123,7 +157,11 @@ services:
       # docker-library/postgres#37) — NOT the classic /var/lib/postgresql/data
       - ./data/postgres:/var/lib/postgresql
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-supersync} -d ${POSTGRES_DB:-supersync}']
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -U ${POSTGRES_USER:-supersync} -d ${POSTGRES_DB:-supersync}',
+        ]
       interval: 10s
       timeout: 5s
       retries: 5

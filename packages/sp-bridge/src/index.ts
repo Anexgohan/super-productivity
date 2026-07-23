@@ -6,8 +6,9 @@
  * end-to-end before any server/API work builds on it.
  */
 import { loadConfig } from './config';
-import { SyncClient } from './sync-client';
+import { SyncClient, mintSuperSyncToken } from './sync-client';
 import { Materializer } from './materializer';
+import type { AuthWiring, InternalWiring } from './rest';
 
 const summarize = (state: Record<string, Record<string, unknown>>): void => {
   console.log('─'.repeat(60));
@@ -60,8 +61,56 @@ const runServe = async (): Promise<void> => {
   const store = new StateStore(cfg);
   await store.start(cfg.pollIntervalSec * 1000);
 
+  // Postgres backs two independent things — browser accounts and the durable
+  // web-app sync token — so it is opened once here rather than by either.
+  const { AuthStore } = await import('./auth/store');
+  const authStore = cfg.databaseUrl ? new AuthStore(cfg.databaseUrl) : undefined;
+  if (authStore) {
+    await authStore.init();
+  }
+
+  // Browser auth (username/password + session cookies). The signing secret is
+  // generated once and persisted, so sessions survive restarts.
+  let auth: AuthWiring | undefined;
+  if (cfg.authEnabled) {
+    if (!authStore) {
+      throw new Error(
+        'sp-bridge: SP_AUTH_ENABLED requires DATABASE_URL (set SP_AUTH_ENABLED=false to run without browser auth)',
+      );
+    }
+    const { SessionManager } = await import('./auth/session');
+    const secret = await authStore.getOrCreateSetting(
+      SessionManager.secretSettingKey,
+      () => SessionManager.generateSecret(),
+    );
+    auth = {
+      store: authStore,
+      webUrl: cfg.webUrl,
+      sessions: new SessionManager(secret, {
+        ttlSeconds: cfg.authSessionTtlHours * 3600,
+        secureCookie: cfg.authSecureCookie,
+      }),
+    };
+    const n = await authStore.userCount();
+    console.log(
+      n === 0
+        ? 'sp-bridge: auth enabled — no account yet, visit /login to create one'
+        : `sp-bridge: auth enabled (${n} account${n === 1 ? '' : 's'})`,
+    );
+  }
+
+  // Durable access token for served browsers. Without Postgres there is nowhere
+  // to persist it, so the route stays absent and the web entrypoint degrades to
+  // serving no token — browsers then keep whatever config they already hold.
+  let internal: InternalWiring | undefined;
+  if (authStore) {
+    const { WebappTokenProvider } = await import('./webapp-token');
+    const webappToken = new WebappTokenProvider(authStore, () => mintSuperSyncToken(cfg));
+    internal = { secret: cfg.jwtSecret, webappToken: () => webappToken.get() };
+  }
+
   const core = new BridgeCore(store, new OpFactory(cfg.clientId, cfg.encryptionPassword));
-  const app = createRestServer(core, store, cfg.apiKey);
+  const app = createRestServer(core, store, cfg.apiKey, auth, internal);
   await app.listen({ port: cfg.apiPort, host: '0.0.0.0' });
   console.log(
     `sp-bridge: REST API on :${cfg.apiPort} (poll every ${cfg.pollIntervalSec}s, seq ${store.lastServerSeq})`,

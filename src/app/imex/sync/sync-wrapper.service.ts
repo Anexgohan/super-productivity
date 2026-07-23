@@ -1,4 +1,4 @@
-import { DestroyRef, inject, Injectable } from '@angular/core';
+import { DestroyRef, inject, Injectable, Injector } from '@angular/core';
 import { BehaviorSubject, combineLatest, firstValueFrom, Observable, of } from 'rxjs';
 import { GlobalConfigService } from '../../features/config/global-config.service';
 import {
@@ -140,6 +140,9 @@ export class SyncWrapperService {
   );
 
   private _destroyRef = inject(DestroyRef);
+  // Resolved lazily: SyncAutoSetupService → SyncConfigService → SyncWrapperService
+  // is a DI cycle, so this must not be a field injection.
+  private _injector = inject(Injector);
 
   // Disconnect WebSocket when sync provider changes away from SuperSync or sync is disabled
   private _wsProviderCleanup = this.syncProviderId$
@@ -231,6 +234,33 @@ export class SyncWrapperService {
 
   isSyncInProgressSync(): boolean {
     return this._isSyncInProgress$.getValue();
+  }
+
+  /**
+   * anex/container-parity: re-adopt the container-served sync config after the
+   * server rejected our token (see SyncAutoSetupService.reconcileFromContainer).
+   * Returns true when fresh connection settings were applied, in which case the
+   * next sync cycle should retry instead of tearing down credentials.
+   *
+   * Imported dynamically: a static import would close the DI cycle
+   * SyncAutoSetupService → SyncConfigService → SyncWrapperService.
+   */
+  private async _tryContainerReauth(): Promise<boolean> {
+    try {
+      const { SyncAutoSetupService } = await import('./sync-auto-setup.service');
+      const didUpdate = await this._injector
+        .get(SyncAutoSetupService)
+        .reconcileFromContainer();
+      if (didUpdate) {
+        SyncLog.log(
+          'SyncWrapperService: adopted refreshed container sync config after auth failure',
+        );
+      }
+      return didUpdate;
+    } catch (e) {
+      SyncLog.warn('SyncWrapperService: container re-auth attempt failed', e);
+      return false;
+    }
   }
 
   /**
@@ -815,6 +845,15 @@ export class SyncWrapperService {
             skipClear = true;
           } else {
             this._consecutiveSuperSyncAuthFailures = 0;
+            // anex/container-parity: before destroying credentials and asking the
+            // user to reconfigure, re-read the container's config. In a container
+            // deployment the token is admin-owned and reissued on restart, so a
+            // rejected token is usually just a stale copy — adopting the current
+            // one recovers silently and keeps the backend authoritative.
+            if (await this._tryContainerReauth()) {
+              this._providerManager.setSyncStatus('UNKNOWN_OR_CHANGED');
+              return 'HANDLED_ERROR';
+            }
           }
         }
         if (providerId && !skipClear) {

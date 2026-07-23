@@ -11,6 +11,7 @@ import { StateSnapshotService } from '../backup/state-snapshot.service';
 import { ValidateStateService } from '../validation/validate-state.service';
 import { SnackService } from '../../core/snack/snack.service';
 import { UserInputWaitStateService } from '../../imex/sync/user-input-wait-state.service';
+import { ContainerAuthorityService } from '../../imex/sync/container-authority.service';
 import { T } from '../../t.const';
 import { loadAllData } from '../../root-store/meta/load-all-data.action';
 import { CURRENT_SCHEMA_VERSION } from '../persistence/schema-migration.service';
@@ -83,6 +84,7 @@ export class ServerMigrationService {
   private clientIdProvider = inject(CLIENT_ID_PROVIDER);
   private _matDialog = inject(MatDialog);
   private _userInputWaitState = inject(UserInputWaitStateService);
+  private containerAuthority = inject(ContainerAuthorityService);
   private writeFlushService = inject(OperationWriteFlushService);
 
   /**
@@ -119,6 +121,21 @@ export class ServerMigrationService {
       // Server has data — check if this is a provider switch with stale syncedAt
       const hasSyncedOps = await this.opLogStore.hasSyncedOps();
       if (hasSyncedOps) {
+        // Under container authority the server holds the data and browsers are
+        // views of it, so "which side wins" is settled by the topology and
+        // there is nothing to ask (anex/container-parity). Returning here is
+        // exactly what Cancel does — and Cancel is not lossy: this runs as the
+        // preUploadCallback of uploadPendingOps, so the normal cycle still
+        // uploads this client's local ops and merges at the op level. Only the
+        // confirmed branch below is destructive, and no browser should be able
+        // to reach it by clicking through a dialog.
+        if (await this.containerAuthority.isContainerManaged()) {
+          OpLog.normal(
+            'ServerMigrationService: server has data and the container is the authority — ' +
+              'taking server state without prompting.',
+          );
+          return;
+        }
         const confirmed = await this._confirmMigrationToNonEmptyServer();
         if (confirmed) {
           await this.handleServerMigration(syncProvider, {

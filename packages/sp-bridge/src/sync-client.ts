@@ -10,31 +10,44 @@ import {
 } from '@sp/shared-schema';
 import type { BridgeConfig } from './config';
 
+/**
+ * Mints a fresh access token from the sync server's auto-provision endpoint.
+ *
+ * Standalone rather than a method because two callers need it for different
+ * reasons: the bridge authenticating itself (a token per process is fine — the
+ * bridge keeps its cursor in its own data dir, not under a token-derived key),
+ * and WebappTokenProvider minting the ONE durable token served browsers embed.
+ * Requires SP_SYNC_AUTO_PROVISION=true on the server.
+ */
+export const mintSuperSyncToken = async (cfg: BridgeConfig): Promise<string> => {
+  const res = await fetch(`${cfg.syncServerUrl}/api/internal/token`, {
+    method: 'POST',
+    headers: { 'X-Internal-Secret': cfg.jwtSecret },
+  });
+  if (!res.ok) {
+    throw new Error(
+      `sp-bridge: token fetch failed (${res.status}) — is SP_SYNC_AUTO_PROVISION=true on the sync server?`,
+    );
+  }
+  const body = (await res.json()) as { token?: string };
+  if (!body.token) {
+    throw new Error('sp-bridge: token endpoint returned no token');
+  }
+  return body.token;
+};
+
 export class SyncClient {
   private _token: string | null = null;
 
   constructor(private readonly cfg: BridgeConfig) {}
 
-  /**
-   * Access token via the auto-provision internal endpoint (same mechanism the
-   * web container's entrypoint uses). Requires SP_SYNC_AUTO_PROVISION=true on
-   * the server.
-   */
   async authenticate(): Promise<void> {
-    const res = await fetch(`${this.cfg.syncServerUrl}/api/internal/token`, {
-      method: 'POST',
-      headers: { 'X-Internal-Secret': this.cfg.jwtSecret },
-    });
-    if (!res.ok) {
-      throw new Error(
-        `sp-bridge: token fetch failed (${res.status}) — is SP_SYNC_AUTO_PROVISION=true on the sync server?`,
-      );
-    }
-    const body = (await res.json()) as { token?: string };
-    if (!body.token) {
-      throw new Error('sp-bridge: token endpoint returned no token');
-    }
-    this._token = body.token;
+    this._token = await mintSuperSyncToken(this.cfg);
+  }
+
+  /** Current access token, or null before authenticate(). Used by the WS client. */
+  get token(): string | null {
+    return this._token;
   }
 
   private _authHeaders(): Record<string, string> {
@@ -93,7 +106,9 @@ export class SyncClient {
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      throw new Error(`sp-bridge: op upload failed (${res.status}) ${body.slice(0, 300)}`);
+      throw new Error(
+        `sp-bridge: op upload failed (${res.status}) ${body.slice(0, 300)}`,
+      );
     }
     const parsed = SuperSyncUploadOpsResponseSchema.parse(await res.json());
     const results = (parsed as { results?: { accepted?: boolean; error?: string }[] })

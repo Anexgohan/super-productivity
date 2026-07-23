@@ -35,6 +35,7 @@ import { DataInitStateService } from '../data-init/data-init-state.service';
 import { OnboardingHintService } from '../../features/onboarding/onboarding-hint.service';
 import { LocalRestApiHandlerService } from '../electron/local-rest-api-handler.service';
 import { SyncAutoSetupService } from '../../imex/sync/sync-auto-setup.service';
+import { SyncedUiPrefsService } from '../persistence/synced-ui-prefs.service';
 import { CustomThemeService } from '../theme/custom-theme.service';
 import { UpdateCheckService } from '../update-check/update-check.service';
 import { JiraElectronBridgeService } from '../../features/issue/providers/jira/jira-electron-bridge.service';
@@ -153,6 +154,15 @@ export class StartupService {
         .catch((err) =>
           Log.err({ stage: 'sync-auto-setup', error: (err as Error).message }),
         );
+
+      // Make user preferences follow the account instead of the browser
+      // profile. Installed here so the localStorage interception is in place
+      // before feature services read their values.
+      try {
+        this._injector.get(SyncedUiPrefsService).init();
+      } catch (err) {
+        Log.err({ stage: 'synced-ui-prefs', error: (err as Error).message });
+      }
 
       const miscCfg = this._globalConfigService.misc();
 

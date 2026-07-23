@@ -46,6 +46,24 @@ export type MiscConfig = Readonly<{
   isTrayShowCurrentCountdown?: boolean;
   isUseCustomWindowTitleBar?: boolean;
   customTheme?: string;
+  /**
+   * Light/dark preference. Historically this lived ONLY in localStorage, which
+   * made it a per-browser-profile setting: a new browser, a private window, or
+   * cleared site data silently reverted it, and it never followed the account.
+   * It is part of the synced config so the server stays the source of truth for
+   * user preferences; localStorage is kept purely as a boot-time cache to avoid
+   * a flash of the wrong theme before config hydrates.
+   * Optional because it was added later — a missing value means "never set".
+   */
+  darkMode?: 'dark' | 'light' | 'system';
+  /**
+   * Mirror of the localStorage-backed user preferences that should follow the
+   * account rather than the browser profile (see SyncedUiPrefsService). Stored
+   * as an opaque key→value map so a newly-tracked preference needs no model
+   * change. Device-specific state (window geometry, caches, per-build
+   * dismissals) is deliberately excluded.
+   */
+  uiPrefs?: Record<string, string>;
   // number: one of DefaultStartPage. string: project id.
   defaultStartPage?: number | string;
   unsplashApiKey?: string | null;

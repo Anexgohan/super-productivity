@@ -23,10 +23,9 @@ fi
 
 # ── SuperSync zero-setup (anex/container-parity) ─────────────────────────────
 # SP_SYNC_SERVER_URL              → pre-select SuperSync + server URL
-# SP_SYNC_EMBED_TOKEN_IN_WEBAPP   → fetch an access token from the sync server's
-#                                   internal endpoint (requires JWT_SECRET and
+# SP_SYNC_EMBED_TOKEN_IN_WEBAPP   → embed an access token so browsers arrive
+#                                   logged in (requires JWT_SECRET here and
 #                                   SP_SYNC_AUTO_PROVISION=true on the server)
-#                                   and embed it: browsers arrive logged in
 # SP_SYNC_ENCRYPTION_PASSWORD     → also embed the E2E passphrase: fully
 #                                   zero-entry browsers (trusted-LAN trade-off)
 if [ -n "${SP_SYNC_SERVER_URL}" ]; then
@@ -34,20 +33,30 @@ if [ -n "${SP_SYNC_SERVER_URL}" ]; then
   JSON=$(echo "$JSON" | jq ".superSync.baseUrl |= \"$SP_SYNC_SERVER_URL\"")
 
   if [ "${SP_SYNC_EMBED_TOKEN_IN_WEBAPP}" = "true" ]; then
-    SP_SYNC_INTERNAL_URL="${SP_SYNC_INTERNAL_URL:-http://supersync:1900}"
+    # Ask the BRIDGE, not the sync server directly. The sync server mints a new
+    # JWT per call, and SuperSync keys its lastServerSeq cursor on
+    # hash(baseUrl|accessToken) — so a per-restart token made every browser
+    # believe it had met a brand-new server, which surfaces as the
+    # "Server Already Contains Data" prompt. The bridge persists one token in
+    # Postgres and returns the same string across restarts.
+    SP_BRIDGE_TOKEN_URL="${SP_BRIDGE_INTERNAL_URL:-http://sp-bridge:1902}/api/internal/webapp-token"
     TOKEN=""
-    for _i in 1 2 3 4 5; do
-      TOKEN=$(curl -sf -X POST -H "X-Internal-Secret: ${JWT_SECRET}" \
-        "${SP_SYNC_INTERNAL_URL}/api/internal/token" | jq -r '.token // empty') && \
+    for _i in 1 2 3 4 5 6 7 8 9 10; do
+      TOKEN=$(curl -sf -H "X-Internal-Secret: ${JWT_SECRET}" \
+        "$SP_BRIDGE_TOKEN_URL" | jq -r '.token // empty') && \
         [ -n "$TOKEN" ] && break
       echo "sp-entrypoint: token fetch attempt $_i failed; retrying..." >&2
       sleep 2
     done
     if [ -n "$TOKEN" ]; then
       JSON=$(echo "$JSON" | jq ".superSync.accessToken |= \"$TOKEN\"")
-      echo "sp-entrypoint: embedded SuperSync access token into web config"
+      echo "sp-entrypoint: embedded persistent SuperSync access token into web config"
     else
-      echo "sp-entrypoint: WARNING: could not fetch access token; browsers will need manual token entry" >&2
+      # No token means no complete override, so SyncAutoSetupService no-ops and
+      # already-configured browsers keep working with the credentials they hold.
+      # Failing closed here is better than falling back to a freshly minted
+      # token, which would reintroduce exactly the rotation this avoids.
+      echo "sp-entrypoint: WARNING: could not fetch access token from sp-bridge; serving config without one" >&2
     fi
   fi
 
@@ -68,6 +77,21 @@ fi
 if [ "$JSON" != "{}" ]; then
   # Write the resultant json
   echo "$JSON" >$JSON_PATH
+fi
+
+# ── Auth gate (anex/container-parity) ────────────────────────────────────────
+# Derive the nginx template variables for the session gate. Kept here rather
+# than in compose so the template always has both defined: nginx validates the
+# whole config at startup, and an unset variable would be a boot failure.
+#   SP_AUTH_REQUEST      "/_auth" to enforce sessions, "off" to disable
+#   SP_BRIDGE_INTERNAL_URL  where the login page + /api/auth/* are served from
+export SP_BRIDGE_INTERNAL_URL="${SP_BRIDGE_INTERNAL_URL:-http://sp-bridge:1902}"
+if [ "${SP_AUTH_ENABLED:-true}" = "false" ]; then
+  export SP_AUTH_REQUEST="off"
+  echo "sp-web: auth gate DISABLED (SP_AUTH_ENABLED=false)"
+else
+  export SP_AUTH_REQUEST="/_auth"
+  echo "sp-web: auth gate enabled via ${SP_BRIDGE_INTERNAL_URL}"
 fi
 
 # go back to nginx's built-in entrypoint script

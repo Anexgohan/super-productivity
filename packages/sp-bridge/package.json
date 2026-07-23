@@ -14,11 +14,13 @@
     "@sp/shared-schema": "*",
     "@sp/sync-core": "*",
     "fastify": "^5.10.0",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "pg": "^8.13.1"
   },
   "devDependencies": {
     "tsup": "^8.0.0",
     "tsx": "^4.7.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "@types/pg": "^8.11.10"
   }
 }

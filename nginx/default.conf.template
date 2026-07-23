@@ -7,8 +7,69 @@ server {
     listen       ${APP_PORT};
     server_name  localhost;
 
+    # Emit RELATIVE Location headers. nginx would otherwise rebuild redirects
+    # as absolute URLs using its own listen port (80 inside the container),
+    # dropping the published port — so a login redirect would send browsers to
+    # http://host/login instead of http://host:18230/login. Relative headers let
+    # the browser resolve against the URL it actually used, which is also what
+    # keeps this correct behind a reverse proxy or a different published port.
+    absolute_redirect off;
+
+    # Docker's embedded DNS. Required because the bridge upstream is referenced
+    # through a variable below, which defers resolution to request time — so
+    # nginx still starts if sp-bridge is briefly unavailable, instead of
+    # refusing to boot and taking the whole app down with it.
+    resolver 127.0.0.11 valid=30s ipv6=off;
+
+    # ── Auth (anex/container-parity) ────────────────────────────────────────
+    # The login page and session endpoints live in sp-bridge but are proxied
+    # under THIS origin on purpose: the session cookie, the login page, and the
+    # app then all share one origin, so there is no cross-origin redirect and
+    # ?next= stays a plain same-origin path.
+    location /login {
+        set $bridge_login "${SP_BRIDGE_INTERNAL_URL}";
+        proxy_pass $bridge_login$request_uri;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /api/auth/ {
+        set $bridge_auth "${SP_BRIDGE_INTERNAL_URL}";
+        proxy_pass $bridge_auth$request_uri;
+        proxy_set_header Host              $host;
+        # Real client IP, so the bridge's login rate limiting keys on the
+        # browser rather than on nginx's container address.
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Session check for each gated request. `internal` keeps it unreachable
+    # from outside; nginx forwards the original Cookie header automatically.
+    location = /_auth {
+        internal;
+        set $bridge_verify "${SP_BRIDGE_INTERNAL_URL}";
+        proxy_pass $bridge_verify/api/auth/verify;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Host            $host;
+        proxy_set_header X-Original-URI  $request_uri;
+    }
+
+    location @login_redirect {
+        return 302 /login?next=$request_uri;
+    }
+
     # serve super-productivity as static files at the path /
     location / {
+        # Either "/_auth" or "off" — see docker-entrypoint.sh (SP_AUTH_ENABLED).
+        # This gate is what makes the embedded sync token unreachable to anyone
+        # without a session; before it existed, reaching this port was enough.
+        auth_request ${SP_AUTH_REQUEST};
+        error_page 401 403 = @login_redirect;
+
         root   /usr/share/nginx/html;
         index  index.html index.htm;
         try_files $uri $uri/ /index.html;
@@ -24,7 +85,6 @@ server {
             return 404;
         }
 
-        resolver 127.0.0.11;  # resolve webdav_backend by docker internal DNS
         rewrite ^/webdav/(.*)$ /$1 break;   # remove the `/webdav/` prefix
         proxy_pass $webdav_backend;
     }

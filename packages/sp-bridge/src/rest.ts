@@ -10,13 +10,17 @@
  *    `X-Api-Key: <key>`.
  */
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+import { timingSafeEqual } from 'node:crypto';
 import type { BridgeCore, TaskFilter } from './core';
 import type { StateStore } from './state-store';
+import type { AuthStore } from './auth/store';
+import type { SessionManager } from './auth/session';
+import { registerAuthRoutes, sessionFromRequest } from './auth/routes';
 
 const DOCS = {
   name: 'sp-bridge API',
   version: 1,
-  auth: "Authorization: Bearer <key> or X-Api-Key: <key> (env SP_BRIDGE_API_KEY)",
+  auth: 'Authorization: Bearer <key> or X-Api-Key: <key> (env SP_BRIDGE_API_KEY)',
   routes: {
     'GET /api/health': 'liveness (no auth)',
     'GET /api/docs': 'this document (no auth)',
@@ -24,7 +28,8 @@ const DOCS = {
     'GET /api/tasks':
       'list tasks; filters: isDone, projectId, tagId, dueDay (YYYY-MM-DD), parentId ("null" for top-level), search, overdue, unscheduled, plannedForToday, parentsOnly, recurringOnly (booleans), today (YYYY-MM-DD anchor for date filters), fields (comma-separated projection)',
     'GET /api/tasks/:id': 'single task by id',
-    'GET /api/current-task': 'active task (always null on the headless bridge — non-synced UI state)',
+    'GET /api/current-task':
+      'active task (always null on the headless bridge — non-synced UI state)',
     'GET /api/task-repeat-cfgs': 'list recurring-task configurations',
     'GET /api/planner': 'future-day scheduling board { YYYY-MM-DD: taskId[] }',
     'GET /api/projects': 'list projects',
@@ -50,9 +55,12 @@ const DOCS = {
       'reparent a task; body: {parentId: string | null} (null promotes it to a top-level task)',
     'POST /api/tasks/reorder':
       'reorder a task list (permutation only); body: {taskIds: string[]} + exactly one of {projectId} | {parentId} | {today: true}',
-    'POST /api/today/plan': 'add tasks to the TODAY list; body: {taskIds: string[], today?: YYYY-MM-DD}',
-    'POST /api/today/remove': 'remove tasks from the TODAY list; body: {taskIds: string[]}',
-    'POST /api/tasks/bulk/complete': 'complete many tasks in one upload; body: {taskIds: string[]}',
+    'POST /api/today/plan':
+      'add tasks to the TODAY list; body: {taskIds: string[], today?: YYYY-MM-DD}',
+    'POST /api/today/remove':
+      'remove tasks from the TODAY list; body: {taskIds: string[]}',
+    'POST /api/tasks/bulk/complete':
+      'complete many tasks in one upload; body: {taskIds: string[]}',
     'POST /api/tasks/bulk/update':
       'apply per-task updates in one upload (all-or-nothing); body: {updates: [{id, ...allowed task fields}]}',
     'POST /api/tasks':
@@ -60,16 +68,21 @@ const DOCS = {
     'PATCH /api/tasks/:id':
       'update task; body: partial of {title, notes, isDone, doneOn, timeEstimate, timeSpent, projectId, tagIds, dueDay, dueWithTime}',
     'POST /api/tasks/:id/complete': 'mark task done (sets doneOn=now)',
-    'POST /api/tasks/:id/complete-on': 'mark done with explicit date; body: {doneOn: "YYYY-MM-DD"}',
+    'POST /api/tasks/:id/complete-on':
+      'mark done with explicit date; body: {doneOn: "YYYY-MM-DD"}',
     'DELETE /api/tasks/:id': 'delete task (refuses while subtasks exist)',
-    'POST /api/tasks/:id/tags': 'add a tag (Kanban column move); body: {tagId}; preserves other tags',
+    'POST /api/tasks/:id/tags':
+      'add a tag (Kanban column move); body: {tagId}; preserves other tags',
     'DELETE /api/tasks/:id/tags/:tagId': 'remove a tag; preserves other tags',
     'POST /api/tasks/:id/move': 'move task to another project; body: {projectId}',
     'POST /api/tags': 'create tag; body: {title (required), icon?, color?}',
     'PATCH /api/tags/:id': 'update tag; body: partial of {title, color, icon}',
-    'DELETE /api/tags/:id': 'delete tag (cascades: strips it from all tasks; TODAY is protected)',
-    'POST /api/projects': 'create project; body: {title (required), color?, isEnableBacklog?}',
-    'PATCH /api/projects/:id': 'update project; body: partial of {title, isEnableBacklog, isArchived}',
+    'DELETE /api/tags/:id':
+      'delete tag (cascades: strips it from all tasks; TODAY is protected)',
+    'POST /api/projects':
+      'create project; body: {title (required), color?, isEnableBacklog?}',
+    'PATCH /api/projects/:id':
+      'update project; body: partial of {title, isEnableBacklog, isArchived}',
   },
 } as const;
 
@@ -79,19 +92,91 @@ const isAuthorized = (req: FastifyRequest, apiKey: string): boolean => {
   return req.headers['x-api-key'] === apiKey;
 };
 
+export interface AuthWiring {
+  store: AuthStore;
+  sessions: SessionManager;
+  /** Public URL of the web app, for the post-login redirect. */
+  webUrl?: string;
+}
+
+/**
+ * Container-to-container wiring. Not part of the public API: these routes serve
+ * sibling services at boot, before any user exists to hold a credential.
+ */
+export interface InternalWiring {
+  /** JWT_SECRET, which sibling containers already hold — no new secret in .env. */
+  secret: string;
+  /** The durable SuperSync token the web entrypoint embeds. */
+  webappToken: () => Promise<string>;
+}
+
+/**
+ * Constant-time compare that also tolerates length mismatch, which
+ * `timingSafeEqual` itself throws on (and a throw is a timing signal).
+ */
+const secretMatches = (presented: unknown, expected: string): boolean => {
+  if (typeof presented !== 'string') return false;
+  const a = Buffer.from(presented);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+};
+
+/** Routes reachable without any credential (login flow + liveness). */
+const PUBLIC_PATHS = new Set([
+  // "/" is public so its handler can decide where to send a browser (app vs
+  // login) instead of the auth hook returning bare JSON 401 to a human.
+  '/',
+  '/api/health',
+  '/api/docs',
+  '/login',
+  '/api/auth/login',
+  '/api/auth/setup',
+  '/api/auth/logout',
+  '/api/auth/status',
+  '/api/auth/verify',
+  // Carries its own X-Internal-Secret guard (see below). Listed here because
+  // its caller is the web container's entrypoint, which holds JWT_SECRET but
+  // deliberately not SP_BRIDGE_API_KEY.
+  '/api/internal/webapp-token',
+]);
+
 export const createRestServer = (
   core: BridgeCore,
   store: StateStore,
   apiKey: string,
+  auth?: AuthWiring,
+  internal?: InternalWiring,
 ): FastifyInstance => {
-  const app = Fastify({ logger: false });
+  const app = Fastify({ logger: false, trustProxy: true });
+
+  if (auth) {
+    registerAuthRoutes(app, auth);
+  }
+
+  if (internal) {
+    app.get('/api/internal/webapp-token', async (req, reply) => {
+      if (!secretMatches(req.headers['x-internal-secret'], internal.secret)) {
+        return reply.status(401).send({ error: 'Unauthorized' });
+      }
+      try {
+        return { token: await internal.webappToken() };
+      } catch (err) {
+        // 503 rather than 500: the usual cause is the sync server not being up
+        // yet, which is exactly what the caller should retry on.
+        return reply.status(503).send({ error: (err as Error).message });
+      }
+    });
+  }
 
   app.addHook('onRequest', async (req, reply) => {
     const url = req.url.split('?')[0];
-    if (url === '/api/health' || url === '/api/docs') return;
-    if (!isAuthorized(req, apiKey)) {
-      return reply.status(401).send({ error: 'Unauthorized' });
-    }
+    if (PUBLIC_PATHS.has(url)) return;
+    // Machine clients present the API key; browsers present a session cookie.
+    // Either is sufficient — they authenticate different kinds of caller.
+    if (isAuthorized(req, apiKey)) return;
+    if (auth && sessionFromRequest(req, auth.sessions)) return;
+    return reply.status(401).send({ error: 'Unauthorized' });
   });
 
   app.get('/api/health', async () => ({ status: 'ok' }));
@@ -133,7 +218,12 @@ export const createRestServer = (
       ...(isTrue(q.recurringOnly) ? { recurringOnly: true } : {}),
       ...(q.today !== undefined ? { today: q.today } : {}),
       ...(q.fields !== undefined
-        ? { fields: q.fields.split(',').map((f) => f.trim()).filter(Boolean) }
+        ? {
+            fields: q.fields
+              .split(',')
+              .map((f) => f.trim())
+              .filter(Boolean),
+          }
         : {}),
     };
     return core.listTasks(filter);
@@ -152,9 +242,8 @@ export const createRestServer = (
   app.get('/api/tags', async () => core.listTags());
   app.get('/api/config', async () => core.getConfig());
 
-  app.get<{ Querystring: { from?: string; to?: string } }>(
-    '/api/worklog',
-    async (req) => core.getWorklog(req.query.from, req.query.to),
+  app.get<{ Querystring: { from?: string; to?: string } }>('/api/worklog', async (req) =>
+    core.getWorklog(req.query.from, req.query.to),
   );
 
   app.get('/api/entities', async () => core.listEntityTypes());
@@ -170,7 +259,10 @@ export const createRestServer = (
   });
 
   // ── Writes ────────────────────────────────────────────────────────────────
-  const sendError = (reply: { status: (c: number) => { send: (b: unknown) => unknown } }, err: unknown): unknown => {
+  const sendError = (
+    reply: { status: (c: number) => { send: (b: unknown) => unknown } },
+    err: unknown,
+  ): unknown => {
     const e = err as { statusCode?: number; message?: string };
     return reply
       .status(e.statusCode ?? 500)
@@ -238,7 +330,10 @@ export const createRestServer = (
     '/api/tasks/:id/subtasks',
     async (req, reply) => {
       try {
-        const created = await core.createSubTask(req.params.id, (req.body ?? {}) as never);
+        const created = await core.createSubTask(
+          req.params.id,
+          (req.body ?? {}) as never,
+        );
         return reply.status(201).send(created);
       } catch (err) {
         return sendError(reply, err);
@@ -284,16 +379,13 @@ export const createRestServer = (
     },
   );
 
-  app.post<{ Body: { taskIds?: string[] } }>(
-    '/api/today/remove',
-    async (req, reply) => {
-      try {
-        return await core.removeTasksFromToday((req.body ?? {}).taskIds ?? []);
-      } catch (err) {
-        return sendError(reply, err);
-      }
-    },
-  );
+  app.post<{ Body: { taskIds?: string[] } }>('/api/today/remove', async (req, reply) => {
+    try {
+      return await core.removeTasksFromToday((req.body ?? {}).taskIds ?? []);
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
 
   app.post<{ Body: { taskIds?: string[] } }>(
     '/api/tasks/bulk/complete',
@@ -332,7 +424,10 @@ export const createRestServer = (
     '/api/tasks/:id',
     async (req, reply) => {
       try {
-        return await core.updateTask(req.params.id, (req.body ?? {}) as Record<string, unknown>);
+        return await core.updateTask(
+          req.params.id,
+          (req.body ?? {}) as Record<string, unknown>,
+        );
       } catch (err) {
         return sendError(reply, err);
       }
@@ -416,7 +511,10 @@ export const createRestServer = (
     '/api/tags/:id',
     async (req, reply) => {
       try {
-        return await core.updateTag(req.params.id, (req.body ?? {}) as Record<string, unknown>);
+        return await core.updateTag(
+          req.params.id,
+          (req.body ?? {}) as Record<string, unknown>,
+        );
       } catch (err) {
         return sendError(reply, err);
       }
@@ -444,7 +542,10 @@ export const createRestServer = (
     '/api/projects/:id',
     async (req, reply) => {
       try {
-        return await core.updateProject(req.params.id, (req.body ?? {}) as Record<string, unknown>);
+        return await core.updateProject(
+          req.params.id,
+          (req.body ?? {}) as Record<string, unknown>,
+        );
       } catch (err) {
         return sendError(reply, err);
       }

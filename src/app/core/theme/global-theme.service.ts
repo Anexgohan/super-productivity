@@ -271,11 +271,37 @@ export class GlobalThemeService {
       this._initHandlersForInitialBodyClasses();
       this._initThemeWatchers();
 
-      // Set up dark mode persistence effect
+      // Dark mode persistence.
+      //
+      // localStorage is written first and read at construction so the correct
+      // theme paints immediately, before the synced config has hydrated — but
+      // it is only a cache. The synced global config is the source of truth, so
+      // the preference follows the account rather than the browser profile.
       effect(() => {
         const darkMode = this.darkMode();
         localStorage.setItem(LS.DARK_MODE, darkMode);
+        const misc = this._globalConfigService.misc();
+        // Only write on a real difference — this is also what stops the
+        // adopt/persist pair below from ping-ponging ops between devices.
+        if (misc && misc.darkMode !== darkMode) {
+          this._globalConfigService.updateSection('misc', { darkMode }, true);
+        }
       });
+
+      // Adopt the synced value (initial hydration, and later changes made on
+      // another device). Equality-guarded, so this never fights the effect above.
+      this._globalConfigService.misc$
+        .pipe(
+          map((misc) => misc?.darkMode),
+          filter((darkMode): darkMode is DarkModeCfg => !!darkMode),
+          distinctUntilChanged(),
+          takeUntilDestroyed(this._destroyRef),
+        )
+        .subscribe((darkMode) => {
+          if (this.darkMode() !== darkMode) {
+            this.darkMode.set(darkMode);
+          }
+        });
     });
   }
 
