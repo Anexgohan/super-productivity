@@ -64,6 +64,18 @@ export class ContainerAuthorityService {
     ) {
       return undefined;
     }
+
+    // A root-relative baseUrl (e.g. "/sync") means the container fronts sync on this origin; made absolute because WebSocket rejects relative URLs.
+    if (override.superSync.baseUrl.startsWith('/')) {
+      override = {
+        ...override,
+        superSync: {
+          ...override.superSync,
+          baseUrl: `${window.location.origin}${override.superSync.baseUrl.replace(/\/+$/, '')}`,
+        },
+      };
+    }
+
     this._isContainerManaged = true;
     return override;
   }

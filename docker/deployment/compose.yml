@@ -1,11 +1,12 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# Anex SP stack — self-hosted Super Productivity web + SuperSync server
+# Anex SP stack — dev/build-from-source. The published-image equivalent is the
+# same file with `build:` swapped for `image: ghcr.io/anexgohan/...`.
 #
 # All tunables live in .env (copy .env.example → .env and edit).
 # All paths are relative to this directory → deployable anywhere as-is.
-# Usage (from this directory):
 #   docker compose up -d --build
-# ─────────────────────────────────────────────────────────────────────────────
+#
+# One published port serves everything: the app at /, the sync server at /sync/,
+# the REST API at /api/. There is no address to configure.
 
 services:
   web:
@@ -16,22 +17,8 @@ services:
     restart: unless-stopped
     ports:
       - '${SP_WEB_PORT:-18230}:80'
-    # Zero-setup frontend: entrypoint bakes these into the served config so
-    # fresh browsers arrive pre-configured (and, if enabled, logged in).
-    environment:
-      # Derived from SP_PUBLIC_HOST so .env carries the address once. Set
-      # SP_PUBLIC_SYNC_URL explicitly to override (e.g. behind a TLS proxy).
-      - SP_SYNC_SERVER_URL=${SP_PUBLIC_SYNC_URL:-http://${SP_PUBLIC_HOST:-localhost}:${SUPERSYNC_PORT:-18231}}
-      - SP_SYNC_EMBED_TOKEN_IN_WEBAPP=${SP_SYNC_EMBED_TOKEN_IN_WEBAPP:-true}
-      - SP_SYNC_ENCRYPTION_PASSWORD=${SP_SYNC_ENCRYPTION_PASSWORD:-}
-      # Authenticates the entrypoint's token fetch against sp-bridge, which
-      # holds the same secret. No separate credential to manage.
-      - JWT_SECRET=${JWT_SECRET}
-      # Session gate: nginx checks each request against the bridge, and serves
-      # the login page from this same origin. Set false to serve the app
-      # unauthenticated (the pre-auth behaviour).
-      - SP_AUTH_ENABLED=${SP_AUTH_ENABLED:-true}
-      - SP_BRIDGE_INTERNAL_URL=http://sp-bridge:1902
+    env_file:
+      - .env
     depends_on:
       supersync:
         condition: service_healthy
@@ -44,44 +31,15 @@ services:
       dockerfile: packages/super-sync-server/Dockerfile
     container_name: ${STACK_PREFIX:-sp}-supersync
     restart: unless-stopped
-    environment:
-      # development: upstream hard-fails on non-HTTPS PUBLIC_URL when
-      # NODE_ENV=production. LAN/http deployments need development for now
-      # (candidate patch: explicit ALLOW_HTTP_PUBLIC_URL opt-out).
-      - NODE_ENV=${NODE_ENV:-development}
-      - PORT=1900
-      - HOST=0.0.0.0
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-supersync}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-supersync}
-      - RUN_MIGRATIONS_ON_STARTUP=${RUN_MIGRATIONS_ON_STARTUP:-true}
-      - JWT_SECRET=${JWT_SECRET}
-      - PUBLIC_URL=${SP_PUBLIC_SYNC_URL:-http://${SP_PUBLIC_HOST:-localhost}:${SUPERSYNC_PORT:-18231}}
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://${SP_PUBLIC_HOST:-localhost}:${SP_WEB_PORT:-18230}}
-      # Plain-HTTP LAN mode (our server.ts patch): disables browser https
-      # upgrades + HSTS. Set false when the stack sits behind a TLS proxy.
-      - ALLOW_INSECURE_HTTP=${ALLOW_INSECURE_HTTP:-false}
-      # Container-first account provisioning (our auto-provision.ts patch):
-      # creates a verified account from env at startup, no email round-trip.
-      # Inert unless an account email+password is also supplied.
-      - SP_SYNC_AUTO_PROVISION=${SP_SYNC_AUTO_PROVISION:-true}
-      - SP_SYNC_ACCOUNT_EMAIL=${SP_SYNC_ACCOUNT_EMAIL:-}
-      - SP_SYNC_ACCOUNT_PASSWORD=${SP_SYNC_ACCOUNT_PASSWORD:-}
-    ports:
-      - '${SUPERSYNC_PORT:-18231}:1900'
+    env_file:
+      - .env
     volumes:
       - ./data/supersync:/app/data
     depends_on:
-      postgres:
+      postgres: # remove for external postgres
         condition: service_healthy
     healthcheck:
-      test:
-        [
-          'CMD',
-          'wget',
-          '--no-verbose',
-          '--tries=1',
-          '--spider',
-          'http://localhost:1900/health',
-        ]
+      test: ['CMD', 'wget', '-q', '--spider', 'http://localhost:1900/health']
       interval: 30s
       timeout: 5s
       retries: 3
@@ -98,42 +56,18 @@ services:
       dockerfile: packages/sp-bridge/Dockerfile
     container_name: ${STACK_PREFIX:-sp}-bridge
     restart: unless-stopped
-    environment:
-      - SP_BRIDGE_SYNC_URL=http://supersync:1900
-      - JWT_SECRET=${JWT_SECRET}
-      - SP_SYNC_ENCRYPTION_PASSWORD=${SP_SYNC_ENCRYPTION_PASSWORD}
-      - SP_BRIDGE_API_KEY=${SP_BRIDGE_API_KEY}
-      - SP_BRIDGE_API_PORT=1902
-      - SP_BRIDGE_POLL_INTERVAL_SEC=${SP_BRIDGE_POLL_INTERVAL_SEC:-15}
-      - SP_BRIDGE_DATA_DIR=/app/data
-      - SP_BRIDGE_CLIENT_ID=${SP_BRIDGE_CLIENT_ID:-sp-bridge}
-      # Browser auth (accounts + sessions) lives in the SAME postgres, under its
-      # own `bridge` schema — one database, one backup.
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-supersync}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-supersync}
-      - SP_AUTH_ENABLED=${SP_AUTH_ENABLED:-true}
-      # Where to send a browser after it logs in at the bridge-hosted page.
-      - SP_PUBLIC_WEB_URL=${CORS_ORIGINS:-http://${SP_PUBLIC_HOST:-localhost}:${SP_WEB_PORT:-18230}}
-      - SP_AUTH_SESSION_TTL_H=${SP_AUTH_SESSION_TTL_H:-720}
-      - ALLOW_INSECURE_HTTP=${ALLOW_INSECURE_HTTP:-false}
-    ports:
-      - '${SP_BRIDGE_PORT:-18232}:1902'
+    env_file:
+      - .env
     volumes:
       - ./data/bridge:/app/data
     depends_on:
       supersync:
         condition: service_healthy
-      postgres:
+      postgres: # remove for external postgres
         condition: service_healthy
     healthcheck:
-      test:
-        [
-          'CMD',
-          'wget',
-          '--no-verbose',
-          '--tries=1',
-          '--spider',
-          'http://127.0.0.1:1902/api/health',
-        ]
+      # 127.0.0.1, not localhost: localhost resolves ::1 first but the API binds IPv4, so the container would never report healthy.
+      test: ['CMD', 'wget', '-q', '--spider', 'http://127.0.0.1:1902/api/health']
       interval: 30s
       timeout: 5s
       retries: 3
@@ -142,19 +76,19 @@ services:
       - no-new-privileges:true
     mem_limit: ${SP_BRIDGE_MEM_LIMIT:-256m}
 
+  # Bundled database. To use an EXTERNAL postgres instead: comment out this whole
+  # service and the two `postgres:` depends_on blocks above, create an empty
+  # database on your server, then point POSTGRES_HOST/PORT at it in .env.
+  # The schema is created automatically on first start.
   postgres:
     image: ${POSTGRES_IMAGE:-postgres:18-alpine}
     container_name: ${STACK_PREFIX:-sp}-postgres
     restart: unless-stopped
-    # Single-user tuning — tiny footprint, no host port exposure.
     command: postgres -c shared_buffers=${PG_SHARED_BUFFERS:-64MB} -c max_connections=${PG_MAX_CONNECTIONS:-20}
-    environment:
-      - POSTGRES_USER=${POSTGRES_USER:-supersync}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB:-supersync}
+    env_file:
+      - .env
     volumes:
-      # postgres:18+ manages a versioned subdir; mount the parent (see
-      # docker-library/postgres#37) — NOT the classic /var/lib/postgresql/data
+      # postgres:18 manages a versioned subdir — mount the parent, not /data.
       - ./data/postgres:/var/lib/postgresql
     healthcheck:
       test:
@@ -165,8 +99,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      # Cold first boot runs initdb (~40s+) before accepting connections;
-      # without a grace window those failures mark the container unhealthy.
+      # Cold first boot runs initdb (~40s+) before accepting connections.
       start_period: 60s
     security_opt:
       - no-new-privileges:true

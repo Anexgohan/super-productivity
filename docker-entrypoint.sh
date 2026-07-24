@@ -28,11 +28,14 @@ fi
 #                                   SP_SYNC_AUTO_PROVISION=true on the server)
 # SP_SYNC_ENCRYPTION_PASSWORD     → also embed the E2E passphrase: fully
 #                                   zero-entry browsers (trusted-LAN trade-off)
+# nginx fronts sync at /sync, so the baseUrl is root-relative. Set an absolute SP_SYNC_SERVER_URL only if sync lives elsewhere.
+SP_SYNC_SERVER_URL="${SP_SYNC_SERVER_URL:-/sync}"
 if [ -n "${SP_SYNC_SERVER_URL}" ]; then
   JSON=$(echo "$JSON" | jq '.syncProvider |= "SuperSync"')
   JSON=$(echo "$JSON" | jq ".superSync.baseUrl |= \"$SP_SYNC_SERVER_URL\"")
 
-  if [ "${SP_SYNC_EMBED_TOKEN_IN_WEBAPP}" = "true" ]; then
+  # Defaults ON: a pre-authenticated browser is the point of this image.
+  if [ "${SP_SYNC_EMBED_TOKEN_IN_WEBAPP:-true}" = "true" ]; then
     # Ask the BRIDGE, not the sync server directly. The sync server mints a new
     # JWT per call, and SuperSync keys its lastServerSeq cursor on
     # hash(baseUrl|accessToken) — so a per-restart token made every browser
@@ -86,6 +89,7 @@ fi
 #   SP_AUTH_REQUEST      "/_auth" to enforce sessions, "off" to disable
 #   SP_BRIDGE_INTERNAL_URL  where the login page + /api/auth/* are served from
 export SP_BRIDGE_INTERNAL_URL="${SP_BRIDGE_INTERNAL_URL:-http://sp-bridge:1902}"
+export SP_SYNC_INTERNAL_URL="${SP_SYNC_INTERNAL_URL:-http://supersync:1900}"
 if [ "${SP_AUTH_ENABLED:-true}" = "false" ]; then
   export SP_AUTH_REQUEST="off"
   echo "sp-web: auth gate DISABLED (SP_AUTH_ENABLED=false)"

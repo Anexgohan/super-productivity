@@ -43,6 +43,23 @@ export interface BridgeConfig {
   authSecureCookie: boolean;
 }
 
+/** Explicit DATABASE_URL wins; else assembled from POSTGRES_*. Percent-encoded so `@` or `:` in a password can't corrupt the URL. */
+const resolveDatabaseUrl = (): string => {
+  const explicit = process.env.DATABASE_URL;
+  if (explicit) {
+    return explicit;
+  }
+  const user = process.env.POSTGRES_USER;
+  const password = process.env.POSTGRES_PASSWORD;
+  const database = process.env.POSTGRES_DB;
+  if (!user || !password || !database) {
+    return '';
+  }
+  const host = process.env.POSTGRES_HOST ?? 'postgres';
+  const port = process.env.POSTGRES_PORT ?? '5432';
+  return `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${database}`;
+};
+
 const requireEnv = (name: string): string => {
   const value = process.env[name];
   if (!value) {
@@ -64,7 +81,7 @@ export const loadConfig = (): BridgeConfig => ({
   apiPort: Number(process.env.SP_BRIDGE_API_PORT ?? 1902),
   pollIntervalSec: Number(process.env.SP_BRIDGE_POLL_INTERVAL_SEC ?? 15),
   authEnabled: process.env.SP_AUTH_ENABLED !== 'false',
-  databaseUrl: process.env.DATABASE_URL ?? '',
+  databaseUrl: resolveDatabaseUrl(),
   webUrl: (process.env.SP_PUBLIC_WEB_URL ?? '').replace(/\/+$/, ''),
   authSessionTtlHours: Number(process.env.SP_AUTH_SESSION_TTL_H ?? 720),
   authSecureCookie: process.env.ALLOW_INSECURE_HTTP !== 'true',

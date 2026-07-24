@@ -76,7 +76,9 @@ EXPOSE 1900
 ENV NODE_ENV=production
 ENV PORT=1900
 ENV DATA_DIR=/app/data
-ENV RUN_MIGRATIONS_ON_STARTUP=false
+# Container-first defaults: this image only ships as part of the self-hosted stack.
+ENV RUN_MIGRATIONS_ON_STARTUP=true
+ENV SP_SYNC_AUTO_PROVISION=true
 # Keep V8 old-space below the cgroup mem_limit (768m in production compose) so
 # GC starts before cgroup OOM-kill. RSS = old-space + new-space + code cache +
 # native heap + ArrayBuffers, so headroom matters. 576 ≈ 75% of 768m.
@@ -85,4 +87,5 @@ ENV NODE_OPTIONS=--max-old-space-size=576
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/health || exit 1
 
-CMD ["sh", "-c", "if [ \"${RUN_MIGRATIONS_ON_STARTUP:-false}\" = \"true\" ]; then sh scripts/migrate-deploy.sh || exit 1; fi; exec node dist/src/index.js"]
+# Prisma needs one DATABASE_URL; assemble it from POSTGRES_* when unset. Via node, not shell, because user/password must be percent-encoded.
+CMD ["sh", "-c", "if [ -z \"${DATABASE_URL}\" ] && [ -n \"${POSTGRES_PASSWORD}\" ]; then DATABASE_URL=$(node -e 'const e=encodeURIComponent,p=process.env;console.log(`postgresql://${e(p.POSTGRES_USER||\"supersync\")}:${e(p.POSTGRES_PASSWORD)}@${p.POSTGRES_HOST||\"postgres\"}:${p.POSTGRES_PORT||\"5432\"}/${p.POSTGRES_DB||\"supersync\"}`)'); export DATABASE_URL; fi; if [ \"${RUN_MIGRATIONS_ON_STARTUP:-false}\" = \"true\" ]; then sh scripts/migrate-deploy.sh || exit 1; fi; exec node dist/src/index.js"]
