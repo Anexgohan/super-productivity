@@ -135,28 +135,29 @@ concerns, set once in `.env` and never typed by a person signing in.
 ## The pieces
 
 ```
-                         ┌──────────────────────────────────────────┐
-                         │            container stack (.env)         │
-                         │                                           │
-  browser (view) ─┐      │   ┌──────────┐      ┌───────────────┐     │
-  browser (view) ─┼──────┼──▶│   web    │      │   postgres    │     │
-  browser (view) ─┘      │   │ (nginx)  │      └───────▲───────┘     │
-                         │   └────┬─────┘              │             │
-                         │        │             ┌──────┴───────┐     │
-   agent / curl ─────────┼───────────────┐      │  SuperSync   │     │
-                         │        │       │      │   server     │     │
-                         │        ▼       ▼      └──────▲───────┘     │
-                         │   ┌─────────────────────┐    │            │
-                         │   │      sp-bridge       │───▶│ (op-log)   │
-                         │   │  headless sync peer  │◀───┘            │
-                         │   │   + REST API         │                 │
-                         │   └─────────────────────┘                 │
-                         └──────────────────────────────────────────┘
+                        ┌───────────────────────────────────────────────┐
+                        │             container stack (.env)            │
+  browser (view) ─┐     │                                               │
+  browser (view) ─┼─────┼──▶ ┌──────────┐  /sync/  ┌──────────────┐     │
+  browser (view) ─┘     │    │   web    │─────────▶│  SuperSync   │     │
+                        │    │ (nginx)  │          │    server    │     │
+   agent / curl ────────┼──▶ └──────────┘          └───────┬──────┘     │
+        one port        │          │  /api/                │            │
+      SP_WEB_PORT       │          ▼                       ▼            │
+                        │    ┌──────────────────┐   ┌────────────┐      │
+                        │    │    sp-bridge     │──▶│  postgres  │      │
+                        │    │ headless peer +  │   └────────────┘      │
+                        │    │    REST API      │                       │
+                        │    └────────┬─────────┘                       │
+                        │             └──▶ op-log (via SuperSync) ──────┤
+                        └───────────────────────────────────────────────┘
 ```
 
 - **web** — the standard SP frontend (patched build), served over HTTP on the
-  LAN. This is what a browser opens. nginx gates it behind a login and, once you
-  have a session, it auto-connects to sync on first load.
+  LAN. This is what a browser opens, and the **only** container with a published
+  port. nginx gates it behind a login and, once you have a session, it
+  auto-connects to sync on first load. It also proxies `/sync/` and `/api/`, so
+  the sync server and bridge are reachable only through it.
 - **SuperSync server** — SP's own operation-based sync server (self-hosted,
   PostgreSQL-backed, E2E-encrypted). It is the hub every client syncs through.
   _Self-hosted; no subscription._
@@ -254,7 +255,9 @@ so honestly rather than faking them:
 
 ## Talking to the API
 
-- **Base URL:** `http://<host>:<SP_BRIDGE_PORT>` (default port `18232`).
+- **Base URL:** `http://<host>:<SP_WEB_PORT>/api` (default port `18230`) — the
+  same port as the app. The bridge is not published on its own port; nginx
+  proxies `/api/` to it.
 - **Auth:** every route except `/api/health` and `/api/docs` needs an API key,
   sent as either header:
   - `Authorization: Bearer <key>`
@@ -275,23 +278,52 @@ web app call the bridge without a key.
 
 ```bash
 # liveness (no auth)
-curl http://192.168.100.237:18232/api/health
+curl http://192.168.100.237:18230/api/health
 
 # everything else needs the key
 curl -H "X-Api-Key: $SP_BRIDGE_API_KEY" \
-     http://192.168.100.237:18232/api/tasks?isDone=false
+     http://192.168.100.237:18230/api/tasks?isDone=false
 ```
 
-Configuration lives in `docker/deployment/.env`:
+Configuration lives in `docker/deployment/.env`. Every service reads that one
+file via `env_file:`, so a value is written once and no service has an
+`environment:` block to keep in sync.
+
+**Required** — the stack will not start correctly without these:
+
+| Variable                      | Purpose                                              |
+| ----------------------------- | ---------------------------------------------------- |
+| `JWT_SECRET`                  | signs sync tokens; must be identical across services |
+| `POSTGRES_PASSWORD`           | database password                                    |
+| `SP_SYNC_ENCRYPTION_PASSWORD` | E2E passphrase — admin-set, never typed by a user    |
+| `SP_SYNC_ACCOUNT_EMAIL`       | sync server account identity (never emailed)         |
+| `SP_SYNC_ACCOUNT_PASSWORD`    | **minimum 8 characters** — see below                 |
+
+**Optional** — sensible defaults otherwise:
 
 | Variable                      | Purpose                                                      |
 | ----------------------------- | ------------------------------------------------------------ |
-| `SP_BRIDGE_PORT`              | REST port (default `18232`)                                  |
+| `SP_WEB_PORT`                 | the only published port (default `18230`)                    |
+| `SP_IMAGE_TAG`                | published image tag to run (default `latest`)                |
+| `ALLOW_INSECURE_HTTP`         | `true` for plain HTTP on a LAN; `false` behind a TLS proxy   |
 | `SP_BRIDGE_API_KEY`           | API key callers must present; unset = mint one on first boot |
 | `SP_BRIDGE_POLL_INTERVAL_SEC` | websocket-fallback poll interval (default 15)                |
 | `SP_AUTH_ENABLED`             | browser login gate (default on; `false` serves the app open) |
 | `SP_AUTH_SESSION_TTL_H`       | session lifetime in hours, sliding (default 720)             |
-| `SP_SYNC_ENCRYPTION_PASSWORD` | E2E passphrase — admin-set, never typed by a user            |
+| `POSTGRES_USER` / `_DB`       | database name and role                                       |
+| `POSTGRES_HOST` / `_PORT`     | point these at an external server to drop the bundled one    |
+
+A sync account password under 8 characters **fails quietly**: provisioning
+logs an error and stops, so the stack boots but serves no sync token.
+
+`DATABASE_URL` is not set by hand — the bridge and the sync server each
+assemble it from `POSTGRES_*`, percent-encoding the credentials. Setting it
+explicitly still wins, which is how you point at an external database that
+needs connection parameters.
+
+**Using an external postgres:** comment out the `postgres` service and the two
+`postgres:` `depends_on` blocks, create an empty database on your server, and
+set `POSTGRES_HOST`/`_PORT`. Schema creation still happens on first start.
 
 ---
 
@@ -320,6 +352,26 @@ the `Dockerfile`.)
 does — it starts every container at once. `sp-bridge` retries its initial
 connection for up to 30s rather than exiting, so a whole-stack restart settles
 on its own instead of crash-looping until the sync server is ready.
+
+**One published port, and that is a security property, not just tidiness.**
+nginx serves the app at `/`, the sync server at `/sync/`, and the bridge at
+`/api/`, all on `SP_WEB_PORT`. Neither the sync server nor the bridge is
+published, so nothing on the LAN can reach either except through nginx.
+
+That is what makes the served config address-free: the sync `baseUrl` is the
+root-relative `/sync`, so no deployment ever has to be told its own address,
+and the same image works on any host, port, or reverse proxy unchanged.
+
+It is also the prerequisite for per-role write gating. Because every sync
+request passes through nginx, a session's role can be checked before `POST
+/sync/api/sync/ops` reaches the server. While sync was published on its own
+port, browsers talked to it directly and no such check was possible.
+
+**The sync server's write surface is three routes** — `POST /api/sync/ops`,
+`POST /api/sync/snapshot`, and `DELETE /api/sync/data`. The websocket is
+notification-only and accepts no writes, which is why gating those three at
+the proxy is sufficient. Note that `DELETE /api/sync/data` wipes the op-log
+and currently answers to any authenticated session.
 
 ---
 
@@ -378,9 +430,9 @@ docker compose pull
 docker compose up -d
 ```
 
-One first-time step: GHCR creates packages **private** by default, so after the
-first publish each of the three must be flipped to public once (package settings,
-or `gh` API). Until then a puller needs a GitHub token with `read:packages`.
+The three packages are already public, so no token is needed to pull. That is a
+one-time setting per package — GHCR creates them private, and they were flipped
+after the first publish.
 
 ---
 
