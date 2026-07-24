@@ -1,19 +1,8 @@
-# Super Productivity — prebuilt multi-arch images from GHCR.
-#   docker compose pull
-#   docker compose up -d
-#
-# This file is shipped as a release asset and is the one users run. Building
-# from source is compose.override.yml, which docker loads automatically from
-# this directory, so `docker compose up -d --build` still builds locally.
-#
-# All tunables live in .env (copy example.env → .env and edit).
-# All paths are relative to this directory → deployable anywhere as-is.
-#
-# One published port serves everything: the app at /, the sync server at /sync/,
-# the REST API at /api/. There is no address to configure.
+# Super Productivity. Config lives in .env — copy example.env first.
+#   docker compose pull && docker compose up -d
 
 services:
-  web:
+  sp_web:
     image: ghcr.io/anexgohan/sp-web:${SP_IMAGE_TAG:-latest}
     container_name: ${STACK_PREFIX:-sp}-web
     restart: unless-stopped
@@ -22,12 +11,12 @@ services:
     env_file:
       - .env
     depends_on:
-      supersync:
+      sp_supersync:
         condition: service_healthy
-      sp-bridge:
+      sp_bridge:
         condition: service_healthy
 
-  supersync:
+  sp_supersync:
     image: ghcr.io/anexgohan/sp-supersync:${SP_IMAGE_TAG:-latest}
     container_name: ${STACK_PREFIX:-sp}-supersync
     restart: unless-stopped
@@ -36,7 +25,7 @@ services:
     volumes:
       - ./docker-data/supersync:/app/data
     depends_on:
-      postgres: # remove for external postgres
+      sp_postgres: # remove for external postgres
         condition: service_healthy
     healthcheck:
       test: ['CMD', 'wget', '-q', '--spider', 'http://localhost:1900/health']
@@ -50,7 +39,7 @@ services:
       - ALL
     mem_limit: ${SUPERSYNC_MEM_LIMIT:-512m}
 
-  sp-bridge:
+  sp_bridge:
     image: ghcr.io/anexgohan/sp-bridge:${SP_IMAGE_TAG:-latest}
     container_name: ${STACK_PREFIX:-sp}-bridge
     restart: unless-stopped
@@ -59,9 +48,9 @@ services:
     volumes:
       - ./docker-data/bridge:/app/data
     depends_on:
-      supersync:
+      sp_supersync:
         condition: service_healthy
-      postgres: # remove for external postgres
+      sp_postgres: # remove for external postgres
         condition: service_healthy
     healthcheck:
       # 127.0.0.1, not localhost: localhost resolves ::1 first but the API binds IPv4, so the container would never report healthy.
@@ -74,11 +63,8 @@ services:
       - no-new-privileges:true
     mem_limit: ${SP_BRIDGE_MEM_LIMIT:-256m}
 
-  # Bundled database. To use an EXTERNAL postgres instead: comment out this whole
-  # service and the two `postgres:` depends_on blocks above, create an empty
-  # database on your server, then point POSTGRES_HOST/PORT at it in .env.
-  # The schema is created automatically on first start.
-  postgres:
+  # External postgres? Comment out this service and the two depends_on above, create an empty database, then set POSTGRES_HOST/PORT in .env. Schema is created on first start.
+  sp_postgres:
     image: ${POSTGRES_IMAGE:-postgres:18-alpine}
     container_name: ${STACK_PREFIX:-sp}-postgres
     restart: unless-stopped
@@ -90,10 +76,7 @@ services:
       - ./docker-data/postgres:/var/lib/postgresql
     healthcheck:
       test:
-        [
-          'CMD-SHELL',
-          'pg_isready -U ${POSTGRES_USER:-supersync} -d ${POSTGRES_DB:-supersync}',
-        ]
+        ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-sp_user} -d ${POSTGRES_DB:-db_sp}']
       interval: 10s
       timeout: 5s
       retries: 5

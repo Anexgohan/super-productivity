@@ -54,9 +54,9 @@ const resolveDatabaseUrl = (): string => {
     return '';
   }
   // Defaults match the supersync image, so both services resolve the same database from the same .env.
-  const user = process.env.POSTGRES_USER ?? 'supersync';
-  const database = process.env.POSTGRES_DB ?? 'supersync';
-  const host = process.env.POSTGRES_HOST ?? 'postgres';
+  const user = process.env.POSTGRES_USER ?? 'sp_user';
+  const database = process.env.POSTGRES_DB ?? 'db_sp';
+  const host = process.env.POSTGRES_HOST ?? 'sp_postgres';
   const port = process.env.POSTGRES_PORT ?? '5432';
   return `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${database}`;
 };
@@ -70,7 +70,7 @@ const requireEnv = (name: string): string => {
 };
 
 export const loadConfig = (): BridgeConfig => ({
-  syncServerUrl: (process.env.SP_BRIDGE_SYNC_URL ?? 'http://supersync:1900').replace(
+  syncServerUrl: (process.env.SP_BRIDGE_SYNC_URL ?? 'http://sp_supersync:1900').replace(
     /\/+$/,
     '',
   ),

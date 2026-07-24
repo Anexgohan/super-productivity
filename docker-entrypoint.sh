@@ -42,7 +42,7 @@ if [ -n "${SP_SYNC_SERVER_URL}" ]; then
     # believe it had met a brand-new server, which surfaces as the
     # "Server Already Contains Data" prompt. The bridge persists one token in
     # Postgres and returns the same string across restarts.
-    SP_BRIDGE_TOKEN_URL="${SP_BRIDGE_INTERNAL_URL:-http://sp-bridge:1902}/api/internal/webapp-token"
+    SP_BRIDGE_TOKEN_URL="${SP_BRIDGE_INTERNAL_URL:-http://sp_bridge:1902}/api/internal/webapp-token"
     TOKEN=""
     for _i in 1 2 3 4 5 6 7 8 9 10; do
       TOKEN=$(curl -sf -H "X-Internal-Secret: ${JWT_SECRET}" \
@@ -88,8 +88,8 @@ fi
 # whole config at startup, and an unset variable would be a boot failure.
 #   SP_AUTH_REQUEST      "/_auth" to enforce sessions, "off" to disable
 #   SP_BRIDGE_INTERNAL_URL  where the login page + /api/auth/* are served from
-export SP_BRIDGE_INTERNAL_URL="${SP_BRIDGE_INTERNAL_URL:-http://sp-bridge:1902}"
-export SP_SYNC_INTERNAL_URL="${SP_SYNC_INTERNAL_URL:-http://supersync:1900}"
+export SP_BRIDGE_INTERNAL_URL="${SP_BRIDGE_INTERNAL_URL:-http://sp_bridge:1902}"
+export SP_SYNC_INTERNAL_URL="${SP_SYNC_INTERNAL_URL:-http://sp_supersync:1900}"
 if [ "${SP_AUTH_ENABLED:-true}" = "false" ]; then
   export SP_AUTH_REQUEST="off"
   echo "sp-web: auth gate DISABLED (SP_AUTH_ENABLED=false)"

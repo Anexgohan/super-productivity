@@ -4,17 +4,17 @@
 # It is not shipped with releases; delete it to force pulls.
 
 services:
-  web:
+  sp_web:
     build:
       context: ../..
       dockerfile: Dockerfile
 
-  supersync:
+  sp_supersync:
     build:
       context: ../..
       dockerfile: packages/super-sync-server/Dockerfile
 
-  sp-bridge:
+  sp_bridge:
     build:
       context: ../..
       dockerfile: packages/sp-bridge/Dockerfile
