@@ -49,12 +49,13 @@ const resolveDatabaseUrl = (): string => {
   if (explicit) {
     return explicit;
   }
-  const user = process.env.POSTGRES_USER;
   const password = process.env.POSTGRES_PASSWORD;
-  const database = process.env.POSTGRES_DB;
-  if (!user || !password || !database) {
+  if (!password) {
     return '';
   }
+  // Defaults match the supersync image, so both services resolve the same database from the same .env.
+  const user = process.env.POSTGRES_USER ?? 'supersync';
+  const database = process.env.POSTGRES_DB ?? 'supersync';
   const host = process.env.POSTGRES_HOST ?? 'postgres';
   const port = process.env.POSTGRES_PORT ?? '5432';
   return `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${database}`;
