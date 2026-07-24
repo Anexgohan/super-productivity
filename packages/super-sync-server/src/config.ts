@@ -210,9 +210,15 @@ export const loadConfigFromEnv = (
     config.publicUrl = `http://localhost:${config.port}`;
   }
 
-  // Enforce HTTPS for PUBLIC_URL in production
-  if (process.env.NODE_ENV === 'production' && !config.publicUrl.startsWith('https://')) {
-    throw new Error('PUBLIC_URL must use HTTPS in production');
+  // LAN opt-out, matching the Helmet flag in server.ts. Without it only NODE_ENV=development worked, which also disabled the guards below.
+  if (
+    process.env.NODE_ENV === 'production' &&
+    process.env.ALLOW_INSECURE_HTTP !== 'true' &&
+    !config.publicUrl.startsWith('https://')
+  ) {
+    throw new Error(
+      'PUBLIC_URL must use HTTPS in production (set ALLOW_INSECURE_HTTP=true to allow plain HTTP on a trusted network)',
+    );
   }
 
   // CORS configuration
