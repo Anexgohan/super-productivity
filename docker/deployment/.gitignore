@@ -1,3 +1,4 @@
 # Secrets and runtime data never enter git
 .env
+docker-data/
 data/

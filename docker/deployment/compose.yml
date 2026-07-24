@@ -34,7 +34,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./data/supersync:/app/data
+      - ./docker-data/supersync:/app/data
     depends_on:
       postgres: # remove for external postgres
         condition: service_healthy
@@ -57,7 +57,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./data/bridge:/app/data
+      - ./docker-data/bridge:/app/data
     depends_on:
       supersync:
         condition: service_healthy
@@ -87,7 +87,7 @@ services:
       - .env
     volumes:
       # postgres:18 manages a versioned subdir — mount the parent, not /data.
-      - ./data/postgres:/var/lib/postgresql
+      - ./docker-data/postgres:/var/lib/postgresql
     healthcheck:
       test:
         [
