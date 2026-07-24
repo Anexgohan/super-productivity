@@ -1,0 +1,20 @@
+# Dev only — build the three images from source instead of pulling them.
+# Docker loads this automatically alongside compose.yml, so `docker compose up
+# -d --build` builds locally while the release asset stays image-only.
+# It is not shipped with releases; delete it to force pulls.
+
+services:
+  web:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+
+  supersync:
+    build:
+      context: ../..
+      dockerfile: packages/super-sync-server/Dockerfile
+
+  sp-bridge:
+    build:
+      context: ../..
+      dockerfile: packages/sp-bridge/Dockerfile

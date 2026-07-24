@@ -1,18 +1,20 @@
-# Anex SP stack — dev/build-from-source. The published-image equivalent is the
-# same file with `build:` swapped for `image: ghcr.io/anexgohan/...`.
+# Super Productivity — prebuilt multi-arch images from GHCR.
+#   docker compose pull
+#   docker compose up -d
 #
-# All tunables live in .env (copy .env.example → .env and edit).
+# This file is shipped as a release asset and is the one users run. Building
+# from source is compose.override.yml, which docker loads automatically from
+# this directory, so `docker compose up -d --build` still builds locally.
+#
+# All tunables live in .env (copy example.env → .env and edit).
 # All paths are relative to this directory → deployable anywhere as-is.
-#   docker compose up -d --build
 #
 # One published port serves everything: the app at /, the sync server at /sync/,
 # the REST API at /api/. There is no address to configure.
 
 services:
   web:
-    build:
-      context: ../..
-      dockerfile: Dockerfile
+    image: ghcr.io/anexgohan/sp-web:${SP_IMAGE_TAG:-latest}
     container_name: ${STACK_PREFIX:-sp}-web
     restart: unless-stopped
     ports:
@@ -26,9 +28,7 @@ services:
         condition: service_healthy
 
   supersync:
-    build:
-      context: ../..
-      dockerfile: packages/super-sync-server/Dockerfile
+    image: ghcr.io/anexgohan/sp-supersync:${SP_IMAGE_TAG:-latest}
     container_name: ${STACK_PREFIX:-sp}-supersync
     restart: unless-stopped
     env_file:
@@ -51,9 +51,7 @@ services:
     mem_limit: ${SUPERSYNC_MEM_LIMIT:-512m}
 
   sp-bridge:
-    build:
-      context: ../..
-      dockerfile: packages/sp-bridge/Dockerfile
+    image: ghcr.io/anexgohan/sp-bridge:${SP_IMAGE_TAG:-latest}
     container_name: ${STACK_PREFIX:-sp}-bridge
     restart: unless-stopped
     env_file:

@@ -5,7 +5,6 @@ export { SettingsPage } from './settings.page';
 export { DialogPage } from './dialog.page';
 export { ProjectPage } from './project.page';
 export { PlannerPage } from './planner.page';
-export { SyncPage } from './sync.page';
 export { SideNavPage } from './side-nav.page';
 export { TagPage } from './tag.page';
 export { NotePage } from './note.page';

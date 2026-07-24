@@ -421,18 +421,31 @@ only ever moves to a stable release.
   runtime by the entrypoint, never baked at build. That is what makes publishing
   them publicly safe — a pulled image is inert until an operator supplies `.env`.
 
-**Deploying on another host** then needs no source tree and no build toolchain —
-only `compose.yml` pointed at the published images, an `.env`, and empty `data/`
-directories:
+**Deploying on another host** needs no source tree, no build toolchain and no
+`git clone`. Every release ships the two files a user actually runs, so getting
+started is two downloads:
 
 ```bash
-docker compose pull
-docker compose up -d
+wget -O compose.yml https://github.com/Anexgohan/super-productivity/releases/latest/download/compose.yml
+wget -O .env        https://github.com/Anexgohan/super-productivity/releases/latest/download/example.env
+# edit .env: set the five CHANGE_ME values
+docker compose pull && docker compose up -d
 ```
 
-The three packages are already public, so no token is needed to pull. That is a
-one-time setting per package — GHCR creates them private, and they were flipped
-after the first publish.
+`releases/latest/download/…` always resolves to the newest release, so those
+URLs never need updating. Then open `http://<host>:18230/` — it redirects to
+`/login`, and the first visit creates the admin account.
+
+The three packages are public, so no token is needed to pull. That is a one-time
+setting per package — GHCR creates them private, and they were flipped after the
+first publish.
+
+**One compose file, not two.** `docker/deployment/compose.yml` is image-only and
+is the file shipped as a release asset. Building from source lives in
+`compose.override.yml`, which Docker loads automatically from the same
+directory — so `docker compose up -d --build` still builds locally in the dev
+tree, while a user who downloads only `compose.yml` gets pulls. That avoids
+maintaining two near-identical compose files that drift apart.
 
 ---
 
