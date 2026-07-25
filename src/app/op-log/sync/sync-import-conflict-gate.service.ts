@@ -22,6 +22,80 @@ const isInitialSyncSetupOp = (entry: OperationLogEntry): boolean =>
   entry.op.entityType === 'GLOBAL_CONFIG' &&
   entry.op.entityId === 'sync';
 
+/**
+ * Types a first launch writes for itself before anyone has used the app:
+ * configuration sections, the sidebar menu tree, the empty planner. Furniture,
+ * not content.
+ *
+ * Content types are deliberately absent — TASK, PROJECT, TAG, NOTE obviously,
+ * but also TIME_TRACKING and SIMPLE_COUNTER, which record something a person
+ * actually did. Someone who types a task or tracks a minute in the seconds
+ * before the first sync completes has done real work, and it must still block
+ * an incoming full-state import. The asymmetry is the whole point: this list
+ * can only ever fail by asking too often, never by discarding what someone made.
+ *
+ * Only consulted on a client that has never completed an initial sync. Once
+ * synced, a config change is a deliberate edit and counts like anything else.
+ */
+const BOOTSTRAP_ONLY_ENTITY_TYPES = new Set(['GLOBAL_CONFIG', 'MENU_TREE', 'PLANNER']);
+
+const isFirstLaunchScaffolding = (
+  entry: OperationLogEntry,
+  hasCompletedInitialSync: boolean,
+): boolean =>
+  !hasCompletedInitialSync && BOOTSTRAP_ONLY_ENTITY_TYPES.has(entry.op.entityType);
+
+/** Sections worth naming in the dialog. Anything else is noise to a person. */
+const SUMMARY_SECTIONS: [key: string, label: string][] = [
+  ['task', 'tasks'],
+  ['project', 'projects'],
+  ['tag', 'tags'],
+  ['note', 'notes'],
+];
+
+/**
+ * Counts what an incoming full-state payload actually contains.
+ *
+ * The dialog used to name a number of local changes and say nothing at all
+ * about the other side, which made "Use Server Data" a leap of faith. The
+ * payload is the server's whole state, so the answer is already in hand.
+ */
+const summarizeFullState = (op: Operation): { label: string; count: number }[] => {
+  const raw = op.payload as Record<string, unknown> | undefined;
+  if (!raw || typeof raw !== 'object') return [];
+  const state = ('appDataComplete' in raw ? raw.appDataComplete : raw) as Record<
+    string,
+    unknown
+  >;
+  if (!state || typeof state !== 'object') return [];
+
+  const out: { label: string; count: number }[] = [];
+  for (const [key, label] of SUMMARY_SECTIONS) {
+    const section = state[key] as { ids?: unknown[] } | undefined;
+    const count = Array.isArray(section?.ids) ? section.ids.length : 0;
+    if (count > 0) out.push({ label, count });
+  }
+  return out;
+};
+
+/**
+ * Groups the at-risk local ops by what a person would recognise — "3 tasks
+ * changed" rather than seven opaque operations. Entity type is the only thing
+ * every op reliably carries, so it is what we group on.
+ */
+const summarizePendingOps = (
+  ops: OperationLogEntry[],
+): { label: string; count: number }[] => {
+  const byType = new Map<string, number>();
+  for (const entry of ops) {
+    const type = (entry.op.entityType || 'other').toLowerCase().replace(/_/g, ' ');
+    byType.set(type, (byType.get(type) ?? 0) + 1);
+  }
+  return [...byType.entries()]
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count);
+};
+
 interface PendingOpClassificationOptions {
   hasCompletedInitialSync: boolean;
 }
@@ -74,6 +148,12 @@ export class SyncImportConflictGateService {
       if (isInitialSyncSetupOp(entry)) {
         return options.hasCompletedInitialSync;
       }
+      // A never-synced client's own boot writes are not work to protect.
+      // Without this, opening the app for the first time against a stack that
+      // holds a full-state op raised a conflict dialog over furniture.
+      if (isFirstLaunchScaffolding(entry, options.hasCompletedInitialSync)) {
+        return false;
+      }
       return true;
     });
   }
@@ -86,7 +166,8 @@ export class SyncImportConflictGateService {
       .filter(
         (entry) =>
           isExampleTaskCreateOp(entry) ||
-          (!options.hasCompletedInitialSync && isInitialSyncSetupOp(entry)),
+          (!options.hasCompletedInitialSync && isInitialSyncSetupOp(entry)) ||
+          isFirstLaunchScaffolding(entry, options.hasCompletedInitialSync),
       )
       .map((entry) => entry.op.id);
   }
@@ -181,6 +262,8 @@ export class SyncImportConflictGateService {
         syncImportReason: fullStateOp.syncImportReason,
         scenario: 'INCOMING_IMPORT',
         isNeverSynced,
+        remoteSummary: summarizeFullState(fullStateOp),
+        localSummary: summarizePendingOps(pendingOps),
       },
     };
   }

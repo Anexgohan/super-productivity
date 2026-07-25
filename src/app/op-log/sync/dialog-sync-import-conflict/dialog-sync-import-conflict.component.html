@@ -33,25 +33,93 @@
     </p>
   }
 
-  <div class="import-info">
-    <div class="info-row">
-      <span class="label"
-        >{{ T.F.SYNC.D_SYNC_IMPORT_CONFLICT.IMPORT_DATE | translate }}:</span
-      >
-      <span class="value">
-        {{ data.localImportTimestamp | localeDate: 'shortDate' : undefined : locale() }}
-        {{ data.localImportTimestamp | shortTime }}
-      </span>
+  @if (hasComparison) {
+    <div class="compare">
+      <section class="side side--remote">
+        <h2>
+          <mat-icon aria-hidden="true">cloud</mat-icon>
+          {{ T.F.SYNC.D_SYNC_IMPORT_CONFLICT.SIDE_SERVER | translate }}
+        </h2>
+        <ul>
+          @for (row of data.remoteSummary; track row.label) {
+            <li>
+              <strong>{{ row.count }}</strong> {{ row.label }}
+            </li>
+          } @empty {
+            <li class="empty">
+              {{ T.F.SYNC.D_SYNC_IMPORT_CONFLICT.SIDE_EMPTY | translate }}
+            </li>
+          }
+        </ul>
+        <p class="stamp">
+          {{ data.localImportTimestamp | localeDate: 'shortDate' : undefined : locale() }}
+          {{ data.localImportTimestamp | shortTime }}
+        </p>
+      </section>
+
+      <section class="side side--local">
+        <h2>
+          <mat-icon aria-hidden="true">computer</mat-icon>
+          {{ T.F.SYNC.D_SYNC_IMPORT_CONFLICT.SIDE_THIS_DEVICE | translate }}
+        </h2>
+        <ul>
+          @for (row of data.localSummary; track row.label) {
+            <li>
+              <strong>{{ row.count }}</strong> {{ row.label }}
+            </li>
+          } @empty {
+            <li class="empty">
+              {{ T.F.SYNC.D_SYNC_IMPORT_CONFLICT.SIDE_EMPTY | translate }}
+            </li>
+          }
+        </ul>
+        <p class="stamp at-risk">
+          {{
+            T.F.SYNC.D_SYNC_IMPORT_CONFLICT.AT_RISK
+              | translate: { count: data.filteredOpCount }
+          }}
+        </p>
+      </section>
     </div>
-    @if (data.filteredOpCount > 0) {
+
+    <div class="outcomes">
+      <p>
+        <mat-icon aria-hidden="true">cloud_download</mat-icon>
+        <span>{{
+          T.F.SYNC.D_SYNC_IMPORT_CONFLICT.OUTCOME_REMOTE
+            | translate: { count: data.filteredOpCount }
+        }}</span>
+      </p>
+      <p>
+        <mat-icon aria-hidden="true">cloud_upload</mat-icon>
+        <span>{{ T.F.SYNC.D_SYNC_IMPORT_CONFLICT.OUTCOME_LOCAL | translate }}</span>
+      </p>
+      <p>
+        <mat-icon aria-hidden="true">schedule</mat-icon>
+        <span>{{ T.F.SYNC.D_SYNC_IMPORT_CONFLICT.OUTCOME_CANCEL | translate }}</span>
+      </p>
+    </div>
+  } @else {
+    <div class="import-info">
       <div class="info-row">
         <span class="label"
-          >{{ T.F.SYNC.D_SYNC_IMPORT_CONFLICT.FILTERED_CHANGES | translate }}:</span
+          >{{ T.F.SYNC.D_SYNC_IMPORT_CONFLICT.IMPORT_DATE | translate }}:</span
         >
-        <span class="value highlight">{{ data.filteredOpCount }}</span>
+        <span class="value">
+          {{ data.localImportTimestamp | localeDate: 'shortDate' : undefined : locale() }}
+          {{ data.localImportTimestamp | shortTime }}
+        </span>
       </div>
-    }
-  </div>
+      @if (data.filteredOpCount > 0) {
+        <div class="info-row">
+          <span class="label"
+            >{{ T.F.SYNC.D_SYNC_IMPORT_CONFLICT.FILTERED_CHANGES | translate }}:</span
+          >
+          <span class="value highlight">{{ data.filteredOpCount }}</span>
+        </div>
+      }
+    </div>
+  }
 </mat-dialog-content>
 
 <mat-dialog-actions align="end">

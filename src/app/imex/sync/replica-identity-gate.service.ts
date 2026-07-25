@@ -6,6 +6,8 @@ import { SyncLog } from '../../core/log';
 interface ServedIdentity {
   instanceId: string;
   userId: number;
+  /** False on a stack whose data was wiped — see the unstamped case below. */
+  serverHasData: boolean;
 }
 
 /** Outcome of the check, for logging and tests. */
@@ -14,11 +16,13 @@ export type ReplicaIdentityOutcome =
   | 'ungated'
   /** Could not reach the container. Unverifiable, so deliberately left alone. */
   | 'unverified'
+  /** Container is there but no valid session; the app is being sent to /login. */
+  | 'unauthenticated'
   /** Replica had no stamp; it now carries the current one. */
   | 'adopted'
   /** Stamp matches the signed-in identity. */
   | 'matched'
-  /** Stamp belonged to someone else; the replica was destroyed. */
+  /** Stamp belonged to someone else, or to a stack that no longer holds data. */
   | 'purged';
 
 /**
@@ -55,7 +59,17 @@ export class ReplicaIdentityGateService {
    */
   async enforce(): Promise<ReplicaIdentityOutcome> {
     try {
-      const served = await this._fetchServedIdentity();
+      const probe = await this._probeContainer();
+      if (probe === 'unauthenticated') {
+        // The container is serving this path but will not name us, so the app
+        // is about to render someone's data with no idea whose. Send the
+        // browser to sign in instead. Without this, a cleared cookie booted the
+        // app straight past container authority into upstream's manual sync UI.
+        SyncLog.log('ReplicaIdentityGate: no session for this container — to /login');
+        window.location.href = '/login';
+        return 'unauthenticated';
+      }
+      const served = probe;
       if (!served) {
         return 'ungated';
       }
@@ -63,11 +77,27 @@ export class ReplicaIdentityGateService {
       const stamp = await this._opLogStore.getReplicaIdentity();
 
       if (!stamp) {
-        // Either a fresh browser or one that predates stamping. Adopting is the
-        // only non-destructive read: an unstamped replica on an upgraded stack
-        // is almost always the signed-in user's own, and purging every existing
-        // browser once on rollout would be a worse trade than the narrow case
-        // it protects against.
+        // Nothing to compare against: a fresh browser, or one that predates
+        // stamping. Which it is turns on whether the stack still holds data.
+        //
+        // Server has data: adopt. The replica is almost certainly this user's
+        // own and the server is authoritative anyway, so keeping it costs a
+        // re-download rather than correctness.
+        //
+        // Server is empty: purge. An unstamped replica facing an empty stack is
+        // the resurrection case — left alone it would upload itself back and
+        // undo the wipe. The cost is a genuine fresh-deploy recovery, where the
+        // browser held the only copy; that is deliberately traded away, because
+        // "I wiped the stack" must mean the data is gone.
+        if (!served.serverHasData) {
+          SyncLog.log(
+            'ReplicaIdentityGate: unstamped replica on an empty stack — purging ' +
+              'rather than letting it re-seed the server.',
+          );
+          await this._opLogStore.purgeForIdentityMismatch();
+          await this._opLogStore.setReplicaIdentity(served);
+          return 'purged';
+        }
         await this._opLogStore.setReplicaIdentity(served);
         return 'adopted';
       }
@@ -93,20 +123,33 @@ export class ReplicaIdentityGateService {
   }
 
   /**
-   * Reads the identity the container serves for this session.
+   * Asks the container who this browser is.
    *
    * Its own request rather than reusing ContainerAuthorityService.loadOverride:
    * that call also latches IS_CONTAINER_MANAGED, and moving when the latch
    * settles is a behaviour change this gate has no business making.
    *
-   * Returns undefined for every "cannot tell" case — no session, a deployment
-   * serving the baked single-account file, an unreachable bridge — because the
-   * only safe reading of an unknown identity is to enforce nothing.
+   * Three distinguishable answers, and the distinction is the point:
+   *  - `'unauthenticated'` (401/403) — a container IS serving this path, it just
+   *    will not say who we are. Only reachable with auth enabled, because the
+   *    route is not registered otherwise.
+   *  - `undefined` — nothing to enforce: a deployment serving the baked
+   *    single-account file (200, no identity), no such file (404), or an
+   *    unreachable bridge.
+   *  - an identity — proceed.
+   *
+   * Collapsing the first two, as this used to, is what let a cleared cookie
+   * look like "not container-managed" and fall through to stock upstream sync.
    */
-  private async _fetchServedIdentity(): Promise<ServedIdentity | undefined> {
+  private async _probeContainer(): Promise<
+    ServedIdentity | undefined | 'unauthenticated'
+  > {
     const res = await fetch('/assets/sync-config-default-override.json', {
       cache: 'no-store',
     });
+    if (res.status === 401 || res.status === 403) {
+      return 'unauthenticated';
+    }
     if (!res.ok) {
       return undefined;
     }
@@ -119,6 +162,8 @@ export class ReplicaIdentityGateService {
     ) {
       return undefined;
     }
-    return identity;
+    // Older bridges served an identity without this flag. Treating a missing
+    // value as "has data" keeps them on the non-destructive branch.
+    return { ...identity, serverHasData: identity.serverHasData !== false };
   }
 }

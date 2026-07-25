@@ -2,6 +2,7 @@ import { inject, Injectable } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DestroyRef } from '@angular/core';
 import { debounceTime, distinctUntilChanged, map } from 'rxjs/operators';
+import { Subject } from 'rxjs';
 import { GlobalConfigService } from '../../features/config/global-config.service';
 import { LS } from './storage-keys.const';
 import { Log } from '../log';
@@ -29,12 +30,22 @@ import { Log } from '../log';
  * Caches, debug logs, per-install counters and per-build dismissals stay local
  * for the same reason: they describe the device, not the user.
  *
+ * Three things have to be true for this to actually work, and only the first
+ * was true originally:
+ *  1. writes are captured — `_interceptLocalWrites`
+ *  2. the interception is installed before anything writes. It used to run from
+ *     startup's DEFERRED block, a second in, so an early write vanished
+ *  3. values that predate the interception are adopted, not ignored —
+ *     `seedMissingFromLocal`. Capture-on-write alone means a preference already
+ *     sitting in localStorage syncs NOWHERE, ever, and dies with that browser's
+ *     storage. That is how a user's chosen theme was lost while
+ *     `misc.uiPrefs` sat empty on the server for days.
+ *
  * KNOWN LIMITATION: most consumers read their localStorage value once at
  * construction, so a preference changed on ANOTHER device applies here on the
- * next reload rather than instantly. The case that actually hurt — a fresh
- * browser starting from defaults — is fixed, because hydration happens during
- * data-init before those services are constructed. Settings that need to react
- * live (dark mode) do so explicitly in their own service.
+ * next reload rather than instantly. A fresh browser is handled by
+ * `hydrateNow()`, called from StartupService before the theme is applied.
+ * Settings that need to react live (dark mode) do so in their own service.
  */
 
 /** Preferences that describe the USER and should follow the account. */
@@ -69,6 +80,11 @@ const PERSIST_DEBOUNCE_MS = 400;
 export class SyncedUiPrefsService {
   private _globalConfigService = inject(GlobalConfigService);
   private _destroyRef = inject(DestroyRef);
+
+  private readonly _adopted$ = new Subject<string[]>();
+
+  /** Keys just written from the account. They arrive after data-init on a cleared browser, so consumers must react rather than read once. */
+  readonly adopted$ = this._adopted$.asObservable();
 
   /** Set while writing values received FROM the server, to avoid echoing them back. */
   private _isApplyingRemote = false;
@@ -146,6 +162,79 @@ export class SyncedUiPrefsService {
     }
   }
 
+  /**
+   * Writes the account's stored preferences into localStorage right now.
+   *
+   * Needed because most consumers read localStorage once, at construction or
+   * even at module load, so the subscription in `_adoptRemoteChanges` lands too
+   * late for them on a fresh browser: the value arrives after the theme has
+   * already been applied and the work-view signals already initialised, so the
+   * account's settings only appeared on the *next* reload.
+   *
+   * Call before anything reads a preference — see StartupService.init().
+   * Returns the number of keys written, for logging.
+   */
+  hydrateNow(): number {
+    const prefs = this._globalConfigService.misc()?.uiPrefs;
+    if (!prefs) {
+      return 0;
+    }
+    let written = 0;
+    this._isApplyingRemote = true;
+    try {
+      for (const key of SYNCED_KEYS) {
+        const remote = prefs[key];
+        if (remote === undefined || localStorage.getItem(key) === remote) {
+          continue;
+        }
+        localStorage.setItem(key, remote);
+        written++;
+      }
+    } finally {
+      this._isApplyingRemote = false;
+    }
+    return written;
+  }
+
+  /**
+   * Pushes preferences this browser holds but the account does not know about.
+   *
+   * Interception only ever captured writes as they happened, so a value already
+   * sitting in localStorage — set before this feature existed, or before the
+   * interception was installed on that visit — was invisible to it forever. It
+   * synced nowhere and was lost the moment that browser's storage was cleared.
+   * That is not a hypothetical: `misc.uiPrefs` was absent entirely on a stack
+   * whose owner had been using a chosen theme for days.
+   *
+   * Deliberately additive. A key the account already has is left alone, so this
+   * can never overwrite a preference set on another device with whatever this
+   * browser happens to hold — the server stays authoritative, and this only
+   * fills gaps.
+   *
+   * Returns the number of keys seeded, for logging.
+   */
+  seedMissingFromLocal(): number {
+    const current = this._globalConfigService.misc()?.uiPrefs ?? {};
+    const next: Record<string, string> = { ...current };
+    let seeded = 0;
+    for (const key of SYNCED_KEYS) {
+      if (next[key] !== undefined) {
+        continue;
+      }
+      const local = localStorage.getItem(key);
+      if (local === null) {
+        continue;
+      }
+      next[key] = local;
+      seeded++;
+    }
+    if (seeded === 0) {
+      return 0;
+    }
+    this._globalConfigService.updateSection('misc', { uiPrefs: next }, true);
+    return seeded;
+  }
+
   /** Applies preferences coming from the server into this browser. */
   private _adoptRemoteChanges(): void {
     this._globalConfigService.misc$
@@ -161,6 +250,7 @@ export class SyncedUiPrefsService {
         if (!prefs) {
           return;
         }
+        const changed: string[] = [];
         this._isApplyingRemote = true;
         try {
           for (const key of SYNCED_KEYS) {
@@ -170,10 +260,14 @@ export class SyncedUiPrefsService {
             }
             if (localStorage.getItem(key) !== remote) {
               localStorage.setItem(key, remote);
+              changed.push(key);
             }
           }
         } finally {
           this._isApplyingRemote = false;
+        }
+        if (changed.length) {
+          this._adopted$.next(changed);
         }
       });
   }

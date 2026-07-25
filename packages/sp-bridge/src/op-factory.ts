@@ -150,9 +150,7 @@ export interface NewProjectInput {
   isEnableBacklog?: boolean;
 }
 
-export const buildProjectEntity = (
-  input: NewProjectInput,
-): Record<string, unknown> => ({
+export const buildProjectEntity = (input: NewProjectInput): Record<string, unknown> => ({
   id: nanoid(),
   title: input.title,
   isHiddenFromMenu: false,
@@ -166,6 +164,60 @@ export const buildProjectEntity = (
   advancedCfg: DEFAULT_ADVANCED_CFG,
   theme: buildTheme(input.color ?? DEFAULT_PROJECT_COLOR),
 });
+
+/**
+ * Panel filter fields, defaulted to match a stock Kanban column
+ * (src/app/features/boards/boards.const.ts). Enum values are inlined as
+ * numbers because the app's enums live in the Angular tree, which the bridge
+ * does not import: UnDone=3, All=1 (scheduled), NoBacklog=2 (backlog).
+ */
+export interface NewPanelInput {
+  title: string;
+  id?: string;
+  includedTagIds?: string[];
+  excludedTagIds?: string[];
+  /** 1=All, 2=Done, 3=UnDone. */
+  taskDoneState?: number;
+  /** 1=All, 2=Scheduled, 3=NotScheduled. */
+  scheduledState?: number;
+  /** 1=All, 2=NoBacklog, 3=OnlyBacklog. */
+  backlogState?: number;
+  isParentTasksOnly?: boolean;
+  /** [''] means "All Projects" — the app's own convention, not a typo. */
+  projectIds?: string[];
+}
+
+export const buildPanelEntity = (input: NewPanelInput): Record<string, unknown> => ({
+  id: input.id ?? nanoid(),
+  title: input.title,
+  includedTagIds: input.includedTagIds ?? [],
+  excludedTagIds: input.excludedTagIds ?? [],
+  taskIds: [],
+  taskDoneState: input.taskDoneState ?? 3,
+  scheduledState: input.scheduledState ?? 1,
+  backlogState: input.backlogState ?? 2,
+  isParentTasksOnly: input.isParentTasksOnly ?? false,
+  projectIds: input.projectIds ?? [''],
+});
+
+export interface NewBoardInput {
+  title: string;
+  id?: string;
+  cols?: number;
+  panels?: NewPanelInput[];
+}
+
+export const buildBoardEntity = (input: NewBoardInput): Record<string, unknown> => {
+  const panels = (input.panels ?? []).map(buildPanelEntity);
+  return {
+    id: input.id ?? nanoid(),
+    title: input.title,
+    // Columns default to the panel count so a new board is not born with empty
+    // gaps or a squeezed grid; explicit `cols` still wins.
+    cols: input.cols ?? Math.max(panels.length, 1),
+    panels,
+  };
+};
 
 export class OpFactory {
   constructor(
@@ -250,7 +302,9 @@ export class OpFactory {
     task: Record<string, unknown>,
     vectorClock: Record<string, number>,
   ): Promise<SuperSyncOperation> {
-    const subTaskIds = Array.isArray(task.subTaskIds) ? (task.subTaskIds as string[]) : [];
+    const subTaskIds = Array.isArray(task.subTaskIds)
+      ? (task.subTaskIds as string[])
+      : [];
     return this._makeOp({
       actionType: '[Task Shared] deleteTask',
       opType: 'DEL',
@@ -484,6 +538,93 @@ export class OpFactory {
       entityType: 'PROJECT',
       entityId: id,
       actionPayload: { project: { id, changes } },
+      vectorClock,
+    });
+  }
+
+  // ── Boards ────────────────────────────────────────────────────────────────
+  // Payload shapes are the action creators' own props, verbatim from
+  // src/app/features/boards/store/boards.actions.ts — receiving clients
+  // re-dispatch the action, so anything else would be ignored by the reducer.
+
+  /** [Boards] Add Board — payload { board }. */
+  addBoard(
+    board: Record<string, unknown>,
+    vectorClock: Record<string, number>,
+  ): Promise<SuperSyncOperation> {
+    return this._makeOp({
+      actionType: '[Boards] Add Board',
+      opType: 'CRT',
+      entityType: 'BOARD',
+      entityId: board.id as string,
+      actionPayload: { board },
+      vectorClock,
+    });
+  }
+
+  /**
+   * [Boards] Update Board — payload { id, updates }, NOT the NgRx Update shape
+   * the other entities use. Panels are replaced wholesale when `updates.panels`
+   * is present, which is also how the app edits a single panel.
+   */
+  updateBoard(
+    id: string,
+    updates: Record<string, unknown>,
+    vectorClock: Record<string, number>,
+  ): Promise<SuperSyncOperation> {
+    return this._makeOp({
+      actionType: '[Boards] Update Board',
+      opType: 'UPD',
+      entityType: 'BOARD',
+      entityId: id,
+      actionPayload: { id, updates },
+      vectorClock,
+    });
+  }
+
+  /** [Boards] Remove Board — payload { id }. */
+  removeBoard(
+    id: string,
+    vectorClock: Record<string, number>,
+  ): Promise<SuperSyncOperation> {
+    return this._makeOp({
+      actionType: '[Boards] Remove Board',
+      opType: 'DEL',
+      entityType: 'BOARD',
+      entityId: id,
+      actionPayload: { id },
+      vectorClock,
+    });
+  }
+
+  /** [Boards] Sort Boards — bulk MOV over every board id, in display order. */
+  sortBoards(
+    ids: string[],
+    vectorClock: Record<string, number>,
+  ): Promise<SuperSyncOperation> {
+    return this._makeOp({
+      actionType: '[Boards] Sort Boards',
+      opType: 'MOV',
+      entityType: 'BOARD',
+      entityId: ids[0] ?? '',
+      entityIds: ids,
+      actionPayload: { ids },
+      vectorClock,
+    });
+  }
+
+  /** [Boards] Update Panel Cfg TaskIds — manual card order within one panel. */
+  updatePanelTaskIds(
+    panelId: string,
+    taskIds: string[],
+    vectorClock: Record<string, number>,
+  ): Promise<SuperSyncOperation> {
+    return this._makeOp({
+      actionType: '[Boards] Update Panel Cfg TaskIds',
+      opType: 'UPD',
+      entityType: 'BOARD',
+      entityId: panelId,
+      actionPayload: { panelId, taskIds },
       vectorClock,
     });
   }

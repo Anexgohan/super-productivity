@@ -55,6 +55,13 @@ export class DataInitService {
     // since been wiped, is destroyed here rather than hydrated — so it is never
     // rendered, never merged, and never uploaded back.
     const outcome = await this._replicaIdentityGate.enforce();
+    if (outcome === 'unauthenticated') {
+      // The gate is navigating to /login. Hydrating now would paint the last
+      // signed-in user's board during the redirect, which is the exact leak
+      // this whole path exists to prevent.
+      OpLog.normal('DataInitService: no session, skipping hydration');
+      return;
+    }
     if (outcome === 'purged') {
       OpLog.normal('DataInitService: local replica purged, hydrating clean');
     }

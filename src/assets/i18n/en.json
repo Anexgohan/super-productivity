@@ -1388,6 +1388,7 @@
         "TITLE": "Server Already Contains Data"
       },
       "D_SYNC_IMPORT_CONFLICT": {
+        "AT_RISK": "{{count}} unsynced change(s) here would be discarded",
         "FILTERED_CHANGES": "Affected changes",
         "FIRST_SYNC_USE_LOCAL_CONFIRM": "This device has never synced before. \"Use My Data\" will permanently replace the data on the server with this device's local data. This cannot be undone. Continue?",
         "FIRST_SYNC_WARNING": "This device hasn't synced before, so \"Use My Data\" would overwrite the server's existing data with this device's data.",
@@ -1395,6 +1396,9 @@
         "MSG_INCOMING": "Your data was fully replaced on another device. You have {{filteredOpCount}} local changes that may not carry over.",
         "MSG_INCOMING_NO_OPS": "Your data was fully replaced on another device. This device will sync to the new state.",
         "MSG_LOCAL_FILTERS": "Your local data was imported/restored, but the server has {{filteredOpCount}} changes from other devices that cannot be automatically merged.",
+        "OUTCOME_CANCEL": "Cancel — nothing changes now; you will be asked again on the next sync.",
+        "OUTCOME_LOCAL": "Use my data — the server's contents are replaced by this device's, for every device.",
+        "OUTCOME_REMOTE": "Use server data — this device matches the server; your {{count}} unsynced change(s) are discarded.",
         "REASON_BACKUP_RESTORE": "Reason: A backup was restored on another device.",
         "REASON_FILE_IMPORT": "Reason: A data file was imported on another device.",
         "REASON_FORCE_UPLOAD": "Reason: Another device force-uploaded its local data.",
@@ -1403,6 +1407,9 @@
         "REASON_SERVER_MIGRATION": "Reason: Data was migrated to a new sync server.",
         "REASON_UNKNOWN": "Reason: A full state replacement was performed.",
         "RECOMMEND_SERVER": "Recommended: Accept the server data to stay in sync with the other device.",
+        "SIDE_EMPTY": "Nothing",
+        "SIDE_SERVER": "Incoming snapshot",
+        "SIDE_THIS_DEVICE": "On this device",
         "TITLE": "Sync Conflict Detected",
         "USE_LOCAL": "Use My Data",
         "USE_REMOTE": "Use Server Data",

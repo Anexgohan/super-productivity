@@ -229,7 +229,16 @@ export const createRestServer = (
           // a wiped stack or a different user cannot inherit the last one's
           // board. Absent from the baked fallback file, and absence means
           // "ungated" — never a mismatch.
-          identity: { instanceId: await instanceId(), userId: user.id },
+          //
+          // `serverHasData` is what lets an UNSTAMPED replica be judged: with
+          // nothing to compare against, an empty stack means this browser is
+          // the only thing keeping that data alive, which is precisely the
+          // resurrection case rather than a legitimate one.
+          identity: {
+            instanceId: await instanceId(),
+            userId: user.id,
+            serverHasData: store.lastServerSeq > 0,
+          },
         };
       } catch (err) {
         // 503, not 500: the sync server being slow to come up is the usual
@@ -645,6 +654,108 @@ export const createRestServer = (
       return sendError(reply, err);
     }
   });
+
+  // ── Boards ──────────────────────────────────────────────────────────────────
+  // Columns are panels; a task is in a column because it matches that panel's
+  // filters, so moving cards is still done by changing tags on the task. These
+  // routes shape the board itself, which previously had no write path at all.
+
+  app.get('/api/boards', async () => core.listBoards());
+
+  app.get<{ Params: { id: string } }>('/api/boards/:id', async (req, reply) => {
+    const board = core.getBoard(req.params.id);
+    if (!board) return reply.status(404).send({ error: 'Board not found' });
+    return board;
+  });
+
+  app.post<{ Body: Record<string, unknown> }>('/api/boards', async (req, reply) => {
+    try {
+      return reply.status(201).send(await core.createBoard((req.body ?? {}) as never));
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    '/api/boards/:id',
+    async (req, reply) => {
+      try {
+        return await core.updateBoard(
+          req.params.id,
+          (req.body ?? {}) as Record<string, unknown>,
+        );
+      } catch (err) {
+        return sendError(reply, err);
+      }
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>('/api/boards/:id', async (req, reply) => {
+    try {
+      return await core.deleteBoard(req.params.id);
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  // Before /api/boards/:id/panels/:panelId so "order" is never read as a panel id.
+  app.put<{ Body: { ids?: string[] } }>('/api/boards/order', async (req, reply) => {
+    try {
+      return await core.sortBoards(req.body?.ids ?? []);
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.post<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    '/api/boards/:id/panels',
+    async (req, reply) => {
+      try {
+        return reply
+          .status(201)
+          .send(await core.addPanel(req.params.id, (req.body ?? {}) as never));
+      } catch (err) {
+        return sendError(reply, err);
+      }
+    },
+  );
+
+  app.patch<{
+    Params: { id: string; panelId: string };
+    Body: Record<string, unknown>;
+  }>('/api/boards/:id/panels/:panelId', async (req, reply) => {
+    try {
+      return await core.updatePanel(
+        req.params.id,
+        req.params.panelId,
+        (req.body ?? {}) as Record<string, unknown>,
+      );
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.delete<{ Params: { id: string; panelId: string } }>(
+    '/api/boards/:id/panels/:panelId',
+    async (req, reply) => {
+      try {
+        return await core.removePanel(req.params.id, req.params.panelId);
+      } catch (err) {
+        return sendError(reply, err);
+      }
+    },
+  );
+
+  app.put<{ Params: { panelId: string }; Body: { taskIds?: string[] } }>(
+    '/api/panels/:panelId/taskIds',
+    async (req, reply) => {
+      try {
+        return await core.setPanelTaskIds(req.params.panelId, req.body?.taskIds ?? []);
+      } catch (err) {
+        return sendError(reply, err);
+      }
+    },
+  );
 
   return app;
 };

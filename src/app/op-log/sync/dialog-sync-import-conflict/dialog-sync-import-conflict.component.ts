@@ -28,6 +28,16 @@ export interface SyncImportConflictData {
    * explicit extra confirmation. See the fresh-client first-sync data-loss-trap plan.
    */
   isNeverSynced?: boolean;
+  /**
+   * What each side actually holds, so the choice can be made on evidence
+   * instead of on a bare count. `remoteSummary` is counted from the incoming
+   * full-state payload; `localSummary` groups the pending ops that would be
+   * discarded. Both optional — older callers and the
+   * LOCAL_IMPORT_FILTERS_REMOTE path supply neither, and the template hides
+   * the comparison when they are absent.
+   */
+  remoteSummary?: { label: string; count: number }[];
+  localSummary?: { label: string; count: number }[];
 }
 
 export type SyncImportConflictResolution = 'USE_LOCAL' | 'USE_REMOTE' | 'CANCEL';
@@ -93,6 +103,15 @@ export class DialogSyncImportConflictComponent {
 
   get isNeverSynced(): boolean {
     return !!this.data.isNeverSynced;
+  }
+
+  /**
+   * Only the incoming-import path can describe both sides. Without it the
+   * dialog falls back to the old bare count rather than rendering two empty
+   * columns, which would read as "both sides are empty".
+   */
+  get hasComparison(): boolean {
+    return !!this.data.remoteSummary && !!this.data.localSummary;
   }
 
   constructor() {

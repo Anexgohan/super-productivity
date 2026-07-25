@@ -1,4 +1,5 @@
-import { effect, inject, Injectable, Injector } from '@angular/core';
+import { DestroyRef, effect, inject, Injectable, Injector } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ImexViewService } from '../../imex/imex-meta/imex-view.service';
 import { TranslateService } from '@ngx-translate/core';
 import { LocalBackupService } from '../../imex/local-backup/local-backup.service';
@@ -20,8 +21,8 @@ import { BannerId } from '../banner/banner.model';
 import { isOnline$ } from '../../util/is-online';
 import { LS } from '../persistence/storage-keys.const';
 import { RatePromptService } from '../../features/dialog-please-rate/rate-prompt.service';
-import { map, switchMap, take } from 'rxjs/operators';
-import { combineLatest } from 'rxjs';
+import { filter, first, map, switchMap, take } from 'rxjs/operators';
+import { combineLatest, firstValueFrom } from 'rxjs';
 import { Store } from '@ngrx/store';
 import { selectSyncConfig } from '../../features/config/store/global-config.reducer';
 import { selectEnabledIssueProviders } from '../../features/issue/store/issue-provider.selectors';
@@ -35,7 +36,10 @@ import { DataInitStateService } from '../data-init/data-init-state.service';
 import { OnboardingHintService } from '../../features/onboarding/onboarding-hint.service';
 import { LocalRestApiHandlerService } from '../electron/local-rest-api-handler.service';
 import { SyncAutoSetupService } from '../../imex/sync/sync-auto-setup.service';
+import { SyncTriggerService } from '../../imex/sync/sync-trigger.service';
 import { SyncedUiPrefsService } from '../persistence/synced-ui-prefs.service';
+import { setFocusModeMode } from '../../features/focus-mode/store/focus-mode.actions';
+import { readPersistedFocusModeMode } from '../../features/focus-mode/store/focus-mode.reducer';
 import { CustomThemeService } from '../theme/custom-theme.service';
 import { UpdateCheckService } from '../update-check/update-check.service';
 import { JiraElectronBridgeService } from '../../features/issue/providers/jira/jira-electron-bridge.service';
@@ -77,6 +81,7 @@ export class StartupService {
   private _platformService = inject(CapacitorPlatformService);
   private _dataInitStateService = inject(DataInitStateService);
   private _injector = inject(Injector);
+  private _destroyRef = inject(DestroyRef);
   private _customThemeService = inject(CustomThemeService);
   private _jiraElectronBridge = inject(JiraElectronBridgeService);
 
@@ -125,6 +130,78 @@ export class StartupService {
     this._initBackups();
     this._requestPersistence();
 
+    // Put the ACCOUNT's preferences into localStorage before anything reads
+    // them (anex/container-parity). Most consumers — the theme below, the
+    // work-view visibility signals, the selected board — read localStorage once
+    // at construction, so a fresh browser rendered defaults and only picked up
+    // the account's settings on the next reload.
+    //
+    // Waits for data-init because the APP_INITIALIZER that starts hydration
+    // does not await it, so the config signal can still be at defaults here.
+    // Bounded by the same timeout as the theme: preferences are worth a short
+    // wait, never a hung splash.
+    try {
+      await Promise.race([
+        firstValueFrom(
+          this._dataInitStateService.isAllDataLoadedInitially$.pipe(
+            filter((v) => !!v),
+            first(),
+          ),
+        ),
+        new Promise<void>((resolve) => setTimeout(resolve, APPLY_THEME_TIMEOUT_MS)),
+      ]);
+      const syncedPrefs = this._injector.get(SyncedUiPrefsService);
+      // Installed HERE rather than in the deferred block below: interception
+      // only captures writes it witnesses, and a preference changed in the
+      // first second of a session used to be missed silently. Neither this nor
+      // hydrateNow() writes an operation, so both are safe before sync.
+      syncedPrefs.init();
+      const written = syncedPrefs.hydrateNow();
+
+      // Re-apply when the preferences actually arrive: on a cleared browser the op-log is empty, so data-init fires with default config.
+      syncedPrefs.adopted$
+        .pipe(takeUntilDestroyed(this._destroyRef))
+        .subscribe((keys: string[]) => {
+          if (keys.includes(LS.CUSTOM_THEME)) {
+            void this._customThemeService.applyActiveTheme();
+          }
+          if (keys.includes(LS.FOCUS_MODE_MODE)) {
+            this._store.dispatch(
+              setFocusModeMode({ mode: readPersistedFocusModeMode() }),
+            );
+          }
+        });
+
+      // Seeding DOES write an operation, so it waits for the first sync to
+      // finish. Run here it would sit pending while the initial download
+      // arrived, and a full-state op in that download would raise a conflict
+      // dialog over the app's own housekeeping write — which is exactly what
+      // it did. Same reason ExampleTasksService waits on this signal.
+      this._injector
+        .get(SyncTriggerService)
+        .afterInitialSyncDoneStrict$.pipe(first())
+        .subscribe(() => {
+          const seeded = syncedPrefs.seedMissingFromLocal();
+          if (seeded > 0) {
+            Log.log(
+              `synced-ui-prefs: seeded ${seeded} local preference(s) to the account`,
+            );
+          }
+        });
+
+      if (written > 0) {
+        Log.log(`synced-ui-prefs: hydrated ${written} preference(s) before first paint`);
+        // focusMode's reducer reads localStorage at MODULE scope — it is
+        // registered eagerly, so its initial state was fixed before the values
+        // above existed. Every other synced preference is read by a service or
+        // component constructed after this point; this is the one that needs
+        // the store corrected explicitly.
+        this._store.dispatch(setFocusModeMode({ mode: readPersistedFocusModeMode() }));
+      }
+    } catch (err) {
+      Log.err({ stage: 'synced-ui-prefs-hydrate', error: (err as Error).message });
+    }
+
     // Apply the persisted custom theme before the deferred init / Electron
     // ready notification, so the page doesn't briefly flash the default
     // stylesheet. Worst-case adds one IDB read for user themes — guarded by
@@ -154,15 +231,6 @@ export class StartupService {
         .catch((err) =>
           Log.err({ stage: 'sync-auto-setup', error: (err as Error).message }),
         );
-
-      // Make user preferences follow the account instead of the browser
-      // profile. Installed here so the localStorage interception is in place
-      // before feature services read their values.
-      try {
-        this._injector.get(SyncedUiPrefsService).init();
-      } catch (err) {
-        Log.err({ stage: 'synced-ui-prefs', error: (err as Error).message });
-      }
 
       const miscCfg = this._globalConfigService.misc();
 

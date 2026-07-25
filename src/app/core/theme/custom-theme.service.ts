@@ -221,7 +221,13 @@ export class CustomThemeService {
    * a user picks a theme.
    */
   async applyActiveTheme(): Promise<void> {
-    await this.loadTheme(this._activeRef());
+    // Re-read storage, not `_activeRef`: that field initializer ran at construction, before startup hydrated the account's preferences.
+    const stored = pickInitialActiveRef(
+      localStorage.getItem(LS.CUSTOM_THEME),
+      IS_APPLE_SILICON,
+    );
+    this._activeRef.set(stored);
+    await this.loadTheme(stored);
   }
 
   /**

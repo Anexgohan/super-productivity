@@ -12,7 +12,21 @@ import { LS } from '../../../core/persistence/storage-keys.const';
 
 export const FOCUS_MODE_FEATURE_KEY = 'focusMode';
 
-const focusModeModeFromLS = localStorage.getItem(LS.FOCUS_MODE_MODE);
+/**
+ * Reads the persisted focus mode, falling back to the default.
+ *
+ * Exported because this module is registered eagerly
+ * (root-store/feature-stores.module.ts), so the read below happens at IMPORT
+ * time — before the account's preferences reach localStorage. StartupService
+ * calls this again after hydrating them and dispatches `setFocusModeMode`, so
+ * a fresh browser lands on the user's mode instead of the default.
+ */
+export const readPersistedFocusModeMode = (): FocusModeMode => {
+  const stored = localStorage.getItem(LS.FOCUS_MODE_MODE);
+  return Object.values(FocusModeMode).includes(stored as FocusModeMode)
+    ? (stored as FocusModeMode)
+    : FocusModeMode.Countdown;
+};
 
 const createIdleTimer = (): TimerState => ({
   isRunning: false,
@@ -27,9 +41,7 @@ export const initialState: FocusModeState = {
   currentScreen: FocusScreen.Main,
   mainState: FocusMainUIState.Preparation,
   isOverlayShown: false,
-  mode: Object.values(FocusModeMode).includes(focusModeModeFromLS as any)
-    ? (focusModeModeFromLS as FocusModeMode)
-    : FocusModeMode.Countdown,
+  mode: readPersistedFocusModeMode(),
   currentCycle: 1,
   lastCompletedDuration: 0,
   pausedTaskId: null,

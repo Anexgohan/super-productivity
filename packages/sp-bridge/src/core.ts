@@ -9,15 +9,38 @@ import {
   buildTaskEntity,
   buildTagEntity,
   buildProjectEntity,
+  buildBoardEntity,
+  buildPanelEntity,
   nanoid,
   OpFactory,
   type NewTaskInput,
   type NewTagInput,
   type NewProjectInput,
+  type NewBoardInput,
+  type NewPanelInput,
 } from './op-factory';
 
 const ALLOWED_TAG_FIELDS = new Set(['title', 'color', 'icon']);
 const ALLOWED_PROJECT_FIELDS = new Set(['title', 'isEnableBacklog', 'isArchived']);
+const ALLOWED_BOARD_FIELDS = new Set(['title', 'cols', 'panels']);
+/**
+ * Everything on a panel except `id` (identity) and `taskIds` (manual card
+ * order, which has its own action so a reorder does not rewrite the filters).
+ */
+const ALLOWED_PANEL_FIELDS = new Set([
+  'title',
+  'includedTagIds',
+  'excludedTagIds',
+  'includedTagsMatch',
+  'excludedTagsMatch',
+  'projectIds',
+  'taskDoneState',
+  'scheduledState',
+  'backlogState',
+  'isParentTasksOnly',
+  'sortBy',
+  'sortDir',
+]);
 /** Virtual tag — membership is derived, never created/deleted as an entity. */
 const TODAY_TAG_ID = 'TODAY';
 
@@ -820,9 +843,174 @@ export class BridgeCore {
     return { deleted: id, taskCount: allTaskIds.length };
   }
 
+  // ── Boards ──────────────────────────────────────────────────────────────────
+  // Boards are one `{ boardCfgs: [] }` record rather than an id-keyed map, so
+  // these read and write the array directly instead of going through _bucket().
+  // Panels have no create/update actions of their own — the app edits a panel by
+  // replacing the parent board's whole `panels` array, and so do we.
+
+  private _boardCfgs(): Record<string, unknown>[] {
+    const board = (this.store.state.BOARD ?? {}) as Record<string, unknown>;
+    return Array.isArray(board.boardCfgs)
+      ? (board.boardCfgs as Record<string, unknown>[])
+      : [];
+  }
+
+  listBoards(): Record<string, unknown>[] {
+    return this._boardCfgs();
+  }
+
+  getBoard(id: string): Record<string, unknown> | undefined {
+    return this._boardCfgs().find((b) => b.id === id);
+  }
+
+  private _requireBoard(id: string): Record<string, unknown> {
+    const board = this.getBoard(id);
+    if (!board) throw err('Board not found', 404);
+    return board;
+  }
+
+  private _panelsOf(board: Record<string, unknown>): Record<string, unknown>[] {
+    return Array.isArray(board.panels) ? (board.panels as Record<string, unknown>[]) : [];
+  }
+
+  async createBoard(input: NewBoardInput): Promise<Record<string, unknown>> {
+    if (!input.title || typeof input.title !== 'string') {
+      throw err('title (string) is required', 400);
+    }
+    if (input.id && this.getBoard(input.id)) {
+      throw err(`Board already exists: ${input.id}`, 409);
+    }
+    const board = buildBoardEntity(input);
+    const op = await this.ops.addBoard(board, this.store.nextWriteClock());
+    await this.store.submitOps([op]);
+    return this.getBoard(board.id as string) ?? board;
+  }
+
+  async updateBoard(
+    id: string,
+    updates: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    this._requireBoard(id);
+    const bad = Object.keys(updates).filter((k) => !ALLOWED_BOARD_FIELDS.has(k));
+    if (bad.length) throw err(`Field(s) not writable: ${bad.join(', ')}`, 400);
+    if (Object.keys(updates).length === 0) throw err('No changes given', 400);
+    const op = await this.ops.updateBoard(id, updates, this.store.nextWriteClock());
+    await this.store.submitOps([op]);
+    return this._requireBoard(id);
+  }
+
+  async deleteBoard(id: string): Promise<{ deleted: string }> {
+    this._requireBoard(id);
+    const op = await this.ops.removeBoard(id, this.store.nextWriteClock());
+    await this.store.submitOps([op]);
+    return { deleted: id };
+  }
+
+  /**
+   * Reorders boards. The id list must name every board: a partial one is far
+   * more likely to be a caller bug than an intent to shuffle a subset, and the
+   * reducer would silently park the omitted boards at the tail.
+   */
+  async sortBoards(ids: string[]): Promise<Record<string, unknown>[]> {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      throw err('ids (string[]) is required', 400);
+    }
+    const known = new Set(this._boardCfgs().map((b) => b.id as string));
+    const unknown = ids.filter((id) => !known.has(id));
+    if (unknown.length) throw err(`Unknown board id(s): ${unknown.join(', ')}`, 400);
+    if (ids.length !== known.size) {
+      throw err(`ids must list all ${known.size} boards (got ${ids.length})`, 400);
+    }
+    const op = await this.ops.sortBoards(ids, this.store.nextWriteClock());
+    await this.store.submitOps([op]);
+    return this.listBoards();
+  }
+
+  async addPanel(
+    boardId: string,
+    input: NewPanelInput,
+  ): Promise<Record<string, unknown>> {
+    if (!input.title || typeof input.title !== 'string') {
+      throw err('title (string) is required', 400);
+    }
+    const board = this._requireBoard(boardId);
+    const panels = this._panelsOf(board);
+    if (input.id && panels.some((p) => p.id === input.id)) {
+      throw err(`Panel already exists on this board: ${input.id}`, 409);
+    }
+    const panel = buildPanelEntity(input);
+    // `cols` grows with the panel count so a new column is actually visible
+    // rather than wrapping under the existing ones.
+    await this.updateBoard(boardId, {
+      panels: [...panels, panel],
+      cols: Math.max(Number(board.cols) || 0, panels.length + 1),
+    });
+    return panel;
+  }
+
+  async updatePanel(
+    boardId: string,
+    panelId: string,
+    changes: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const board = this._requireBoard(boardId);
+    const panels = this._panelsOf(board);
+    const existing = panels.find((p) => p.id === panelId);
+    if (!existing) throw err('Panel not found', 404);
+    const bad = Object.keys(changes).filter((k) => !ALLOWED_PANEL_FIELDS.has(k));
+    if (bad.length) throw err(`Field(s) not writable: ${bad.join(', ')}`, 400);
+    if (Object.keys(changes).length === 0) throw err('No changes given', 400);
+    await this.updateBoard(boardId, {
+      panels: panels.map((p) => (p.id === panelId ? { ...p, ...changes } : p)),
+    });
+    return this._panelsOf(this._requireBoard(boardId)).find((p) => p.id === panelId)!;
+  }
+
+  async removePanel(boardId: string, panelId: string): Promise<{ deleted: string }> {
+    const board = this._requireBoard(boardId);
+    const panels = this._panelsOf(board);
+    if (!panels.some((p) => p.id === panelId)) throw err('Panel not found', 404);
+    const remaining = panels.filter((p) => p.id !== panelId);
+    await this.updateBoard(boardId, {
+      panels: remaining,
+      cols: Math.max(remaining.length, 1),
+    });
+    return { deleted: panelId };
+  }
+
+  /** Manual card order within one panel. Panel ids are unique across boards. */
+  async setPanelTaskIds(
+    panelId: string,
+    taskIds: string[],
+  ): Promise<Record<string, unknown>> {
+    if (!Array.isArray(taskIds)) throw err('taskIds (string[]) is required', 400);
+    const board = this._boardCfgs().find((b) =>
+      this._panelsOf(b).some((p) => p.id === panelId),
+    );
+    if (!board) throw err('Panel not found', 404);
+    const unknown = taskIds.filter((id) => !this.getTask(id));
+    if (unknown.length) throw err(`Unknown task id(s): ${unknown.join(', ')}`, 400);
+    const op = await this.ops.updatePanelTaskIds(
+      panelId,
+      taskIds,
+      this.store.nextWriteClock(),
+    );
+    await this.store.submitOps([op]);
+    return this._panelsOf(this._requireBoard(board.id as string)).find(
+      (p) => p.id === panelId,
+    )!;
+  }
+
   status(): Record<string, unknown> {
     const counts: Record<string, number> = {};
     for (const [type, entities] of Object.entries(this.store.state)) {
+      if (type === 'BOARD') {
+        // Not an entity map: counting keys of the `{ boardCfgs }` wrapper
+        // reported 1 however many boards existed.
+        counts[type] = this._boardCfgs().length;
+        continue;
+      }
       counts[type] =
         entities && typeof entities === 'object' ? Object.keys(entities).length : 0;
     }

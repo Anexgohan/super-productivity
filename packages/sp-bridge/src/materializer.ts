@@ -70,8 +70,7 @@ const normalizeFullState = (fullState: Record<string, unknown>): EntityMap => {
   const out: EntityMap = {};
   for (const [sectionKey, value] of Object.entries(fullState)) {
     if (isUnsafeKey(sectionKey)) continue;
-    const canonical =
-      SECTION_TO_ENTITY_TYPE[sectionKey] ?? sectionKey.toUpperCase();
+    const canonical = SECTION_TO_ENTITY_TYPE[sectionKey] ?? sectionKey.toUpperCase();
     if (
       value &&
       typeof value === 'object' &&
@@ -79,7 +78,7 @@ const normalizeFullState = (fullState: Record<string, unknown>): EntityMap => {
       'ids' in (value as Record<string, unknown>)
     ) {
       out[canonical] = {
-        ...((value as { entities: Record<string, unknown> }).entities),
+        ...(value as { entities: Record<string, unknown> }).entities,
       };
     } else if (value && typeof value === 'object') {
       out[canonical] = value as Record<string, unknown>;
@@ -161,9 +160,7 @@ export class Materializer {
       return op.payload;
     }
     if (typeof op.payload !== 'string') {
-      throw new Error(
-        `sp-bridge: encrypted op ${op.id} has non-string payload`,
-      );
+      throw new Error(`sp-bridge: encrypted op ${op.id} has non-string payload`);
     }
     const plaintext = await decrypt(op.payload, this.encryptionPassword);
     return JSON.parse(plaintext);
@@ -229,6 +226,85 @@ export class Materializer {
     return map[entityType] ?? entityType.toLowerCase();
   }
 
+  /**
+   * Boards are not an entity map. The whole feature is a single
+   * `{ boardCfgs: BoardCfg[] }` record, so the generic id-keyed path below
+   * would write a sibling key *beside* the array rather than touch a board —
+   * which is why board ops were silently dropped and the bridge only ever saw
+   * boards via a full-state SYNC_IMPORT.
+   *
+   * Mirrors src/app/features/boards/store/boards.reducer.ts so a board edited
+   * in a browser and one edited through the REST API converge on the same
+   * result.
+   *
+   * `[Boards] Update Panel Cfg` is deliberately unhandled: its reducer case is
+   * commented out upstream, so acting on it here would move the bridge to a
+   * state no browser would ever reach. Panel edits arrive as an
+   * `[Boards] Update Board` carrying a replacement `panels` array.
+   */
+  private _applyBoardOp(op: SuperSyncOperation, payload: unknown): void {
+    const action = asRecord(extractActionPayload(payload));
+    const state = (this._state.BOARD ??= {});
+    const boards: Record<string, unknown>[] = Array.isArray(state.boardCfgs)
+      ? (state.boardCfgs as Record<string, unknown>[])
+      : [];
+
+    switch (op.actionType) {
+      case '[Boards] Add Board': {
+        const board = asRecord(action.board);
+        if (typeof board.id === 'string' && board.id) {
+          state.boardCfgs = [...boards, board];
+        }
+        break;
+      }
+      case '[Boards] Update Board': {
+        const id = (action.id as string) || op.entityId;
+        const updates = asRecord(action.updates);
+        if (!id || Object.keys(updates).length === 0) break;
+        state.boardCfgs = boards.map((b) => (b.id === id ? { ...b, ...updates } : b));
+        break;
+      }
+      case '[Boards] Remove Board': {
+        const id = (action.id as string) || op.entityId;
+        if (!id) break;
+        state.boardCfgs = boards.filter((b) => b.id !== id);
+        break;
+      }
+      case '[Boards] Sort Boards': {
+        const ids = Array.isArray(action.ids) ? (action.ids as string[]) : [];
+        if (!ids.length) break;
+        const byId = new Map(boards.map((b) => [b.id as string, b]));
+        const ordered = ids
+          .map((id) => byId.get(id))
+          .filter((b): b is Record<string, unknown> => !!b);
+        // Boards missing from `ids` survive at the tail, matching the reducer:
+        // a stale sort from another client must not delete a new board.
+        const seen = new Set(ids);
+        state.boardCfgs = [
+          ...ordered,
+          ...boards.filter((b) => !seen.has(b.id as string)),
+        ];
+        break;
+      }
+      case '[Boards] Update Panel Cfg TaskIds': {
+        const panelId = (action.panelId as string) || op.entityId;
+        const taskIds = Array.isArray(action.taskIds) ? action.taskIds : [];
+        if (!panelId) break;
+        state.boardCfgs = boards.map((b) => {
+          const panels = Array.isArray(b.panels)
+            ? (b.panels as Record<string, unknown>[])
+            : [];
+          if (!panels.some((p) => p.id === panelId)) return b;
+          return {
+            ...b,
+            panels: panels.map((p) => (p.id === panelId ? { ...p, taskIds } : p)),
+          };
+        });
+        break;
+      }
+    }
+  }
+
   private _applyFromActionPayload(op: SuperSyncOperation, payload: unknown): void {
     const entityType = op.entityType;
     if (isUnsafeKey(entityType)) return;
@@ -281,7 +357,9 @@ export class Materializer {
         // the real entity arrives once a client initializes it.
         const projectId = task.projectId as string | undefined;
         const existingProject =
-          projectId && !isUnsafeKey(projectId) ? this._state.PROJECT?.[projectId] : undefined;
+          projectId && !isUnsafeKey(projectId)
+            ? this._state.PROJECT?.[projectId]
+            : undefined;
         if (projectId && existingProject) {
           const project = asRecord(existingProject);
           const key = action.isAddToBacklog === true ? 'backlogTaskIds' : 'taskIds';
@@ -315,10 +393,14 @@ export class Materializer {
         // Only attach to a parent that exists (never invent one — see addTask).
         if (parentId && !isUnsafeKey(parentId) && this._state.TASK[parentId]) {
           const parent = asRecord(this._state.TASK[parentId]);
-          const sub = Array.isArray(parent.subTaskIds) ? (parent.subTaskIds as string[]) : [];
+          const sub = Array.isArray(parent.subTaskIds)
+            ? (parent.subTaskIds as string[])
+            : [];
           if (!sub.includes(id)) parent.subTaskIds = [...sub, id];
           // A subtask inherits the parent's project membership.
-          if (parent.projectId) (this._state.TASK[id] as Record<string, unknown>).projectId = parent.projectId;
+          if (parent.projectId)
+            (this._state.TASK[id] as Record<string, unknown>).projectId =
+              parent.projectId;
           this._state.TASK[parentId] = parent;
         }
       }
@@ -329,14 +411,21 @@ export class Materializer {
       const taskId = (action.taskId as string) ?? op.entityId;
       const targetParentId = action.targetParentId as string | undefined;
       const tasks = (this._state.TASK ??= {});
-      if (taskId && targetParentId && !isUnsafeKey(taskId) && !isUnsafeKey(targetParentId)) {
+      if (
+        taskId &&
+        targetParentId &&
+        !isUnsafeKey(taskId) &&
+        !isUnsafeKey(targetParentId)
+      ) {
         const task = asRecord(tasks[taskId]);
         const oldProjectId = task.projectId as string | undefined;
         const parent = asRecord(tasks[targetParentId]);
         task.parentId = targetParentId;
         if (parent.projectId) task.projectId = parent.projectId;
         tasks[taskId] = task;
-        const sub = Array.isArray(parent.subTaskIds) ? (parent.subTaskIds as string[]) : [];
+        const sub = Array.isArray(parent.subTaskIds)
+          ? (parent.subTaskIds as string[])
+          : [];
         if (!sub.includes(taskId)) parent.subTaskIds = [...sub, taskId];
         tasks[targetParentId] = parent;
         // Drop it from its former project's regular + backlog lists.
@@ -358,16 +447,22 @@ export class Materializer {
         if (oldParentId && tasks[oldParentId]) {
           const parent = asRecord(tasks[oldParentId]);
           if (Array.isArray(parent.subTaskIds)) {
-            parent.subTaskIds = (parent.subTaskIds as string[]).filter((i) => i !== taskId);
+            parent.subTaskIds = (parent.subTaskIds as string[]).filter(
+              (i) => i !== taskId,
+            );
           }
         }
         // Re-attach to its project's regular list (only if that project exists).
         const projectId = existing.projectId as string | undefined;
         const proj =
-          projectId && !isUnsafeKey(projectId) ? this._state.PROJECT?.[projectId] : undefined;
+          projectId && !isUnsafeKey(projectId)
+            ? this._state.PROJECT?.[projectId]
+            : undefined;
         if (projectId && proj) {
           const project = asRecord(proj);
-          const list = Array.isArray(project.taskIds) ? (project.taskIds as string[]) : [];
+          const list = Array.isArray(project.taskIds)
+            ? (project.taskIds as string[])
+            : [];
           if (!list.includes(taskId)) project.taskIds = [...list, taskId];
           this._state.PROJECT[projectId] = project;
         }
@@ -402,7 +497,9 @@ export class Materializer {
       const attachment = asRecord(action.taskAttachment);
       if (taskId && !isUnsafeKey(taskId)) {
         const task = asRecord((this._state.TASK ??= {})[taskId]);
-        const list = Array.isArray(task.attachments) ? (task.attachments as unknown[]) : [];
+        const list = Array.isArray(task.attachments)
+          ? (task.attachments as unknown[])
+          : [];
         task.attachments = [...list, attachment];
         this._state.TASK[taskId] = task;
       }
@@ -445,6 +542,10 @@ export class Materializer {
       (this._state.MENU_TREE ??= {}).tree = action as Record<string, unknown>;
       return;
     }
+    if (entityType === 'BOARD') {
+      this._applyBoardOp(op, payload);
+      return;
+    }
 
     const bucket = (this._state[entityType] ??= {});
     const payloadKey = this._payloadKeyFor(entityType);
@@ -452,8 +553,7 @@ export class Materializer {
     switch (op.opType) {
       case 'CRT': {
         const entity = extractEntityFromPayload(payload, payloadKey, op.entityId);
-        const id =
-          (entity?.id as string | undefined) ?? (op.entityId || undefined);
+        const id = (entity?.id as string | undefined) ?? (op.entityId || undefined);
         if (entity && id && !isUnsafeKey(id)) {
           bucket[id] = entity;
         }
@@ -479,7 +579,10 @@ export class Materializer {
         const parentOf: Record<string, string | undefined> =
           entityType === 'TASK'
             ? Object.fromEntries(
-                ids.map((id) => [id, asRecord(bucket[id]).parentId as string | undefined]),
+                ids.map((id) => [
+                  id,
+                  asRecord(bucket[id]).parentId as string | undefined,
+                ]),
               )
             : {};
         for (const id of ids) {
@@ -503,7 +606,10 @@ export class Materializer {
   }
 
   /** Removes a task id from a project's regular + backlog ordering lists. */
-  private _removeTaskFromProjectLists(projectId: string | undefined, taskId: string): void {
+  private _removeTaskFromProjectLists(
+    projectId: string | undefined,
+    taskId: string,
+  ): void {
     if (!projectId || isUnsafeKey(projectId)) return;
     const project = this._state.PROJECT?.[projectId];
     if (!project) return;
@@ -532,7 +638,9 @@ export class Materializer {
       if (parentId && tasks[parentId]) {
         const parent = asRecord(tasks[parentId]);
         if (Array.isArray(parent.subTaskIds)) {
-          parent.subTaskIds = (parent.subTaskIds as string[]).filter((i) => !removed.has(i));
+          parent.subTaskIds = (parent.subTaskIds as string[]).filter(
+            (i) => !removed.has(i),
+          );
         }
       }
     }
@@ -540,7 +648,10 @@ export class Materializer {
     for (const project of Object.values(this._state.PROJECT ?? {})) {
       const rec = asRecord(project);
       for (const key of ['taskIds', 'backlogTaskIds']) {
-        if (Array.isArray(rec[key]) && (rec[key] as string[]).some((i) => removed.has(i))) {
+        if (
+          Array.isArray(rec[key]) &&
+          (rec[key] as string[]).some((i) => removed.has(i))
+        ) {
           rec[key] = (rec[key] as string[]).filter((i) => !removed.has(i));
         }
       }
@@ -548,7 +659,10 @@ export class Materializer {
     // 3) Strip from tag lists (includes TODAY).
     for (const tag of Object.values(this._state.TAG ?? {})) {
       const rec = asRecord(tag);
-      if (Array.isArray(rec.taskIds) && (rec.taskIds as string[]).some((i) => removed.has(i))) {
+      if (
+        Array.isArray(rec.taskIds) &&
+        (rec.taskIds as string[]).some((i) => removed.has(i))
+      ) {
         rec.taskIds = (rec.taskIds as string[]).filter((i) => !removed.has(i));
       }
     }

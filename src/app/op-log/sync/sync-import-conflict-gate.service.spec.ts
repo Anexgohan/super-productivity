@@ -437,6 +437,73 @@ describe('SyncImportConflictGateService', () => {
 
       expect(service.hasMeaningfulPendingOps([pendingTimeTracking])).toBeTrue();
       expect(service.hasMeaningfulPendingOps([pendingCounter])).toBeTrue();
+
+      // Still meaningful before the first sync: both record something a person
+      // actually did, unlike the boot scaffolding covered below.
+      const neverSynced = { hasCompletedInitialSync: false };
+      expect(
+        service.hasMeaningfulPendingOps([pendingTimeTracking], neverSynced),
+      ).toBeTrue();
+      expect(service.hasMeaningfulPendingOps([pendingCounter], neverSynced)).toBeTrue();
+    });
+
+    it('should not treat a first launch’s own boot writes as meaningful', async () => {
+      const scaffolding = (
+        entityType: NonNullable<Operation['entityType']>,
+        id: string,
+      ): OperationLogEntry =>
+        createEntry(
+          createOperation({
+            id: `local-${id}`,
+            actionType: '[Boot] Write' as ActionType,
+            opType: OpType.Update,
+            entityType,
+            entityId: id,
+            clientId: 'client-A',
+            vectorClock: { clientA: 1 },
+          }),
+        );
+
+      const boot = [
+        scaffolding('GLOBAL_CONFIG', 'misc'),
+        scaffolding('MENU_TREE', 'tree'),
+        scaffolding('PLANNER', 'planner'),
+      ];
+
+      // Opening the app for the first time against a stack that already holds a
+      // full-state op used to raise a conflict dialog over exactly these.
+      expect(
+        service.hasMeaningfulPendingOps(boot, { hasCompletedInitialSync: false }),
+      ).toBeFalse();
+      expect(
+        service.getDiscardablePendingOpIds(boot, { hasCompletedInitialSync: false })
+          .length,
+      ).toBe(3);
+
+      // Once synced, the same writes are deliberate edits and count again.
+      expect(
+        service.hasMeaningfulPendingOps(boot, { hasCompletedInitialSync: true }),
+      ).toBeTrue();
+    });
+
+    it('should keep real content meaningful on a never-synced client', async () => {
+      const typedTask = createEntry(
+        createOperation({
+          id: 'local-real-task',
+          actionType: ActionType.TASK_SHARED_ADD,
+          opType: OpType.Create,
+          entityType: 'TASK',
+          entityId: 'task-1',
+          clientId: 'client-A',
+          vectorClock: { clientA: 1 },
+        }),
+      );
+
+      // No isExampleTask marker: someone typed this before the first sync
+      // finished, so it must still block.
+      expect(
+        service.hasMeaningfulPendingOps([typedTask], { hasCompletedInitialSync: false }),
+      ).toBeTrue();
     });
 
     it('should always treat MIGRATION/RECOVERY genesis batches as meaningful', async () => {

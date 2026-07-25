@@ -84,6 +84,98 @@ h1 {
   }
 }
 
+// Side-by-side inventory of what each choice affects. Collapses to stacked
+// blocks on narrow screens rather than squeezing two columns.
+.compare {
+  display: flex;
+  gap: var(--s2);
+  margin: var(--s2) 0;
+
+  @include mq(xs, max) {
+    flex-direction: column;
+  }
+}
+
+.side {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: var(--s);
+  border: 1px solid var(--extra-border-color);
+  border-radius: var(--card-border-radius);
+
+  h2 {
+    display: flex;
+    align-items: center;
+    gap: var(--s-quarter);
+    margin: 0 0 var(--s-half);
+    font-size: 14px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.8;
+
+    mat-icon {
+      font-size: 18px;
+      width: 18px;
+      height: 18px;
+    }
+  }
+
+  ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  li {
+    padding: 2px 0;
+
+    strong {
+      display: inline-block;
+      min-width: 2em;
+    }
+
+    &.empty {
+      opacity: 0.6;
+      font-style: italic;
+    }
+  }
+
+  .stamp {
+    margin: var(--s-half) 0 0;
+    font-size: 12px;
+    opacity: 0.7;
+
+    &.at-risk {
+      color: var(--palette-warn-500);
+      opacity: 1;
+    }
+  }
+}
+
+// What each button will actually do — stated, not left to be inferred.
+.outcomes {
+  margin-top: var(--s2);
+  padding-top: var(--s);
+  border-top: 1px solid var(--extra-border-color);
+
+  p {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-half);
+    margin: 0 0 var(--s-half);
+    font-size: 13px;
+
+    mat-icon {
+      flex: 0 0 auto;
+      font-size: 18px;
+      width: 18px;
+      height: 18px;
+      opacity: 0.7;
+    }
+  }
+}
+
 :host ::ng-deep {
   .mat-mdc-dialog-container {
     @include mq(xs, max) {

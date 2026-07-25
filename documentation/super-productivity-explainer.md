@@ -97,11 +97,24 @@ expansion. Those describe the screen in front of you, so pushing a desktop's
 sidebar width onto a laptop makes the experience worse, not more consistent.
 Caches, debug logs and per-install counters stay local for the same reason.
 
-One caveat: most settings read their stored value once at startup, so a
+One caveat: most settings read their stored value once, at construction, so a
 preference changed on another device applies here on the next reload rather than
-instantly. The case that actually hurt — a fresh browser starting from defaults
-— is fixed, because the synced values are hydrated during data-init before those
-services are constructed. Dark mode is wired to react live.
+instantly. Dark mode is wired to react live.
+
+The case that actually hurt — a fresh browser rendering defaults — is handled by
+`StartupService.init()`, which waits for data-init and then calls
+`SyncedUiPrefsService.hydrateNow()` **before** the theme is applied, so the
+account's values are already in `localStorage` when those constructors run.
+
+One preference could not be fixed by ordering alone. `focusMode`'s reducer is
+registered eagerly and reads `localStorage` at **module scope**, so its initial
+state is fixed on import — before any service exists. Startup therefore corrects
+the store explicitly, dispatching `setFocusModeMode` with
+`readPersistedFocusModeMode()` once the values are in place.
+
+> **Not true yet.** `HIDDEN_CALENDAR_PROVIDER_IDS` is listed in `SYNCED_KEYS`
+> but has no reader anywhere in the app. It is either dead weight or consumed
+> by some path that does not go through `LS`, and nobody has checked which.
 
 **Questions with a fixed answer are not asked.** Upstream shows a
 _"Server Already Contains Data"_ dialog when a client and the server both hold
