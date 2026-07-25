@@ -89,6 +89,41 @@ export const purgeSyncAccount = async (
   }
 };
 
+/**
+ * Whether a user's own board holds anything yet.
+ *
+ * The bridge syncs ONE account, so its own sequence number answers this for the
+ * container account and nobody else — reporting that to a new user made the
+ * replica gate adopt a stale replica instead of purging it.
+ *
+ * Unreachable sync server resolves to `true`: the gate treats that as "has
+ * data" and takes the non-destructive branch, so a blip cannot delete a board.
+ */
+export const boardHasData = async (
+  cfg: BridgeConfig,
+  supersyncUserId: number | null,
+): Promise<boolean> => {
+  if (!supersyncUserId) {
+    // No id of its own. The container account is the case that matters: it
+    // binds by email and never gets one, so answering "empty" here told its
+    // owner's browser the server was blank and the replica gate purged a board
+    // holding everything. Only a genuinely unprovisioned account is empty, and
+    // the caller distinguishes the two.
+    return true;
+  }
+  try {
+    const res = await fetch(
+      `${cfg.syncServerUrl}/api/internal/users/${supersyncUserId}/has-data`,
+      { headers: { 'X-Internal-Secret': cfg.jwtSecret } },
+    );
+    if (!res.ok) return true;
+    const body = (await res.json()) as { hasData?: unknown };
+    return body.hasData !== false;
+  } catch {
+    return true;
+  }
+};
+
 export class SyncIdentityProvider {
   private readonly _tokens = new Map<number, WebappTokenProvider>();
 
@@ -122,6 +157,16 @@ export class SyncIdentityProvider {
    * restarts — a rotating one puts the "Server Already Contains Data" prompt
    * back in front of them.
    */
+  /**
+   * Whether this user IS the container account, and so shares the board the
+   * bridge already syncs. UserBoards needs this to avoid opening a second store
+   * against the same account.
+   */
+  async isContainerAccount(user: UserRow): Promise<boolean> {
+    const address = await this._addressFor(user);
+    return Boolean(this._cfg.syncAccountEmail && address === this._cfg.syncAccountEmail);
+  }
+
   async tokenForUser(user: UserRow): Promise<string> {
     const existing = this._tokens.get(user.id);
     if (existing) return existing.get();

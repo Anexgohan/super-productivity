@@ -39,10 +39,22 @@ export const mintSuperSyncToken = async (cfg: BridgeConfig): Promise<string> => 
 export class SyncClient {
   private _token: string | null = null;
 
-  constructor(private readonly cfg: BridgeConfig) {}
+  /**
+   * `mintToken` defaults to the container account. A per-user board passes the
+   * token for its own user instead — the same one that user's browser gets, so
+   * the bridge sees exactly the board they see.
+   */
+  constructor(
+    private readonly cfg: BridgeConfig,
+    private readonly mintToken: (
+      cfg: BridgeConfig,
+    ) => Promise<string> = mintSuperSyncToken,
+    /** Must equal the clientId on the ops being uploaded — the server rejects a mismatch. */
+    private readonly clientId: string = cfg.clientId,
+  ) {}
 
   async authenticate(): Promise<void> {
-    this._token = await mintSuperSyncToken(this.cfg);
+    this._token = await this.mintToken(this.cfg);
   }
 
   /** Current access token, or null before authenticate(). Used by the WS client. */
@@ -102,7 +114,7 @@ export class SyncClient {
     const res = await fetch(`${this.cfg.syncServerUrl}/api/sync/ops`, {
       method: 'POST',
       headers: { ...this._authHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ops, clientId: this.cfg.clientId, lastKnownServerSeq }),
+      body: JSON.stringify({ ops, clientId: this.clientId, lastKnownServerSeq }),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');

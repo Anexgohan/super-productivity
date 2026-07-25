@@ -1,5 +1,6 @@
 import { inject, Injectable } from '@angular/core';
 import { OperationLogStoreService } from '../../op-log/persistence/operation-log-store.service';
+import { OperationWriteFlushService } from '../../op-log/sync/operation-write-flush.service';
 import { SyncLog } from '../../core/log';
 
 /** What the container says this browser is entitled to hold. */
@@ -48,6 +49,21 @@ export type ReplicaIdentityOutcome =
 @Injectable({ providedIn: 'root' })
 export class ReplicaIdentityGateService {
   private _opLogStore = inject(OperationLogStoreService);
+  private _writeFlush = inject(OperationWriteFlushService);
+
+  /**
+   * Flushes before wiping, so ops still in the capture pipeline land in the store and are cleared with everything else.
+   * Without it they flush AFTER the purge still wearing the purged account's clientId, and upload into the next user's board.
+   */
+  private async _purgeReplica(): Promise<void> {
+    try {
+      await this._writeFlush.flushPendingWrites();
+    } catch (err) {
+      // A stuck pipeline must not leave the wrong user's board on screen.
+      SyncLog.err('ReplicaIdentityGate: flush before purge failed, purging anyway', err);
+    }
+    await this._opLogStore.purgeForIdentityMismatch();
+  }
 
   /**
    * Compares the served identity against the replica's stamp and purges on a
@@ -94,7 +110,7 @@ export class ReplicaIdentityGateService {
             'ReplicaIdentityGate: unstamped replica on an empty stack — purging ' +
               'rather than letting it re-seed the server.',
           );
-          await this._opLogStore.purgeForIdentityMismatch();
+          await this._purgeReplica();
           await this._opLogStore.setReplicaIdentity(served);
           return 'purged';
         }
@@ -110,7 +126,7 @@ export class ReplicaIdentityGateService {
         `ReplicaIdentityGate: replica belongs to instance ${stamp.instanceId}/user ${stamp.userId}, ` +
           `session is ${served.instanceId}/user ${served.userId} — purging local replica.`,
       );
-      await this._opLogStore.purgeForIdentityMismatch();
+      await this._purgeReplica();
       // Re-stamp after the purge, not before: purging clears META too, so a
       // stamp written first would be wiped and the next start would see an
       // unstamped replica and silently adopt it.

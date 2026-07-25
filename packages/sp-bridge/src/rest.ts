@@ -14,10 +14,12 @@ import { timingSafeEqual } from 'node:crypto';
 import type { BridgeCore, TaskFilter } from './core';
 import type { StateStore } from './state-store';
 import type { AuthStore } from './auth/store';
+import { isRole, ROLE_LEVELS } from './auth/store';
 import type { SessionManager } from './auth/session';
 import type { SyncIdentityProvider } from './auth/sync-identity';
 import { registerAuthRoutes, sessionFromRequest } from './auth/routes';
 import { verifyApiKey } from './auth/api-key';
+import type { UserBoards } from './user-boards';
 
 const DOCS = {
   name: 'sp-bridge API',
@@ -105,6 +107,16 @@ const isAuthorized = (req: FastifyRequest, apiKeyHash: string): boolean => {
   return candidates.some((candidate) => verifyApiKey(candidate, apiKeyHash));
 };
 
+/** Methods that cannot change anything, so a viewer may use them. */
+const READ_ONLY_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+const isReadOnlyRequest = (method: string): boolean =>
+  READ_ONLY_METHODS.has(method.toUpperCase());
+
+/** operator and admin may write data; admin's extra powers are account management, gated per-route in auth/routes.ts. */
+const canWrite = (role: string): boolean =>
+  isRole(role) && ROLE_LEVELS[role] >= ROLE_LEVELS.operator;
+
 export interface AuthWiring {
   store: AuthStore;
   sessions: SessionManager;
@@ -130,6 +142,8 @@ export interface SessionOverrideWiring {
   /** Container-wide E2E passphrase. One key for everyone, by design — see the explainer, "Encryption is container-wide, deliberately". */
   encryptKey: string;
   identities: SyncIdentityProvider;
+  /** Whether that user's own board holds any ops — see boardHasData. */
+  boardHasData: (supersyncUserId: number | null) => Promise<boolean>;
   /**
    * Identity of this stack's data, so a browser can tell whose replica it is
    * holding. Wiping the database mints a new one, which is what makes a wipe
@@ -192,15 +206,42 @@ export const createRestServer = (
   apiKeyHash: string,
   auth?: AuthWiring,
   internal?: InternalWiring,
+  boards?: UserBoards,
 ): FastifyInstance => {
   const app = Fastify({ logger: false, trustProxy: true });
+
+  /**
+   * The board this request acts on.
+   *
+   * A browser session names a user, so it gets that user's own board. The API
+   * key names nobody — it is a deployment secret — so it stays on the container
+   * account, which is where every caller landed before boards were per-user.
+   * Per-user keys are what will let automation address any board.
+   *
+   * Falls back to the container board whenever the caller cannot be resolved,
+   * so a deployment without auth behaves exactly as it did.
+   */
+  const boardFor = async (
+    req: FastifyRequest,
+  ): Promise<{ core: BridgeCore; store: StateStore }> => {
+    const container = { core, store };
+    if (!boards || !auth?.override) return container;
+    const session = sessionFromRequest(req, auth.sessions);
+    if (!session) return container;
+    const user = await auth.store.findUserById(session.user.userId);
+    if (!user) return container;
+    return boards.forUser(user, await auth.override.identities.isContainerAccount(user));
+  };
+
+  const coreFor = async (req: FastifyRequest): Promise<BridgeCore> =>
+    (await boardFor(req)).core;
 
   if (auth) {
     registerAuthRoutes(app, auth);
   }
 
   if (auth?.override) {
-    const { baseUrl, encryptKey, identities, instanceId } = auth.override;
+    const { baseUrl, encryptKey, identities, instanceId, boardHasData } = auth.override;
     app.get(OVERRIDE_PATH, async (req, reply) => {
       const session = sessionFromRequest(req, auth.sessions);
       if (!session) return reply.status(401).send({ error: 'Not signed in' });
@@ -234,10 +275,18 @@ export const createRestServer = (
           // nothing to compare against, an empty stack means this browser is
           // the only thing keeping that data alive, which is precisely the
           // resurrection case rather than a legitimate one.
+          //
+          // Asked per user. The bridge's own sequence describes the container
+          // account only, so using it told every other account their empty
+          // board was populated — the gate then adopted where it should purge.
           identity: {
             instanceId: await instanceId(),
             userId: user.id,
-            serverHasData: store.lastServerSeq > 0,
+            // Re-read: tokenForUser() provisions on first login and writes the
+            // sync id, so the row fetched above is stale for a brand-new user.
+            serverHasData: await boardHasData(
+              (await auth.store.findUserById(user.id))?.supersyncUserId ?? null,
+            ),
           },
         };
       } catch (err) {
@@ -269,14 +318,33 @@ export const createRestServer = (
     if (PUBLIC_PATHS.has(url)) return;
     // Machine clients present the API key; browsers present a session cookie.
     // Either is sufficient — they authenticate different kinds of caller.
+    // The key is a deployment secret with no role attached, so it stays
+    // unrestricted: it IS the admin credential for automation.
     if (isAuthorized(req, apiKeyHash)) return;
-    if (auth && sessionFromRequest(req, auth.sessions)) return;
-    return reply.status(401).send({ error: 'Unauthorized' });
+
+    const session = auth && sessionFromRequest(req, auth.sessions);
+    if (!session) {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+
+    // Account routes carry their own per-route checks (requireAdmin), and a
+    // viewer legitimately POSTs to some of them — logout, own password, own
+    // email. Gating them by method here would lock people out of their own
+    // account.
+    if (url.startsWith('/api/auth/')) return;
+
+    // Roles were assignable in the UI but enforced nowhere: a viewer could
+    // create tasks or delete boards. Writes now require operator or above.
+    if (!isReadOnlyRequest(req.method) && !canWrite(session.user.role)) {
+      return reply
+        .status(403)
+        .send({ error: 'Read-only account', role: session.user.role });
+    }
   });
 
   app.get('/api/health', async () => ({ status: 'ok' }));
   app.get('/api/docs', async () => DOCS);
-  app.get('/api/status', async () => core.status());
+  app.get('/api/status', async (req) => (await coreFor(req)).status());
 
   app.get<{
     Querystring: {
@@ -321,36 +389,39 @@ export const createRestServer = (
           }
         : {}),
     };
-    return core.listTasks(filter);
+    return (await coreFor(req)).listTasks(filter);
   });
 
   app.get<{ Params: { id: string } }>('/api/tasks/:id', async (req, reply) => {
-    const task = core.getTask(req.params.id);
+    const task = (await coreFor(req)).getTask(req.params.id);
     if (!task) return reply.status(404).send({ error: 'Task not found' });
     return task;
   });
 
-  app.get('/api/current-task', async () => core.getCurrentTask());
-  app.get('/api/task-repeat-cfgs', async () => core.listTaskRepeatCfgs());
-  app.get('/api/planner', async () => core.getPlanner());
-  app.get('/api/projects', async () => core.listProjects());
-  app.get('/api/tags', async () => core.listTags());
-  app.get('/api/config', async () => core.getConfig());
+  app.get('/api/current-task', async (req) => (await coreFor(req)).getCurrentTask());
+  app.get('/api/task-repeat-cfgs', async (req) =>
+    (await coreFor(req)).listTaskRepeatCfgs(),
+  );
+  app.get('/api/planner', async (req) => (await coreFor(req)).getPlanner());
+  app.get('/api/projects', async (req) => (await coreFor(req)).listProjects());
+  app.get('/api/tags', async (req) => (await coreFor(req)).listTags());
+  app.get('/api/config', async (req) => (await coreFor(req)).getConfig());
 
   app.get<{ Querystring: { from?: string; to?: string } }>('/api/worklog', async (req) =>
-    core.getWorklog(req.query.from, req.query.to),
+    (await coreFor(req)).getWorklog(req.query.from, req.query.to),
   );
 
-  app.get('/api/entities', async () => core.listEntityTypes());
+  app.get('/api/entities', async (req) => (await coreFor(req)).listEntityTypes());
   app.get<{ Params: { type: string } }>('/api/entities/:type', async (req, reply) => {
-    const entities = core.rawEntities(req.params.type);
+    const entities = (await coreFor(req)).rawEntities(req.params.type);
     if (!entities) return reply.status(404).send({ error: 'Unknown entity type' });
     return entities;
   });
 
-  app.post('/api/sync/refresh', async () => {
-    await store.refresh();
-    return core.status();
+  app.post('/api/sync/refresh', async (req) => {
+    const board = await boardFor(req);
+    await board.store.refresh();
+    return board.core.status();
   });
 
   // ── Writes ────────────────────────────────────────────────────────────────
@@ -369,7 +440,9 @@ export const createRestServer = (
     async (req, reply) => {
       try {
         const b = req.body ?? {};
-        const created = await core.createTaskFromShortSyntax(b.text ?? '', b.projectId);
+        const created = await (
+          await coreFor(req)
+        ).createTaskFromShortSyntax(b.text ?? '', b.projectId);
         return reply.status(201).send(created);
       } catch (err) {
         return sendError(reply, err);
@@ -382,7 +455,9 @@ export const createRestServer = (
     async (req, reply) => {
       try {
         const b = req.body ?? {};
-        return await core.addLinkToTask(req.params.id, b.url ?? '', b.title);
+        return await (
+          await coreFor(req)
+        ).addLinkToTask(req.params.id, b.url ?? '', b.title);
       } catch (err) {
         return sendError(reply, err);
       }
@@ -399,7 +474,7 @@ export const createRestServer = (
     };
   }>('/api/tasks/:id/issue-link', async (req, reply) => {
     try {
-      return await core.linkTaskToIssue(req.params.id, req.body ?? {});
+      return await (await coreFor(req)).linkTaskToIssue(req.params.id, req.body ?? {});
     } catch (err) {
       return sendError(reply, err);
     }
@@ -410,10 +485,9 @@ export const createRestServer = (
     async (req, reply) => {
       try {
         const { subTasks, ...input } = req.body ?? {};
-        const created = await core.createTaskWithSubtasks(
-          input as never,
-          Array.isArray(subTasks) ? subTasks : [],
-        );
+        const created = await (
+          await coreFor(req)
+        ).createTaskWithSubtasks(input as never, Array.isArray(subTasks) ? subTasks : []);
         return reply.status(201).send(created);
       } catch (err) {
         return sendError(reply, err);
@@ -425,10 +499,9 @@ export const createRestServer = (
     '/api/tasks/:id/subtasks',
     async (req, reply) => {
       try {
-        const created = await core.createSubTask(
-          req.params.id,
-          (req.body ?? {}) as never,
-        );
+        const created = await (
+          await coreFor(req)
+        ).createSubTask(req.params.id, (req.body ?? {}) as never);
         return reply.status(201).send(created);
       } catch (err) {
         return sendError(reply, err);
@@ -441,7 +514,7 @@ export const createRestServer = (
     async (req, reply) => {
       try {
         const parentId = (req.body ?? {}).parentId ?? null;
-        return await core.reparentTask(req.params.id, parentId);
+        return await (await coreFor(req)).reparentTask(req.params.id, parentId);
       } catch (err) {
         return sendError(reply, err);
       }
@@ -453,7 +526,9 @@ export const createRestServer = (
   }>('/api/tasks/reorder', async (req, reply) => {
     try {
       const b = req.body ?? {};
-      return await core.reorderTasks(
+      return await (
+        await coreFor(req)
+      ).reorderTasks(
         { projectId: b.projectId, parentId: b.parentId, today: b.today },
         b.taskIds ?? [],
       );
@@ -467,7 +542,7 @@ export const createRestServer = (
     async (req, reply) => {
       try {
         const b = req.body ?? {};
-        return await core.planTasksForToday(b.taskIds ?? [], b.today);
+        return await (await coreFor(req)).planTasksForToday(b.taskIds ?? [], b.today);
       } catch (err) {
         return sendError(reply, err);
       }
@@ -476,7 +551,9 @@ export const createRestServer = (
 
   app.post<{ Body: { taskIds?: string[] } }>('/api/today/remove', async (req, reply) => {
     try {
-      return await core.removeTasksFromToday((req.body ?? {}).taskIds ?? []);
+      return await (
+        await coreFor(req)
+      ).removeTasksFromToday((req.body ?? {}).taskIds ?? []);
     } catch (err) {
       return sendError(reply, err);
     }
@@ -486,7 +563,7 @@ export const createRestServer = (
     '/api/tasks/bulk/complete',
     async (req, reply) => {
       try {
-        return await core.bulkComplete((req.body ?? {}).taskIds ?? []);
+        return await (await coreFor(req)).bulkComplete((req.body ?? {}).taskIds ?? []);
       } catch (err) {
         return sendError(reply, err);
       }
@@ -499,7 +576,7 @@ export const createRestServer = (
       try {
         const raw = (req.body ?? {}).updates ?? [];
         const updates = raw.map(({ id, ...changes }) => ({ id, changes }));
-        return await core.bulkUpdate(updates);
+        return await (await coreFor(req)).bulkUpdate(updates);
       } catch (err) {
         return sendError(reply, err);
       }
@@ -508,7 +585,7 @@ export const createRestServer = (
 
   app.post<{ Body: Record<string, unknown> }>('/api/tasks', async (req, reply) => {
     try {
-      const created = await core.createTask((req.body ?? {}) as never);
+      const created = await (await coreFor(req)).createTask((req.body ?? {}) as never);
       return reply.status(201).send(created);
     } catch (err) {
       return sendError(reply, err);
@@ -519,10 +596,9 @@ export const createRestServer = (
     '/api/tasks/:id',
     async (req, reply) => {
       try {
-        return await core.updateTask(
-          req.params.id,
-          (req.body ?? {}) as Record<string, unknown>,
-        );
+        return await (
+          await coreFor(req)
+        ).updateTask(req.params.id, (req.body ?? {}) as Record<string, unknown>);
       } catch (err) {
         return sendError(reply, err);
       }
@@ -531,7 +607,7 @@ export const createRestServer = (
 
   app.post<{ Params: { id: string } }>('/api/tasks/:id/complete', async (req, reply) => {
     try {
-      return await core.completeTask(req.params.id);
+      return await (await coreFor(req)).completeTask(req.params.id);
     } catch (err) {
       return sendError(reply, err);
     }
@@ -539,7 +615,7 @@ export const createRestServer = (
 
   app.delete<{ Params: { id: string } }>('/api/tasks/:id', async (req, reply) => {
     try {
-      return await core.deleteTask(req.params.id);
+      return await (await coreFor(req)).deleteTask(req.params.id);
     } catch (err) {
       return sendError(reply, err);
     }
@@ -549,7 +625,9 @@ export const createRestServer = (
     '/api/tasks/:id/complete-on',
     async (req, reply) => {
       try {
-        return await core.completeTaskOn(req.params.id, (req.body ?? {}).doneOn ?? '');
+        return await (
+          await coreFor(req)
+        ).completeTaskOn(req.params.id, (req.body ?? {}).doneOn ?? '');
       } catch (err) {
         return sendError(reply, err);
       }
@@ -562,7 +640,7 @@ export const createRestServer = (
       try {
         const tagId = (req.body ?? {}).tagId;
         if (!tagId) return reply.status(400).send({ error: 'tagId is required' });
-        return await core.addTagToTask(req.params.id, tagId);
+        return await (await coreFor(req)).addTagToTask(req.params.id, tagId);
       } catch (err) {
         return sendError(reply, err);
       }
@@ -573,7 +651,9 @@ export const createRestServer = (
     '/api/tasks/:id/tags/:tagId',
     async (req, reply) => {
       try {
-        return await core.removeTagFromTask(req.params.id, req.params.tagId);
+        return await (
+          await coreFor(req)
+        ).removeTagFromTask(req.params.id, req.params.tagId);
       } catch (err) {
         return sendError(reply, err);
       }
@@ -586,7 +666,7 @@ export const createRestServer = (
       try {
         const projectId = (req.body ?? {}).projectId;
         if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
-        return await core.moveTaskToProject(req.params.id, projectId);
+        return await (await coreFor(req)).moveTaskToProject(req.params.id, projectId);
       } catch (err) {
         return sendError(reply, err);
       }
@@ -596,7 +676,9 @@ export const createRestServer = (
   // ── Tags (write) ──────────────────────────────────────────────────────────
   app.post<{ Body: Record<string, unknown> }>('/api/tags', async (req, reply) => {
     try {
-      return reply.status(201).send(await core.createTag((req.body ?? {}) as never));
+      return reply
+        .status(201)
+        .send(await (await coreFor(req)).createTag((req.body ?? {}) as never));
     } catch (err) {
       return sendError(reply, err);
     }
@@ -606,10 +688,9 @@ export const createRestServer = (
     '/api/tags/:id',
     async (req, reply) => {
       try {
-        return await core.updateTag(
-          req.params.id,
-          (req.body ?? {}) as Record<string, unknown>,
-        );
+        return await (
+          await coreFor(req)
+        ).updateTag(req.params.id, (req.body ?? {}) as Record<string, unknown>);
       } catch (err) {
         return sendError(reply, err);
       }
@@ -618,7 +699,7 @@ export const createRestServer = (
 
   app.delete<{ Params: { id: string } }>('/api/tags/:id', async (req, reply) => {
     try {
-      return await core.deleteTag(req.params.id);
+      return await (await coreFor(req)).deleteTag(req.params.id);
     } catch (err) {
       return sendError(reply, err);
     }
@@ -627,7 +708,9 @@ export const createRestServer = (
   // ── Projects (write) ──────────────────────────────────────────────────────
   app.post<{ Body: Record<string, unknown> }>('/api/projects', async (req, reply) => {
     try {
-      return reply.status(201).send(await core.createProject((req.body ?? {}) as never));
+      return reply
+        .status(201)
+        .send(await (await coreFor(req)).createProject((req.body ?? {}) as never));
     } catch (err) {
       return sendError(reply, err);
     }
@@ -637,10 +720,9 @@ export const createRestServer = (
     '/api/projects/:id',
     async (req, reply) => {
       try {
-        return await core.updateProject(
-          req.params.id,
-          (req.body ?? {}) as Record<string, unknown>,
-        );
+        return await (
+          await coreFor(req)
+        ).updateProject(req.params.id, (req.body ?? {}) as Record<string, unknown>);
       } catch (err) {
         return sendError(reply, err);
       }
@@ -649,7 +731,7 @@ export const createRestServer = (
 
   app.delete<{ Params: { id: string } }>('/api/projects/:id', async (req, reply) => {
     try {
-      return await core.deleteProject(req.params.id);
+      return await (await coreFor(req)).deleteProject(req.params.id);
     } catch (err) {
       return sendError(reply, err);
     }
@@ -660,17 +742,19 @@ export const createRestServer = (
   // filters, so moving cards is still done by changing tags on the task. These
   // routes shape the board itself, which previously had no write path at all.
 
-  app.get('/api/boards', async () => core.listBoards());
+  app.get('/api/boards', async (req) => (await coreFor(req)).listBoards());
 
   app.get<{ Params: { id: string } }>('/api/boards/:id', async (req, reply) => {
-    const board = core.getBoard(req.params.id);
+    const board = (await coreFor(req)).getBoard(req.params.id);
     if (!board) return reply.status(404).send({ error: 'Board not found' });
     return board;
   });
 
   app.post<{ Body: Record<string, unknown> }>('/api/boards', async (req, reply) => {
     try {
-      return reply.status(201).send(await core.createBoard((req.body ?? {}) as never));
+      return reply
+        .status(201)
+        .send(await (await coreFor(req)).createBoard((req.body ?? {}) as never));
     } catch (err) {
       return sendError(reply, err);
     }
@@ -680,10 +764,9 @@ export const createRestServer = (
     '/api/boards/:id',
     async (req, reply) => {
       try {
-        return await core.updateBoard(
-          req.params.id,
-          (req.body ?? {}) as Record<string, unknown>,
-        );
+        return await (
+          await coreFor(req)
+        ).updateBoard(req.params.id, (req.body ?? {}) as Record<string, unknown>);
       } catch (err) {
         return sendError(reply, err);
       }
@@ -692,7 +775,7 @@ export const createRestServer = (
 
   app.delete<{ Params: { id: string } }>('/api/boards/:id', async (req, reply) => {
     try {
-      return await core.deleteBoard(req.params.id);
+      return await (await coreFor(req)).deleteBoard(req.params.id);
     } catch (err) {
       return sendError(reply, err);
     }
@@ -701,7 +784,7 @@ export const createRestServer = (
   // Before /api/boards/:id/panels/:panelId so "order" is never read as a panel id.
   app.put<{ Body: { ids?: string[] } }>('/api/boards/order', async (req, reply) => {
     try {
-      return await core.sortBoards(req.body?.ids ?? []);
+      return await (await coreFor(req)).sortBoards(req.body?.ids ?? []);
     } catch (err) {
       return sendError(reply, err);
     }
@@ -713,7 +796,9 @@ export const createRestServer = (
       try {
         return reply
           .status(201)
-          .send(await core.addPanel(req.params.id, (req.body ?? {}) as never));
+          .send(
+            await (await coreFor(req)).addPanel(req.params.id, (req.body ?? {}) as never),
+          );
       } catch (err) {
         return sendError(reply, err);
       }
@@ -725,7 +810,9 @@ export const createRestServer = (
     Body: Record<string, unknown>;
   }>('/api/boards/:id/panels/:panelId', async (req, reply) => {
     try {
-      return await core.updatePanel(
+      return await (
+        await coreFor(req)
+      ).updatePanel(
         req.params.id,
         req.params.panelId,
         (req.body ?? {}) as Record<string, unknown>,
@@ -739,7 +826,7 @@ export const createRestServer = (
     '/api/boards/:id/panels/:panelId',
     async (req, reply) => {
       try {
-        return await core.removePanel(req.params.id, req.params.panelId);
+        return await (await coreFor(req)).removePanel(req.params.id, req.params.panelId);
       } catch (err) {
         return sendError(reply, err);
       }
@@ -750,7 +837,9 @@ export const createRestServer = (
     '/api/panels/:panelId/taskIds',
     async (req, reply) => {
       try {
-        return await core.setPanelTaskIds(req.params.panelId, req.body?.taskIds ?? []);
+        return await (
+          await coreFor(req)
+        ).setPanelTaskIds(req.params.panelId, req.body?.taskIds ?? []);
       } catch (err) {
         return sendError(reply, err);
       }

@@ -211,6 +211,38 @@ export const provisionRoutes = async (fastify: FastifyInstance): Promise<void> =
     },
   );
 
+  /**
+   * GET /api/internal/users/:id/has-data → whether that account holds any ops.
+   *
+   * The bridge syncs one account, so it cannot answer this for anyone else, and
+   * it serves the answer to browsers: a replica facing an EMPTY board is the
+   * resurrection case and must be purged rather than adopted. Asked here rather
+   * than read from Prisma's tables directly, so the bridge stays clear of this
+   * schema (see AuthStore's note on migration isolation).
+   */
+  fastify.get<{ Params: { id: string } }>(
+    '/users/:id/has-data',
+    { config: { rateLimit: false } },
+    async (request, reply) => {
+      const secret = request.headers['x-internal-secret'];
+      if (typeof secret !== 'string' || secret !== getJwtSecret()) {
+        return reply.status(401).send({ error: 'Unauthorized' });
+      }
+
+      const id = Number.parseInt(request.params.id, 10);
+      if (!Number.isFinite(id)) {
+        return reply.status(400).send({ error: 'Invalid user id' });
+      }
+
+      // Existence, not a count: a board with 40k ops costs the same as one.
+      const op = await prisma.operation.findFirst({
+        where: { userId: id },
+        select: { id: true },
+      });
+      return reply.status(200).send({ hasData: op !== null });
+    },
+  );
+
   fastify.post('/token', { config: { rateLimit: false } }, async (request, reply) => {
     const secret = request.headers['x-internal-secret'];
     if (typeof secret !== 'string' || secret !== getJwtSecret()) {

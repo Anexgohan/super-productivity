@@ -3,6 +3,7 @@ import { firstValueFrom } from 'rxjs';
 import { filter, first } from 'rxjs/operators';
 import { IS_ELECTRON } from '../../app.constants';
 import { DataInitStateService } from '../../core/data-init/data-init-state.service';
+import { GlobalConfigService } from '../../features/config/global-config.service';
 import { DEFAULT_GLOBAL_CONFIG } from '../../features/config/default-global-config.const';
 import { SyncConfig, SuperSyncConfig } from '../../features/config/global-config.model';
 import { SyncProviderId } from '../../op-log/sync-providers/provider.const';
@@ -45,6 +46,7 @@ export class SyncAutoSetupService {
   private _dataInitStateService = inject(DataInitStateService);
   private _syncConfigService = inject(SyncConfigService);
   private _containerAuthority = inject(ContainerAuthorityService);
+  private _globalConfigService = inject(GlobalConfigService);
 
   async init(): Promise<void> {
     if (IS_ELECTRON) {
@@ -81,16 +83,19 @@ export class SyncAutoSetupService {
     }
     const wanted = override.superSync;
 
-    // syncSettingsForm$ merges the stored public config with the active
-    // provider's private config, so this is the client's *effective* setup
-    // (including the credentials the public config deliberately never holds).
-    const current = await firstValueFrom(this._syncConfigService.syncSettingsForm$);
+    // This browser's own stored setup. Not syncSettingsForm$: that blends the container override in, so it names a provider for a fresh client.
+    const stored = await firstValueFrom(this._globalConfigService.sync$);
 
-    if (!current?.syncProvider) {
+    if (!stored?.syncProvider) {
       SyncLog.log('SyncAutoSetup: activating pre-configured SuperSync from override');
       await this._save(this._buildActivation(override, wanted));
       return true;
     }
+
+    // syncSettingsForm$ merges the stored public config with the active
+    // provider's private config, so this is the client's *effective* setup
+    // (including the credentials the public config deliberately never holds).
+    const current = await firstValueFrom(this._syncConfigService.syncSettingsForm$);
 
     const drift = this._connectionDrift(current, wanted);
     if (!drift.length) {

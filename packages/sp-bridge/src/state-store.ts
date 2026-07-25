@@ -27,8 +27,21 @@ export class StateStore {
   lastSyncAt = 0;
   lastError: string | null = null;
 
-  constructor(private readonly cfg: BridgeConfig) {
-    this._client = new SyncClient(cfg);
+  /**
+   * `opts` is absent for the container's own board. A per-user board supplies
+   * that user's token and a distinct `cacheKey`, so two boards never write over
+   * each other's cache file.
+   */
+  constructor(
+    private readonly cfg: BridgeConfig,
+    private readonly opts?: {
+      mintToken?: (cfg: BridgeConfig) => Promise<string>;
+      cacheKey?: string;
+      /** Must match the clientId its OpFactory stamps on ops. */
+      clientId?: string;
+    },
+  ) {
+    this._client = new SyncClient(cfg, opts?.mintToken, opts?.clientId);
     this._materializer = new Materializer(cfg.encryptionPassword);
   }
 
@@ -45,8 +58,14 @@ export class StateStore {
     return this._materializer.lastServerSeq;
   }
 
+  /** This board's sync identity: its own for a per-user board, the container's otherwise. */
+  private get _clientId(): string {
+    return this.opts?.clientId ?? this.cfg.clientId;
+  }
+
   private get _cachePath(): string {
-    return join(this.cfg.dataDir, CACHE_FILE);
+    const key = this.opts?.cacheKey;
+    return join(this.cfg.dataDir, key ? `bridge-state-cache.${key}.json` : CACHE_FILE);
   }
 
   /**
@@ -96,7 +115,7 @@ export class StateStore {
     // Live push; the poll below stays on as a fallback.
     this._ws = new SyncWebSocket({
       syncServerUrl: this.cfg.syncServerUrl,
-      clientId: this.cfg.clientId,
+      clientId: this._clientId,
       getToken: () => this._client.token,
       onNewOps: () => {
         void this.refresh().catch(() => undefined);
@@ -177,9 +196,9 @@ export class StateStore {
    */
   nextWriteClock(): Record<string, number> {
     const clock = this._materializer.mergedClock;
-    const own = Math.max(clock[this.cfg.clientId] ?? 0, this._ownClockFloor) + 1;
+    const own = Math.max(clock[this._clientId] ?? 0, this._ownClockFloor) + 1;
     this._ownClockFloor = own;
-    clock[this.cfg.clientId] = own;
+    clock[this._clientId] = own;
     return clock;
   }
 

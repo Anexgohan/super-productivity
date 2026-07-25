@@ -10,6 +10,7 @@ import { loadConfig } from './config';
 import { SyncClient, mintSuperSyncToken } from './sync-client';
 import { Materializer } from './materializer';
 import type { AuthWiring, InternalWiring } from './rest';
+import type { UserBoards } from './user-boards';
 
 const summarize = (state: Record<string, Record<string, unknown>>): void => {
   console.log('─'.repeat(60));
@@ -130,7 +131,7 @@ const runServe = async (): Promise<void> => {
       () => SessionManager.generateSecret(),
     );
     // Each browser gets its own board's credentials, resolved from its session.
-    const { SyncIdentityProvider, purgeSyncAccount } =
+    const { SyncIdentityProvider, purgeSyncAccount, boardHasData } =
       await import('./auth/sync-identity');
     auth = {
       store: authStore,
@@ -144,6 +145,7 @@ const runServe = async (): Promise<void> => {
         baseUrl: cfg.publicSyncUrl,
         encryptKey: cfg.encryptionPassword,
         identities: new SyncIdentityProvider(authStore, cfg),
+        boardHasData: (supersyncUserId) => boardHasData(cfg, supersyncUserId),
         // Resolved per request rather than captured at boot: the value has to
         // follow the database, and a bridge that outlives a wipe would
         // otherwise keep serving the dead instance's id.
@@ -172,13 +174,23 @@ const runServe = async (): Promise<void> => {
   const apiKeyHash = await resolveApiKeyHash(cfg.apiKey, authStore);
 
   const core = new BridgeCore(store, new OpFactory(cfg.clientId, cfg.encryptionPassword));
-  const app = createRestServer(core, store, apiKeyHash, auth, internal);
+
+  // One board per user, started on demand. The container's board is already
+  // running, so it is handed in rather than opened a second time.
+  let boards: UserBoards | undefined;
+  if (auth?.override) {
+    const { UserBoards } = await import('./user-boards');
+    boards = new UserBoards(cfg, auth.override.identities, { core, store });
+  }
+
+  const app = createRestServer(core, store, apiKeyHash, auth, internal, boards);
   await app.listen({ port: cfg.apiPort, host: '0.0.0.0' });
   console.log(
     `sp-bridge: REST API on :${cfg.apiPort} (poll every ${cfg.pollIntervalSec}s, seq ${store.lastServerSeq})`,
   );
 
   const shutdown = async (): Promise<void> => {
+    boards?.stopAll();
     store.stop();
     await app.close();
     process.exit(0);

@@ -2,6 +2,7 @@ import { inject, Injectable } from '@angular/core';
 import { OperationLogStoreService } from '../persistence/operation-log-store.service';
 import {
   ActionType,
+  extractActionPayload,
   FULL_STATE_OP_TYPES,
   Operation,
   OperationLogEntry,
@@ -21,6 +22,31 @@ const isInitialSyncSetupOp = (entry: OperationLogEntry): boolean =>
   entry.op.opType === OpType.Update &&
   entry.op.entityType === 'GLOBAL_CONFIG' &&
   entry.op.entityId === 'sync';
+
+/**
+ * A `misc` update whose only change is `uiPrefs` — SyncedUiPrefsService pushing
+ * this browser's preferences up to the account.
+ *
+ * Never blocks an incoming import: preferences are not user data, and losing
+ * them costs nothing because seedMissingFromLocal() re-adopts them on the next
+ * start. Without this the app raised a conflict dialog over its own
+ * housekeeping write, which is what a fresh browser met on first sign-in.
+ */
+const isSyncedUiPrefsOp = (entry: OperationLogEntry): boolean => {
+  if (
+    entry.op.actionType !== ActionType.GLOBAL_CONFIG_UPDATE_SECTION ||
+    entry.op.opType !== OpType.Update ||
+    entry.op.entityType !== 'GLOBAL_CONFIG' ||
+    entry.op.entityId !== 'misc'
+  ) {
+    return false;
+  }
+  const action = extractActionPayload(entry.op.payload) as {
+    sectionCfg?: Record<string, unknown>;
+  };
+  const keys = Object.keys(action?.sectionCfg ?? {});
+  return keys.length === 1 && keys[0] === 'uiPrefs';
+};
 
 /**
  * Types a first launch writes for itself before anyone has used the app:
@@ -148,6 +174,9 @@ export class SyncImportConflictGateService {
       if (isInitialSyncSetupOp(entry)) {
         return options.hasCompletedInitialSync;
       }
+      if (isSyncedUiPrefsOp(entry)) {
+        return false;
+      }
       // A never-synced client's own boot writes are not work to protect.
       // Without this, opening the app for the first time against a stack that
       // holds a full-state op raised a conflict dialog over furniture.
@@ -166,6 +195,7 @@ export class SyncImportConflictGateService {
       .filter(
         (entry) =>
           isExampleTaskCreateOp(entry) ||
+          isSyncedUiPrefsOp(entry) ||
           (!options.hasCompletedInitialSync && isInitialSyncSetupOp(entry)) ||
           isFirstLaunchScaffolding(entry, options.hasCompletedInitialSync),
       )

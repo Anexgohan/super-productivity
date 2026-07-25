@@ -82,6 +82,7 @@ import { setKeyboardLayoutService } from './util/check-key-combo';
 import { OnboardingPresetSelectionComponent } from './features/onboarding/onboarding-preset-selection.component';
 import { OnboardingHintComponent } from './features/onboarding/onboarding-hint.component';
 import { OnboardingHintService } from './features/onboarding/onboarding-hint.service';
+import { ContainerAuthorityService } from './imex/sync/container-authority.service';
 import { MaterialIconsLoaderService } from './ui/material-icons-loader.service';
 import { BrowserTitleService } from './core/browser-title/browser-title.service';
 
@@ -158,6 +159,7 @@ export class AppComponent implements OnDestroy, AfterViewInit {
   private _keyboardLayoutService = inject(KeyboardLayoutService);
   private _dataInitStateService = inject(DataInitStateService);
   private _materialIconsLoaderService = inject(MaterialIconsLoaderService);
+  private _containerAuthority = inject(ContainerAuthorityService);
   readonly onboardingHintService = inject(OnboardingHintService);
 
   private _syncTriggerService = inject(SyncTriggerService);
@@ -224,6 +226,16 @@ export class AppComponent implements OnDestroy, AfterViewInit {
   constructor() {
     this._startupService.init();
     void this._materialIconsLoaderService.ensureFontReady();
+
+    // Every preset is a subset of the default and the write is synced, so here the wizard can only strip features from every device on the board.
+    if (this.isShowOnboardingPresets()) {
+      void this._containerAuthority.isContainerManaged().then((isManaged) => {
+        if (isManaged) {
+          // Not ONBOARDING_PRESET_DONE: that flag is what starts the hint tour.
+          this.isShowOnboardingPresets.set(false);
+        }
+      });
+    }
 
     // Skip onboarding for existing users with data
     if (this.isShowOnboardingPresets()) {
