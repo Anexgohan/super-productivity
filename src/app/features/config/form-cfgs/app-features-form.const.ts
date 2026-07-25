@@ -1,6 +1,7 @@
 import { ConfigFormSection, AppFeaturesConfig } from '../global-config.model';
 import { T } from '../../../t.const';
 import { IS_DONATION_UI_RESTRICTED } from '../../../app.constants';
+import { IS_CONTAINER_MANAGED } from '../../../imex/sync/container-authority.service';
 
 export const EXPERIMENTAL_APP_FEATURE_KEYS: ReadonlyArray<keyof AppFeaturesConfig> = [
   'isEnableUserProfiles',
@@ -121,6 +122,12 @@ export const APP_FEATURES_FORM_CFG: ConfigFormSection<AppFeaturesConfig> = {
     {
       key: 'isEnableUserProfiles',
       type: 'slide-toggle',
+      // Container-managed deployments put identity on the server, in accounts.
+      // Profiles are the browser-local answer to the same question and the two
+      // cannot both be true: a switch swaps the entire dataset without changing
+      // the sync token, so the server would keep taking writes from a client
+      // that is now holding different data.
+      hideExpression: () => IS_CONTAINER_MANAGED(),
       templateOptions: {
         label: T.GCF.APP_FEATURES.USER_PROFILES,
         description: T.GCF.APP_FEATURES.USER_PROFILES_HINT,
@@ -128,7 +135,8 @@ export const APP_FEATURES_FORM_CFG: ConfigFormSection<AppFeaturesConfig> = {
       },
     },
     {
-      hideExpression: (m: AppFeaturesConfig) => !m.isEnableUserProfiles,
+      hideExpression: (m: AppFeaturesConfig) =>
+        !m.isEnableUserProfiles || IS_CONTAINER_MANAGED(),
       type: 'tpl',
       templateOptions: {
         tag: 'div',

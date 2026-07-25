@@ -112,6 +112,7 @@
     "serveProd": "node ./tools/load-env.js --ensure && ng serve --configuration production",
     "start": "npm run electron:build && cross-env NODE_ENV=DEV electron .",
     "serve": "node ./tools/load-env.js --ensure && ng serve",
+    "serve:container": "node ./tools/load-env.js --ensure && ng serve --proxy-config proxy.conf.json",
     "startFrontend": "npm run env && ng serve",
     "startFrontend:e2e": "npm run env && ng serve --port=4242",
     "startFrontend:prod": "npm run env && ng serve --configuration production",

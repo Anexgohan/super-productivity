@@ -55,10 +55,34 @@ disagree, the container wins.
 
 Concretely, three things follow.
 
-**The browser is a reader, a viewer and a writer — never an authority.** It
-reads the backend, renders what it is given, and writes back. Open the app in
-five tabs, or in a private window, or on a machine you have never used before,
-and you get the same state. Clearing site data costs you nothing.
+**The browser is a cache with provenance, not a peer.** This is the part worth
+being precise about, because the obvious reading is wrong in both directions.
+
+The browser does **not** render from the backend. It holds a complete replica of
+your data in IndexedDB (`SUP_OPS`) and renders from that — which is what makes
+the UI instant and what makes offline work at all. Wiping the server does not
+empty a browser, and for a long time in this fork a stale tab could repopulate a
+freshly wiped stack from its own copy.
+
+What it does not have is **standing**. The replica is stamped with the stack that
+served it and the account that was signed in (`instanceId`, `userId`). At
+startup, before anything is read, `ReplicaIdentityGateService` compares that
+stamp against the signed-in session and destroys the replica if it belongs to
+someone else — a different account on a shared machine, or a stack whose
+database has since been wiped. Signing out purges it outright.
+
+So: open the app in five tabs, in a private window, or on a machine you have
+never used before, and you get the same state. Clearing site data costs you
+nothing you have already synced. But the copy on disk is real, and it is yours
+only for as long as you are the one signed in.
+
+> **Not true yet.** "Never an authority" is still an overstatement, and this doc
+> used to make it flatly. Container authority settles _whole-state divergence_ —
+> when client and server disagree about the world, the server wins. Concurrent
+> edits still merge at the op level through vector clocks and last-write-wins, so
+> an offline tab can still win an individual field against the container. Closing
+> that would mean giving up offline editing, which is not a trade this stack has
+> chosen to make.
 
 **Preferences follow the account, not the browser profile.** Upstream keeps
 things like theme, dark mode, sort order, and which lists are collapsed in
@@ -121,14 +145,147 @@ How it fits together:
 The first visit to `/login` creates the admin account. There is no default
 password to forget to change.
 
-**On multi-user:** not implemented, but the shape is there rather than bolted on
-later. `users` is a real table with ids and roles (`admin`, `viewer`), not a
-single admin blob, and everything downstream already carries a `userId`. Adding
-accounts is `INSERT`s; scoping data per user is one more column plus a join.
-
 **What the end user needs:** a username and a password. That is the whole list.
 The sync token, the E2E encryption passphrase and the API key are admin
 concerns, set once in `.env` and never typed by a person signing in.
+
+---
+
+## Accounts, roles and per-user boards
+
+Every account owns its own board. Three roles:
+
+| Role       | Own board | Other users' boards              | User management |
+| ---------- | --------- | -------------------------------- | --------------- |
+| `admin`    | full      | **no access**                    | full            |
+| `operator` | full      | no access                        | none            |
+| `viewer`   | none      | read-only, published boards only | none            |
+
+The admin manages _accounts_, not _data_ — an operational role, not a
+surveillance one. That limit is a design choice, not a cryptographic guarantee;
+see the encryption note below.
+
+### Isolation comes from the sync server, which was already multi-tenant
+
+No schema change was needed there: `Operation.userId` scopes every op,
+`@@unique([userId, serverSeq])` gives each user an independent sequence, and
+`UserSyncState`/`SyncDevice` are already per-user. All the work is in the
+container layer — the bridge, nginx and provisioning.
+
+`bridge.users` carries the mapping: `email`, `supersync_user_id`, `is_public`
+and `sort_order`.
+
+### Identity is the account id, never a name or address
+
+A user's sync account is `sp-user-<id>@sp.invalid`, derived from the immutable
+bridge user id. Passwords for those accounts are derived too —
+`HMAC(JWT_SECRET, "sync-account:" + address)` — and never stored; nobody types
+them, they exist only because the sync server's account model wants one.
+
+Email was the identity in the first draft, and that was a trap: an account
+provisions its sync board on first login, so editing the email afterwards would
+either silently do nothing or repoint the user at a different, empty account —
+their tasks apparently gone. "Editable afterwards" and "email is the identity"
+cannot both be true. Deriving from the id makes renaming a user, or changing
+their email, completely safe. Email is now ordinary profile data, kept only
+because an admin list showing `sp-user-42@sp.invalid` with no human label is
+hard to read.
+
+The one exception: the **first** account binds to `SP_SYNC_ACCOUNT_EMAIL` and
+reuses the existing `supersync.webapp_access_token` row, so a stack upgraded
+from single-user keeps the board it already had — and every browser already out
+there keeps its sync cursor.
+
+### The load-bearing piece: a per-session override
+
+`docker-entrypoint.sh` used to bake `assets/sync-config-default-override.json`
+once at container start, with one token in it. Every browser got the same file,
+so every browser was the same user.
+
+That path is now served by the bridge, which reads the session cookie and
+returns the caller's own token. It cost **zero Angular changes** — the app
+fetches the path same-origin, so the cookie rides along and it never learns the
+file became dynamic. nginx falls back to the baked file only on a 404 (which
+means auth is disabled); a 401 must never fall through, or an unauthenticated
+browser would be handed the container account's token.
+
+### Encryption is container-wide, deliberately
+
+One passphrase (`SP_SYNC_ENCRYPTION_PASSWORD`), no per-user keys. Isolation
+comes from `userId` scoping on the server, not key separation. The honest
+consequence: **an admin with database access can decrypt any user's board.**
+Per-user keys would fix that but would make publishing impossible — a viewer
+could not decrypt what they are allowed to read — and the bridge could no longer
+read anything. Not worth it for a self-hosted LAN deployment where the admin
+already owns the disk.
+
+### Publishing is whole-board
+
+`is_public` cannot be finer. The server stores ops encrypted and cannot read
+them, so it cannot filter a board down to "just the public projects" without
+decrypting — which defeats the encryption. A client-side filter is not an access
+control. So a board is published or it isn't.
+
+Viewers read a published board through token delegation: the bridge mints a
+token for the board's _owner_ and serves it in that viewer's override, and nginx
+denies the write routes for `role=viewer`. Proxy-level gating is sufficient
+because the write surface is exactly three routes — `POST /sync/api/sync/ops`,
+`POST /sync/api/sync/snapshot`, `DELETE /sync/api/sync/data` — with everything
+else being reads plus a notification-only websocket.
+
+### Deleting a user removes their data
+
+Delete is a purge, not a detach: the bridge row, the stored token, the SuperSync
+account, and that account's ops, devices, sync state and passkeys. The sync
+server owns those tables, so the bridge calls `DELETE /api/internal/users/:id`
+over the internal channel. Irreversible, so the UI asks for the username to be
+typed first.
+
+### The UI
+
+Two surfaces, both shown only when the container is the authority — desktop and
+standalone builds have no accounts:
+
+- **Account menu** in the toolbar, holding the slot upstream's profile switcher
+  used to occupy. Who you are, then Account, Settings, and Log out.
+- **Accounts** section in Settings. Everyone gets their username, role, email and
+  change-password; admins also get the user list, per-user edit (name, email,
+  role, password reset), delete, reordering, a create-user form, and the
+  self-registration toggle.
+
+Both talk to the bridge over the session cookie, **not** through
+formly/`GlobalConfig`. `GlobalConfig` is synced op-log data — encrypted,
+per-user, unreadable by the server — so access control cannot live in it.
+
+### Why upstream's user profiles are hidden here
+
+Upstream ships a profile switcher (toolbar avatar → "Manage User Profiles"),
+default off. It is not multi-user: profile metadata sits in `localStorage`, each
+profile's data is a whole-dataset blob in IndexedDB, and switching exports the
+current dataset, imports the other, and reloads. No accounts, no passwords, no
+server involvement, and profiles exist only in the browser that created them.
+
+Under container authority it is actively dangerous. The `lastServerSeq` cursor is
+keyed on `hash(baseUrl|accessToken)`; a switch replaces the dataset but leaves
+the token untouched, so the browser continues as _the same sync client_ holding
+_different data_. The next sync either pushes one profile's data into the other's
+account, or raises the migration prompt — which container authority suppresses,
+so the server wins silently.
+
+Both surfaces are therefore hidden when the container is the authority. The
+stored setting is not forced off: hiding the surfaces closes the path, and
+writing to `globalConfig` would be a sync operation — changing user data to
+enforce a UI decision. Profiles stay fully available in desktop and standalone
+builds, where they make sense.
+
+### Known gaps
+
+- `DELETE /api/sync/data` answers to **any** authenticated session. It must
+  become admin-only, or any operator can wipe the server.
+- Role lives in the session JWT, so a demotion does not take effect until that
+  user's session is reissued.
+- The role ACL middleware (`ROLE_LEVELS = { viewer: 1, operator: 2, admin: 3 }`
+  plus a route table, ported from pankha) is designed but not yet enforcing.
 
 ---
 
@@ -375,6 +532,48 @@ and currently answers to any authenticated session.
 
 ---
 
+## Working on the app without rebuilding the image
+
+The production Angular build takes ~7 minutes, so rebuilding the web image to
+see a CSS change is the wrong loop. Point the dev server at a running stack
+instead:
+
+```bash
+docker compose -f docker/deployment/compose.yml up -d   # if not already up
+npm run serve:container                                 # http://localhost:4200
+```
+
+`proxy.conf.json` forwards `/api`, `/login`, `/sync` (websocket included) and the
+per-session override to the stack on `:18230`, so the app you get is the real
+one — real bridge, real database, real accounts — with hot reload instead of an
+image build. Point `target` elsewhere in that file if the stack is not local.
+
+**One wrinkle:** the dev server serves `src/assets/` before consulting the proxy,
+so the placeholder `sync-config-default-override.json` shadows the bridge's
+per-session route and the app will not see itself as container-managed — which
+hides the Accounts UI. Move the placeholder aside while dev-serving:
+
+```bash
+mv src/assets/sync-config-default-override.json /tmp/    # restore when done
+```
+
+Build an image when you actually want to ship one. Timings on a 4-vCPU host,
+measured: `sp-web` ~7 min, dominated by the production Angular build.
+`sp-bridge` and `sp-supersync` are well under a minute — **as long as
+`package.json` has not changed.** Touching it invalidates the `npm ci` layer in
+all three images, which took those two from seconds to 7 minutes combined. A
+backend-only change never needs `sp_web` rebuilt.
+
+**Lint does not run inside the image build.** It cost 76s of every build and
+failed _after_ the expensive layer. The gate lives in
+`.github/workflows/publish-containers.yml` as a job the six build jobs depend on,
+so a style error stops the release before any image starts building, and costs a
+local build nothing. Note that `ci.yml` only lints on pull requests to `master`,
+which this fork's tag-driven flow never opens — without that job nothing would
+lint at all. Run `npm run lint` locally before tagging.
+
+---
+
 ## Publishing images (GHCR) and deploying elsewhere
 
 The dev box builds from source. A real deployment target should not have to —
@@ -449,11 +648,77 @@ maintaining two near-identical compose files that drift apart.
 
 ---
 
+## Major removals from upstream
+
+Things this fork deleted rather than kept. Recorded so the decisions stay legible
+instead of looking like drift. Nothing is lost — it is all in git history.
+
+### Upstream's containerized E2E suite (2026-07-24)
+
+Removed: 91 spec files tagged `@supersync` (73) or `@webdav` (18), 11
+Docker/compose files, 3 `wait-for-*.sh` helpers, 9 E2E fixtures/pages/utils, and
+9 npm scripts (`e2e:docker*`, `e2e:supersync*`, `e2e:webdav*`, `supersync:up`/
+`:down`). Kept: the ~113 plain specs (279 tests) and our own three Dockerfiles
+plus `docker/deployment/`.
+
+Three reasons:
+
+- **They could never run here.** CI invoked `npm run e2e:ci`, which resolves to
+  `--grep-invert "@supersync|@webdav"` — the 91 were already excluded from every
+  CI run. Running them locally needs Playwright's Chromium (~200 MB) plus Docker
+  backends, and installing browsers on the dev container is ruled out. Code that
+  cannot run is worse than absent: it reads as coverage that does not exist.
+- **They test behaviour this fork deliberately changed.**
+  `supersync-server-migration-abort.spec.ts` asserts the _"Server Already
+  Contains Data"_ dialog appears — which container authority suppresses on
+  purpose. `supersync-token-expiry.spec.ts` assumes a rotating token, where we
+  persist one. "Fixing" those meant rewriting upstream's tests to match a fork
+  they were never written for.
+- **The deployment files were superseded.** `docker-compose.yaml` was upstream's
+  self-host stack; `docker/deployment/compose.yml` replaces it.
+
+**What it costs:** there is no automated regression test for sync semantics —
+op-log ordering, vector clocks, multi-client convergence, cascade deletes. That
+gap is real, and it covers exactly the paths the multi-user work touches. The
+option not taken was running the containerized suite in CI, where GitHub's
+runners provide both Chromium and Docker at no local cost; it remains the only
+honest way to get that coverage back.
+
+Removing the specs broke three things the _kept_ tests depend on, fixed in the
+same change: the `syncPage` fixture was dropped from `e2e/fixtures/test.fixture.ts`
+(and `tagPage` **restored**, since 3 kept specs use it), `e2e/global-setup.ts`
+lost its health gate on a server that can no longer exist, and one test in
+`packages/super-sync-server/tests/migration-sql.spec.ts` that read upstream deploy
+tooling this fork does not use was removed.
+
+Verified after removal: 900 sync-server tests in 44 files pass, and
+`npx playwright test --list` loads 279 tests in 113 files, so every remaining
+import resolves.
+
+Upstream's own docs still reference the removed compose files
+(`docs/wiki/2.13-Run-with-Docker.md` and others). Those describe upstream's
+deployment story, not this fork's, so they were left rather than rewritten.
+
+To restore, find the removal commit with
+`git log --diff-filter=D --oneline -- 'e2e/tests/sync/*'` and check out its
+parent. The specs alone are not enough — they need the fixtures, pages, utils,
+compose files and shell scripts from the same commit, plus the npm scripts.
+
+### Upstream's 26 CI workflows
+
+Pruned when the fork's own `publish-containers.yml` was added: they built and
+released upstream's desktop apps, store listings and web deployment, none of
+which this fork produces.
+
+---
+
 ## Mental model in six bullets
 
-- The **container owns the data**; browsers are throwaway views; agents use REST.
+- The **container owns the data**; a browser holds a full replica but no claim on
+  it, and loses it when the signed-in identity changes; agents use REST.
 - Data is an **encrypted op-log**; every change is an operation, replayed by all
-  clients (the server never sees plaintext).
+  clients. The _sync_ server never sees plaintext — the **bridge does**, because
+  it holds the container-wide key and that is what lets the REST API work at all.
 - **Board columns and the Today list are tags** — move tasks by changing tags,
   not by calling a board or list API.
 - **Writes round-trip and settle** before the API returns; **reads** are live

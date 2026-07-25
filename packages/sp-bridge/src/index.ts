@@ -5,6 +5,7 @@
  * materialize, and print a state summary. Verifies the entire read path
  * end-to-end before any server/API work builds on it.
  */
+import { randomUUID } from 'node:crypto';
 import { loadConfig } from './config';
 import { SyncClient, mintSuperSyncToken } from './sync-client';
 import { Materializer } from './materializer';
@@ -108,7 +109,7 @@ const runServe = async (): Promise<void> => {
 
   // Postgres backs two independent things — browser accounts and the durable
   // web-app sync token — so it is opened once here rather than by either.
-  const { AuthStore } = await import('./auth/store');
+  const { AuthStore, INSTANCE_ID_SETTING_KEY } = await import('./auth/store');
   const authStore = cfg.databaseUrl ? new AuthStore(cfg.databaseUrl) : undefined;
   if (authStore) {
     await authStore.init();
@@ -128,13 +129,27 @@ const runServe = async (): Promise<void> => {
       SessionManager.secretSettingKey,
       () => SessionManager.generateSecret(),
     );
+    // Each browser gets its own board's credentials, resolved from its session.
+    const { SyncIdentityProvider, purgeSyncAccount } =
+      await import('./auth/sync-identity');
     auth = {
       store: authStore,
       webUrl: cfg.webUrl,
+      purgeSyncAccount: (supersyncUserId) => purgeSyncAccount(cfg, supersyncUserId),
       sessions: new SessionManager(secret, {
         ttlSeconds: cfg.authSessionTtlHours * 3600,
         secureCookie: cfg.authSecureCookie,
       }),
+      override: {
+        baseUrl: cfg.publicSyncUrl,
+        encryptKey: cfg.encryptionPassword,
+        identities: new SyncIdentityProvider(authStore, cfg),
+        // Resolved per request rather than captured at boot: the value has to
+        // follow the database, and a bridge that outlives a wipe would
+        // otherwise keep serving the dead instance's id.
+        instanceId: () =>
+          authStore.getOrCreateSetting(INSTANCE_ID_SETTING_KEY, () => randomUUID()),
+      },
     };
     const n = await authStore.userCount();
     console.log(

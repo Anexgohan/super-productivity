@@ -1,0 +1,40 @@
+{
+  "_comment": [
+    "Dev-server proxy for the container stack (anex/container-parity).",
+    "Points `ng serve` at a running compose stack so UI work does not need an",
+    "image rebuild — that costs ~7 minutes for the production Angular build,",
+    "against ~1s of hot reload here.",
+    "",
+    "Usage:  docker compose -f docker/deployment/compose.yml up -d",
+    "        npm run serve:container        # app on http://localhost:4200",
+    "",
+    "Everything below is served by the real stack: real bridge, real database,",
+    "real accounts. Only the Angular bundle comes from the dev server.",
+    "Set SP_STACK_URL if the stack is not on localhost:18230."
+  ],
+
+  "/api": {
+    "target": "http://localhost:18230",
+    "secure": false,
+    "changeOrigin": false
+  },
+
+  "/login": {
+    "target": "http://localhost:18230",
+    "secure": false,
+    "changeOrigin": false
+  },
+
+  "/sync": {
+    "target": "http://localhost:18230",
+    "secure": false,
+    "changeOrigin": false,
+    "ws": true
+  },
+
+  "/assets/sync-config-default-override.json": {
+    "target": "http://localhost:18230",
+    "secure": false,
+    "changeOrigin": false
+  }
+}

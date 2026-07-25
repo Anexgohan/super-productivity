@@ -49,6 +49,8 @@ import { DateService } from '../../core/date/date.service';
 import { UserProfileButtonComponent } from '../../features/user-profile/user-profile-button/user-profile-button.component';
 import { FocusButtonComponent } from './focus-button/focus-button.component';
 import { UserProfileService } from '../../features/user-profile/user-profile.service';
+import { IS_CONTAINER_MANAGED } from '../../imex/sync/container-authority.service';
+import { AccountMenuComponent } from '../../features/user-accounts/account-menu/account-menu.component';
 import { EmlDropDirective } from '../../core/drop-paste-input/eml-drop.directive';
 import { ConflictJournalService } from '../../op-log/sync/conflict-journal.service';
 
@@ -74,6 +76,7 @@ import { ConflictJournalService } from '../../op-log/sync/conflict-journal.servi
     PlayButtonComponent,
     DesktopPanelButtonsComponent,
     UserProfileButtonComponent,
+    AccountMenuComponent,
     FocusButtonComponent,
   ],
 })
@@ -218,9 +221,17 @@ export class MainHeaderComponent implements OnDestroy {
   isUserProfilesEnabled = computed(() => {
     return (
       this.globalConfigService.appFeatures().isEnableUserProfiles &&
-      this._userProfileService.isInitialized()
+      this._userProfileService.isInitialized() &&
+      // Profiles keep identity in this browser; a container-managed deployment
+      // keeps it on the server, where the account is. Switching would also
+      // replace the whole dataset while keeping the sync token, so the browser
+      // would go on syncing as the same client with someone else's data.
+      !IS_CONTAINER_MANAGED()
     );
   });
+
+  /** The inverse: our own account menu fills the slot profiles just vacated. */
+  isAccountMenuEnabled = computed(() => IS_CONTAINER_MANAGED());
 
   private _subs: Subscription = new Subscription();
 

@@ -1,0 +1,70 @@
+<h1 mat-dialog-title>{{ T.GCF.ACCOUNTS.EDIT_ACCOUNT | translate }}</h1>
+
+<mat-dialog-content>
+  <mat-form-field>
+    <mat-label>{{ T.GCF.ACCOUNTS.USERNAME | translate }}</mat-label>
+    <input
+      matInput
+      autocomplete="off"
+      [ngModel]="username()"
+      (ngModelChange)="username.set($event)"
+    />
+  </mat-form-field>
+
+  <mat-form-field>
+    <mat-label>{{ T.GCF.ACCOUNTS.EMAIL | translate }}</mat-label>
+    <input
+      matInput
+      type="email"
+      autocomplete="off"
+      [ngModel]="email()"
+      (ngModelChange)="email.set($event)"
+    />
+    <mat-hint>{{ T.GCF.ACCOUNTS.EMAIL_HINT | translate }}</mat-hint>
+  </mat-form-field>
+
+  <mat-form-field>
+    <mat-label>{{ T.GCF.ACCOUNTS.ROLE | translate }}</mat-label>
+    <mat-select
+      [disabled]="data.isLastAdmin"
+      [ngModel]="role()"
+      (ngModelChange)="role.set($event)"
+    >
+      @for (r of ROLES; track r) {
+        <mat-option [value]="r">{{ r }}</mat-option>
+      }
+    </mat-select>
+    @if (data.isLastAdmin) {
+      <mat-hint>{{ T.GCF.ACCOUNTS.LAST_ADMIN | translate }}</mat-hint>
+    }
+  </mat-form-field>
+
+  <mat-form-field>
+    <mat-label>{{ T.GCF.ACCOUNTS.NEW_PASSWORD | translate }}</mat-label>
+    <input
+      matInput
+      type="password"
+      autocomplete="new-password"
+      [ngModel]="password()"
+      (ngModelChange)="password.set($event)"
+    />
+    <mat-hint>{{ T.GCF.ACCOUNTS.PASSWORD_UNCHANGED_HINT | translate }}</mat-hint>
+  </mat-form-field>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button
+    mat-button
+    (click)="close()"
+  >
+    {{ T.GCF.ACCOUNTS.CANCEL | translate }}
+  </button>
+  <button
+    mat-flat-button
+    color="primary"
+    [disabled]="!isValid"
+    (click)="save()"
+  >
+    {{ T.GCF.ACCOUNTS.SAVE | translate }}
+  </button>
+</mat-dialog-actions>

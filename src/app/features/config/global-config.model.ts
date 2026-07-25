@@ -418,7 +418,8 @@ export type CustomCfgSection =
   | 'FILE_IMPORT_EXPORT'
   | 'JIRA_CFG'
   | 'OPENPROJECT_CFG'
-  | 'CLIPBOARD_IMAGES_CFG';
+  | 'CLIPBOARD_IMAGES_CFG'
+  | 'USER_ACCOUNTS_CFG';
 
 export interface ConfigSectionAction {
   label: string;

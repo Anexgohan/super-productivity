@@ -1,0 +1,243 @@
+@if (me(); as user) {
+  <section class="account-block">
+    <h3>{{ T.GCF.ACCOUNTS.YOUR_ACCOUNT | translate }}</h3>
+
+    <p class="identity">
+      <span class="username">{{ user.username }}</span>
+      <span class="role-badge">{{ user.role }}</span>
+    </p>
+
+    <mat-form-field>
+      <mat-label>{{ T.GCF.ACCOUNTS.EMAIL | translate }}</mat-label>
+      <input
+        matInput
+        type="email"
+        name="email"
+        [(ngModel)]="email"
+      />
+      <mat-hint>{{ T.GCF.ACCOUNTS.EMAIL_HINT | translate }}</mat-hint>
+    </mat-form-field>
+    <button
+      mat-stroked-button
+      [disabled]="isBusy()"
+      (click)="saveEmail()"
+    >
+      {{ T.GCF.ACCOUNTS.SAVE_EMAIL | translate }}
+    </button>
+
+    <h4>{{ T.GCF.ACCOUNTS.CHANGE_PASSWORD | translate }}</h4>
+    <mat-form-field>
+      <mat-label>{{ T.GCF.ACCOUNTS.CURRENT_PASSWORD | translate }}</mat-label>
+      <input
+        matInput
+        type="password"
+        autocomplete="current-password"
+        name="currentPassword"
+        [(ngModel)]="currentPassword"
+      />
+    </mat-form-field>
+    <mat-form-field>
+      <mat-label>{{ T.GCF.ACCOUNTS.NEW_PASSWORD | translate }}</mat-label>
+      <input
+        matInput
+        type="password"
+        autocomplete="new-password"
+        name="newPassword"
+        [(ngModel)]="newPassword"
+      />
+    </mat-form-field>
+    <mat-form-field>
+      <mat-label>{{ T.GCF.ACCOUNTS.CONFIRM_PASSWORD | translate }}</mat-label>
+      <input
+        matInput
+        type="password"
+        autocomplete="new-password"
+        name="confirmPassword"
+        [(ngModel)]="confirmPassword"
+      />
+    </mat-form-field>
+    <button
+      mat-stroked-button
+      [disabled]="
+        isBusy() || !currentPassword || newPassword.length < MIN_PASSWORD_LENGTH
+      "
+      (click)="changePassword()"
+    >
+      {{ T.GCF.ACCOUNTS.CHANGE_PASSWORD | translate }}
+    </button>
+  </section>
+
+  @if (isAdmin) {
+    <section class="account-block">
+      <h3>{{ T.GCF.ACCOUNTS.MANAGE_USERS | translate }}</h3>
+
+      <div class="u-table-head">
+        <span class="col-user">{{ T.GCF.ACCOUNTS.USER | translate }}</span>
+        <span class="col-role">{{ T.GCF.ACCOUNTS.ROLE | translate }}</span>
+        <span class="col-actions">{{ T.GCF.ACCOUNTS.ACTIONS | translate }}</span>
+      </div>
+
+      <ul class="user-list">
+        @for (u of users(); track u.id; let i = $index) {
+          <li class="u-row">
+            <span class="col-user">
+              <span class="u-meta">
+                <span class="u-name">
+                  {{ u.username }}
+                  @if (isSelf(u)) {
+                    <span class="you">({{ T.GCF.ACCOUNTS.YOU | translate }})</span>
+                  }
+                </span>
+                <span class="u-email">
+                  @if (u.email) {
+                    {{ u.email }}
+                  } @else {
+                    <em>{{ T.GCF.ACCOUNTS.NO_EMAIL | translate }}</em>
+                  }
+                </span>
+              </span>
+            </span>
+
+            <span class="col-role">
+              <span class="badge-slot">
+                <span
+                  class="role-chip"
+                  [class.is-admin]="u.role === 'admin'"
+                  [class.is-operator]="u.role === 'operator'"
+                  [class.is-viewer]="u.role === 'viewer'"
+                  >{{ u.role }}</span
+                >
+              </span>
+            </span>
+
+            <span class="col-actions">
+              <span class="move">
+                <button
+                  [attr.aria-label]="T.GCF.ACCOUNTS.MOVE_UP | translate"
+                  [matTooltip]="T.GCF.ACCOUNTS.MOVE_UP | translate"
+                  [disabled]="i === 0"
+                  (click)="move(u, -1)"
+                >
+                  <mat-icon>keyboard_arrow_up</mat-icon>
+                </button>
+                <button
+                  [attr.aria-label]="T.GCF.ACCOUNTS.MOVE_DOWN | translate"
+                  [matTooltip]="T.GCF.ACCOUNTS.MOVE_DOWN | translate"
+                  [disabled]="i === users().length - 1"
+                  (click)="move(u, 1)"
+                >
+                  <mat-icon>keyboard_arrow_down</mat-icon>
+                </button>
+              </span>
+
+              <button
+                mat-icon-button
+                [matTooltip]="T.GCF.ACCOUNTS.EDIT | translate"
+                (click)="editUser(u)"
+              >
+                <mat-icon>edit</mat-icon>
+              </button>
+              <button
+                mat-icon-button
+                color="warn"
+                [disabled]="isLastAdmin(u) || isSelf(u)"
+                [matTooltip]="
+                  isLastAdmin(u)
+                    ? (T.GCF.ACCOUNTS.LAST_ADMIN | translate)
+                    : (T.GCF.ACCOUNTS.DELETE_USER | translate)
+                "
+                (click)="deleteUser(u)"
+              >
+                <mat-icon>delete</mat-icon>
+              </button>
+            </span>
+          </li>
+        } @empty {
+          <li class="empty">{{ T.GCF.ACCOUNTS.NO_OTHER_USERS | translate }}</li>
+        }
+      </ul>
+
+      @if (isAddFormOpen()) {
+        <div class="add-user">
+          <mat-form-field>
+            <mat-label>{{ T.GCF.ACCOUNTS.USERNAME | translate }}</mat-label>
+            <input
+              matInput
+              name="newUsername"
+              [(ngModel)]="newUsername"
+            />
+          </mat-form-field>
+          <mat-form-field>
+            <mat-label>{{ T.GCF.ACCOUNTS.PASSWORD | translate }}</mat-label>
+            <input
+              matInput
+              type="password"
+              autocomplete="new-password"
+              name="newUserPassword"
+              [(ngModel)]="newUserPassword"
+            />
+          </mat-form-field>
+          <mat-form-field>
+            <mat-label>{{ T.GCF.ACCOUNTS.EMAIL | translate }}</mat-label>
+            <input
+              matInput
+              type="email"
+              name="newUserEmail"
+              [(ngModel)]="newUserEmail"
+            />
+          </mat-form-field>
+          <mat-form-field>
+            <mat-label>{{ T.GCF.ACCOUNTS.ROLE | translate }}</mat-label>
+            <mat-select
+              name="newUserRole"
+              [(ngModel)]="newUserRole"
+            >
+              @for (r of ROLES; track r) {
+                <mat-option [value]="r">{{ r }}</mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+
+          <div class="actions">
+            <button
+              mat-flat-button
+              color="primary"
+              [disabled]="
+                isBusy() ||
+                !newUsername.trim() ||
+                newUserPassword.length < MIN_PASSWORD_LENGTH
+              "
+              (click)="createUser()"
+            >
+              {{ T.GCF.ACCOUNTS.CREATE | translate }}
+            </button>
+            <button
+              mat-button
+              (click)="isAddFormOpen.set(false)"
+            >
+              {{ T.GCF.ACCOUNTS.CANCEL | translate }}
+            </button>
+          </div>
+        </div>
+      } @else {
+        <button
+          mat-stroked-button
+          (click)="isAddFormOpen.set(true)"
+        >
+          <mat-icon>add</mat-icon>
+          {{ T.GCF.ACCOUNTS.ADD_USER | translate }}
+        </button>
+      }
+
+      <div class="registration-toggle">
+        <mat-slide-toggle
+          [checked]="isRegistrationEnabled()"
+          (change)="toggleRegistration($event.checked)"
+        >
+          {{ T.GCF.ACCOUNTS.SELF_REGISTRATION | translate }}
+        </mat-slide-toggle>
+        <p class="hint">{{ T.GCF.ACCOUNTS.SELF_REGISTRATION_HINT | translate }}</p>
+      </div>
+    </section>
+  }
+}

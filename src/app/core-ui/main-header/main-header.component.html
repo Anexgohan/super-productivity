@@ -104,6 +104,11 @@
       @if (isUserProfilesEnabled()) {
         <user-profile-button></user-profile-button>
       }
+      <!-- Same slot, the other identity model: server accounts instead of
+           browser-local profiles. The two are mutually exclusive by design. -->
+      @if (isAccountMenuEnabled()) {
+        <account-menu></account-menu>
+      }
 
       <!-- Desktop: Show all buttons inline -->
       @if (showDesktopButtons()) {

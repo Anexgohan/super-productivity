@@ -1,0 +1,241 @@
+.account-block {
+  margin-bottom: 2rem;
+
+  h3 {
+    margin: 0 0 0.5rem;
+  }
+
+  h4 {
+    margin: 1.5rem 0 0.5rem;
+  }
+
+  mat-form-field {
+    display: block;
+    max-width: 26rem;
+  }
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.username {
+  font-weight: bold;
+}
+
+.role-badge {
+  padding: 0.1rem 0.5rem;
+  border-radius: 1rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  background: rgba(128, 128, 128, 0.25);
+}
+
+.u-table-head,
+.u-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+/* Column widths live here, shared by the header and every row, so the two can
+   never drift apart. */
+.col-user {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
+.col-role {
+  display: flex;
+  align-items: center;
+  /* Content is a fixed 254px (112 badge slot + 10 gap + 132); the extra width
+     is deliberate — it is what lets the pair centre under the heading. */
+  justify-content: center;
+  gap: 10px;
+  flex: 0 0 360px;
+}
+
+.col-actions {
+  display: flex;
+  justify-content: flex-end;
+  /* 24px move column + edit + delete. */
+  flex: 0 0 100px;
+}
+
+/* Must exceed the WIDEST badge (OPERATOR renders at 98px). A flex item cannot
+   shrink below its content, so a narrower slot silently grows for that one row
+   and pushes its badge out of line with the others. */
+.badge-slot {
+  display: flex;
+  justify-content: flex-end;
+  flex: 0 0 112px;
+}
+
+.u-table-head {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--divider, rgba(128, 128, 128, 0.3));
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.user-list {
+  width: 100%;
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.u-row {
+  min-height: 56px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+
+  .u-meta {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .u-name {
+    font-weight: bold;
+  }
+
+  .you {
+    margin-left: 0.25rem;
+    opacity: 0.6;
+    font-weight: normal;
+    font-size: 0.85em;
+  }
+
+  .u-email {
+    font-size: 0.8em;
+    opacity: 0.6;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+/* Roles read as one hue losing weight as privilege drops, rather than three
+   competing colours. */
+.role-chip {
+  display: inline-block;
+  padding: 3px 9px;
+  /* Transparent, not none: only the viewer variant draws a visible outline, and
+     a border appearing on just one would shift it a pixel against the others. */
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: rgba(128, 128, 128, 0.25);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  white-space: nowrap;
+
+  &.is-admin {
+    background: color-mix(in srgb, var(--c-accent, #dd9473) 22%, transparent);
+    color: var(--c-accent, #dd9473);
+  }
+
+  &.is-operator {
+    color: var(--text-color, inherit);
+  }
+
+  &.is-viewer {
+    background: transparent;
+    border-color: var(--separator-color, rgba(128, 128, 128, 0.4));
+    opacity: 0.75;
+  }
+}
+
+/* One column, two half-height buttons: a stacked pair reads as a single
+   position control, where side by side reads as two unrelated actions. */
+.move {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 24px;
+  width: 24px;
+
+  button {
+    display: grid;
+    place-items: center;
+    height: 17px;
+    padding: 0;
+    border: 0;
+    border-radius: 3px;
+    background: transparent;
+    color: inherit;
+    opacity: 0;
+    cursor: pointer;
+    transition:
+      background 120ms ease,
+      opacity 120ms ease;
+
+    mat-icon {
+      width: 16px;
+      height: 16px;
+      font-size: 16px;
+      line-height: 16px;
+    }
+  }
+}
+
+/* Hidden until the row is in play, so a long list stays calm. Focus counts as
+   in play, or the arrows would be unreachable by keyboard. */
+.u-row:hover .move button,
+.move button:focus-visible {
+  opacity: 1;
+}
+
+.move button:hover:not(:disabled) {
+  background: rgba(128, 128, 128, 0.2);
+}
+
+.move button:disabled {
+  opacity: 0;
+  cursor: default;
+}
+
+.u-row:hover .move button:disabled {
+  opacity: 0.25;
+}
+
+.empty {
+  padding: 0.5rem 0;
+  opacity: 0.6;
+}
+
+.add-user {
+  padding: 1rem;
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  border-radius: 4px;
+
+  mat-form-field {
+    display: block;
+    max-width: 26rem;
+  }
+
+  .actions {
+    display: flex;
+    gap: 0.5rem;
+  }
+}
+
+.registration-toggle {
+  margin-top: 1.5rem;
+
+  .hint {
+    margin: 0.25rem 0 0;
+    font-size: 0.85em;
+    opacity: 0.7;
+  }
+}

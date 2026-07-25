@@ -1,0 +1,40 @@
+<h1 mat-dialog-title>
+  <mat-icon color="warn">warning</mat-icon>
+  {{ T.GCF.ACCOUNTS.DELETE_USER | translate }}
+</h1>
+
+<mat-dialog-content>
+  <p class="warning">
+    {{ T.GCF.ACCOUNTS.DELETE_WARNING | translate: { username: data.username } }}
+  </p>
+
+  <mat-form-field>
+    <mat-label>
+      {{ T.GCF.ACCOUNTS.DELETE_CONFIRM_PROMPT | translate: { username: data.username } }}
+    </mat-label>
+    <input
+      matInput
+      autocomplete="off"
+      [ngModel]="typed()"
+      (ngModelChange)="typed.set($event)"
+      (keydown.enter)="confirm()"
+    />
+  </mat-form-field>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button
+    mat-button
+    (click)="close()"
+  >
+    {{ T.GCF.ACCOUNTS.CANCEL | translate }}
+  </button>
+  <button
+    mat-flat-button
+    color="warn"
+    [disabled]="!isConfirmed"
+    (click)="confirm()"
+  >
+    {{ T.GCF.ACCOUNTS.DELETE_USER | translate }}
+  </button>
+</mat-dialog-actions>

@@ -6,6 +6,7 @@ import { allDataWasLoaded } from '../../root-store/meta/all-data-was-loaded.acti
 import { DataInitStateService } from './data-init-state.service';
 import { UserProfileService } from '../../features/user-profile/user-profile.service';
 import { OperationLogHydratorService } from '../../op-log/persistence/operation-log-hydrator.service';
+import { ReplicaIdentityGateService } from '../../imex/sync/replica-identity-gate.service';
 import { OpLog } from '../log';
 
 @Injectable({ providedIn: 'root' })
@@ -14,6 +15,7 @@ export class DataInitService {
   private _dataInitStateService = inject(DataInitStateService);
   private _userProfileService = inject(UserProfileService);
   private _operationLogHydratorService = inject(OperationLogHydratorService);
+  private _replicaIdentityGate = inject(ReplicaIdentityGateService);
 
   private _isAllDataLoadedInitially$: Observable<boolean> = from(this.reInit()).pipe(
     mapTo(true),
@@ -46,6 +48,15 @@ export class DataInitService {
     if (isProfilesEnabled) {
       // Only initialize profile system if explicitly enabled
       await this._userProfileService.initialize();
+    }
+
+    // Before anything is read: make sure this replica belongs to whoever is
+    // signed in. A replica left by another account, or by a stack that has
+    // since been wiped, is destroyed here rather than hydrated — so it is never
+    // rendered, never merged, and never uploaded back.
+    const outcome = await this._replicaIdentityGate.enforce();
+    if (outcome === 'purged') {
+      OpLog.normal('DataInitService: local replica purged, hydrating clean');
     }
 
     // Hydrate from Operation Log (which handles migration from legacy if needed)

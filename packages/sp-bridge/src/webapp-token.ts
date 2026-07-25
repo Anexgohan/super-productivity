@@ -80,9 +80,15 @@ export const isTokenUsable = (token: string, nowMs: number = Date.now()): boolea
 export class WebappTokenProvider {
   private _cached: string | null = null;
 
+  /**
+   * `key` selects which stored token this instance owns. The container's own
+   * account uses the default; multi-user gives each board its own key, because
+   * every distinct token needs the same durability for the same reason.
+   */
   constructor(
     private readonly _store: AuthStore,
     private readonly _mint: () => Promise<string>,
+    private readonly _key: string = WEBAPP_TOKEN_SETTING_KEY,
   ) {}
 
   async get(): Promise<string> {
@@ -90,7 +96,7 @@ export class WebappTokenProvider {
       return this._cached;
     }
 
-    const stored = await this._store.getSetting(WEBAPP_TOKEN_SETTING_KEY);
+    const stored = await this._store.getSetting(this._key);
     if (stored && isTokenUsable(stored)) {
       this._cached = stored;
       return stored;
@@ -104,17 +110,14 @@ export class WebappTokenProvider {
       // client could see one extra rotation. Harmless now that the migration
       // prompt is suppressed under container authority, and it is a once-a-year
       // window rather than a per-restart one.
-      await this._store.setSetting(WEBAPP_TOKEN_SETTING_KEY, minted);
+      await this._store.setSetting(this._key, minted);
       this._cached = minted;
       return minted;
     }
 
     // First mint: insert-if-absent so two bridges booting together converge on
     // one token instead of each overwriting the other's.
-    const settled = await this._store.getOrCreateSetting(
-      WEBAPP_TOKEN_SETTING_KEY,
-      () => minted,
-    );
+    const settled = await this._store.getOrCreateSetting(this._key, () => minted);
     this._cached = settled;
     return settled;
   }

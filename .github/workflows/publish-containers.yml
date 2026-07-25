@@ -41,8 +41,28 @@ env:
   REGISTRY_NS: ghcr.io/anexgohan
 
 jobs:
+  # Lint gates the whole release rather than living inside the web Dockerfile.
+  # There it cost 76s of every local image build and failed AFTER the expensive
+  # Angular layer; here it runs once, on GitHub's runners, and stops all six
+  # builds before any of them start. ci.yml also lints, but only on PRs to
+  # master — which this fork's tag-driven flow never opens, so without this job
+  # nothing would lint at all.
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts || npm i --ignore-scripts
+      - run: npm run prepare
+      - run: npm run lint
+
   build:
     name: build ${{ matrix.image.name }} (${{ matrix.platform.arch }})
+    needs: lint
     runs-on: ${{ matrix.platform.runner }}
     permissions:
       contents: read

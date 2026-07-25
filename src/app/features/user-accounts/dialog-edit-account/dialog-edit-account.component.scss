@@ -1,0 +1,12 @@
+mat-dialog-content {
+  display: flex;
+  flex-direction: column;
+  // Material reserves a hint line under each field; the gap sits on top of it,
+  // so keep it small or the fields drift apart.
+  gap: 4px;
+  padding-top: 8px;
+}
+
+mat-form-field {
+  width: 100%;
+}

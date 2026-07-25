@@ -1,6 +1,19 @@
-import { Injectable } from '@angular/core';
+import { Injectable, signal } from '@angular/core';
 import { IS_ELECTRON } from '../../app.constants';
 import { SyncConfig } from '../../features/config/global-config.model';
+
+/**
+ * The same answer as `ContainerAuthorityService.isContainerManaged()`, readable
+ * without injecting anything.
+ *
+ * It exists for the settings form consts, which are plain data evaluated
+ * outside any injection context and so cannot ask the service. Kept beside the
+ * service that owns the latch rather than in a shared const file, so there is
+ * still exactly one place the answer is decided.
+ *
+ * Settled during startup, before any settings page can be opened.
+ */
+export const IS_CONTAINER_MANAGED = signal(false);
 
 /**
  * Whether the served container is the AUTHORITY for this client
@@ -77,6 +90,7 @@ export class ContainerAuthorityService {
     }
 
     this._isContainerManaged = true;
+    IS_CONTAINER_MANAGED.set(true);
     return override;
   }
 

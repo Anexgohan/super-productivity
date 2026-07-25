@@ -22,6 +22,7 @@ import {
   LEGACY_TERMINAL_REMOTE_FAILURES_MIGRATION_VERSION,
   RAW_REBUILD_INCOMPLETE_META_KEY,
   RAW_REBUILD_RECOVERY_META_KEY,
+  REPLICA_IDENTITY_META_KEY,
   OPS_INDEXES,
   ArchiveStoreEntry,
   ProfileDataStoreEntry,
@@ -125,11 +126,20 @@ interface LegacyTerminalRemoteFailuresMigrationEntry {
   version: number;
 }
 
+/** Whose data this replica holds. See REPLICA_IDENTITY_META_KEY. */
+export interface ReplicaIdentity {
+  /** The serving stack's data identity; changes when its database is wiped. */
+  instanceId: string;
+  /** The bridge account that was signed in when the replica was stamped. */
+  userId: number;
+}
+
 type OpLogMetaEntry =
   | FullStateOpsMetaEntry
   | RawRebuildIncompleteEntry
   | RawRebuildRecoveryEntry
-  | LegacyTerminalRemoteFailuresMigrationEntry;
+  | LegacyTerminalRemoteFailuresMigrationEntry
+  | ReplicaIdentity;
 
 /**
  * Stored operation log entry that can hold either compact or full operation format.
@@ -2129,6 +2139,73 @@ export class OperationLogStoreService implements RemoteOperationApplyStorePort<O
         }
       },
     );
+  }
+
+  // ============================================================
+  // Replica identity (whose data this browser is holding)
+  // ============================================================
+
+  /** The stamp on this replica, or undefined if it was never stamped. */
+  async getReplicaIdentity(): Promise<ReplicaIdentity | undefined> {
+    await this._ensureInit();
+    const stored = await this._adapter.get<unknown>(
+      STORE_NAMES.META,
+      REPLICA_IDENTITY_META_KEY,
+    );
+    if (
+      typeof stored !== 'object' ||
+      stored === null ||
+      typeof (stored as ReplicaIdentity).instanceId !== 'string' ||
+      typeof (stored as ReplicaIdentity).userId !== 'number'
+    ) {
+      return undefined;
+    }
+    return stored as ReplicaIdentity;
+  }
+
+  async setReplicaIdentity(identity: ReplicaIdentity): Promise<void> {
+    await this._ensureInit();
+    await this._adapter.put(STORE_NAMES.META, identity, REPLICA_IDENTITY_META_KEY);
+  }
+
+  /**
+   * Drops every local store, leaving the browser with no claim on any data.
+   *
+   * Used when the replica's stamp does not match the signed-in identity: the
+   * data belongs to another account or to a stack that no longer exists, so it
+   * must not be rendered, merged, or uploaded. Deliberately total — a partial
+   * clear would leave a vector clock or a client id that could still make this
+   * browser look like a peer with history.
+   *
+   * The caller is responsible for re-stamping afterwards; this cannot do it
+   * itself, because the whole point is that nothing survives.
+   */
+  async purgeForIdentityMismatch(): Promise<void> {
+    await this._ensureInit();
+    const allStores = [
+      STORE_NAMES.OPS,
+      STORE_NAMES.STATE_CACHE,
+      STORE_NAMES.IMPORT_BACKUP,
+      STORE_NAMES.VECTOR_CLOCK,
+      STORE_NAMES.ARCHIVE_YOUNG,
+      STORE_NAMES.ARCHIVE_OLD,
+      STORE_NAMES.PROFILE_DATA,
+      STORE_NAMES.CLIENT_ID,
+      STORE_NAMES.META,
+    ];
+    await this._adapter.transaction(allStores, 'readwrite', async (tx) => {
+      for (const store of allStores) {
+        await tx.clear(store);
+      }
+    });
+    this._invalidateAppliedAndUnsyncedCaches();
+    this._vectorClockCache = null;
+    // The clientId lives in the cleared CLIENT_ID store but is also memoized in
+    // ClientIdService. Without this the next getOrGenerateClientId() would hand
+    // back the purged device's id and the browser would rejoin sync wearing the
+    // identity it was just stripped of (same reason
+    // runDestructiveStateReplacement does it).
+    this.clientIdProvider.clearCache();
   }
 
   /**

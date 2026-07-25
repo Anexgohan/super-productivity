@@ -89,6 +89,39 @@ server {
         return 302 /login?next=$request_uri;
     }
 
+    # The sync override is per-user, so it comes from the bridge rather than
+    # from disk: the baked file carries ONE account's token, which is exactly
+    # what made every browser the same user. The app fetches this path
+    # same-origin, so its session cookie arrives here and the bridge can answer
+    # for whoever is asking — no frontend change involved.
+    #
+    # No auth_request here on purpose: the bridge checks the session itself, and
+    # a redirect to the login PAGE in answer to a JSON fetch would arrive as
+    # HTML with a 200. A plain 401 is what the app knows how to ignore.
+    location = /assets/sync-config-default-override.json {
+        set $bridge_override "${SP_BRIDGE_INTERNAL_URL}";
+        proxy_pass $bridge_override$request_uri;
+
+        # 404 means the bridge registered no override route, which happens only
+        # when SP_AUTH_ENABLED=false — no sessions exist, so the baked
+        # single-account file IS the right answer. Deliberately narrow: 401/403
+        # must NOT fall through, or an unauthenticated browser would be handed
+        # the container account's token and the auth gate would be decorative.
+        proxy_intercept_errors on;
+        error_page 404 = @baked_override;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # The file docker-entrypoint.sh bakes at startup, reachable only via the
+    # fallback above.
+    location @baked_override {
+        root /usr/share/nginx/html;
+    }
+
     # serve super-productivity as static files at the path /
     location / {
         # Either "/_auth" or "off" — see docker-entrypoint.sh (SP_AUTH_ENABLED).

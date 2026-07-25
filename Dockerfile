@@ -59,8 +59,14 @@ COPY --exclude=nginx \
      --exclude=docker \
      --exclude=documentation \
      . .
-# Pass build args as environment variables for the build commands
-RUN UNSPLASH_KEY=$UNSPLASH_KEY UNSPLASH_CLIENT_ID=$UNSPLASH_CLIENT_ID npm run env && npm run lint && npm run buildFrontend:prodWeb
+# Pass build args as environment variables for the build commands.
+#
+# Lint deliberately does NOT run here. It cost 76s of every image build, and a
+# container build is the wrong place to discover a style error — it fails after
+# the expensive layers instead of before them. The gate lives in
+# .github/workflows/publish-containers.yml, where it blocks all six image builds
+# up front and costs a local build nothing.
+RUN UNSPLASH_KEY=$UNSPLASH_KEY UNSPLASH_CLIENT_ID=$UNSPLASH_CLIENT_ID npm run env && npm run buildFrontend:prodWeb
 
 # Production stage
 FROM nginx:1

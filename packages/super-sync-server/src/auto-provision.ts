@@ -91,11 +91,126 @@ export const autoProvisionAccount = async (): Promise<void> => {
 };
 
 /**
+ * Creates a verified account for an arbitrary address, or returns the existing
+ * one.
+ *
+ * The password is only ever used to CREATE. An existing account is returned
+ * without checking it, and never has its hash rewritten — unlike
+ * `autoProvisionAccount`, which reapplies the env password on every boot.
+ *
+ * That is not a hole worth closing: the only guard on this route is
+ * X-Internal-Secret, which must equal JWT_SECRET, and anyone holding JWT_SECRET
+ * can mint a token for any account by signing one directly. Verifying the
+ * password would add no protection while breaking every caller whose derived
+ * password changed because the secret was rotated.
+ */
+const ensureAccount = async (
+  email: string,
+  password: string,
+): Promise<{ id: number; email: string; tokenVersion: number | null }> => {
+  const existing = await prisma.user.findUnique({ where: { email } });
+  if (existing) return existing;
+
+  const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+  const user = await prisma.user.create({
+    data: {
+      email,
+      passwordHash,
+      isVerified: 1,
+      verificationToken: null,
+      verificationTokenExpiresAt: null,
+      tokenVersion: 0,
+    },
+  });
+  Logger.info(`[auto-provision] Created account for a bridge user (ID: ${user.id})`);
+  return user;
+};
+
+const signToken = (user: { id: number; email: string; tokenVersion: number | null }) =>
+  jwt.sign(
+    { userId: user.id, email: user.email, tokenVersion: user.tokenVersion ?? 0 },
+    getJwtSecret(),
+    { expiresIn: JWT_EXPIRY },
+  );
+
+/**
  * POST /api/internal/token → { token, userId, email } for the provisioned
  * account. Caller must send X-Internal-Secret: <JWT_SECRET>. Intended for the
  * web container's entrypoint on the compose-internal network only.
+ *
+ * POST /api/internal/provision → the same, for any address. This is what makes
+ * more than one board possible: /token is bound to SP_SYNC_ACCOUNT_EMAIL and
+ * can only ever serve the container's own account.
  */
 export const provisionRoutes = async (fastify: FastifyInstance): Promise<void> => {
+  fastify.post<{ Body: { email?: string; password?: string } }>(
+    '/provision',
+    { config: { rateLimit: false } },
+    async (request, reply) => {
+      const secret = request.headers['x-internal-secret'];
+      if (typeof secret !== 'string' || secret !== getJwtSecret()) {
+        return reply.status(401).send({ error: 'Unauthorized' });
+      }
+
+      const email = request.body?.email?.trim().toLowerCase();
+      const password = request.body?.password;
+      if (!email || !email.includes('@')) {
+        return reply.status(400).send({ error: 'A valid email is required' });
+      }
+      if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {
+        return reply
+          .status(400)
+          .send({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` });
+      }
+
+      const user = await ensureAccount(email, password);
+      return reply
+        .status(200)
+        .send({ token: signToken(user), userId: user.id, email: user.email });
+    },
+  );
+
+  /**
+   * DELETE /api/internal/users/:id → purges an account and everything it owns.
+   * Every relation to User is onDelete: Cascade, so ops, devices, sync state
+   * and passkeys go with it in one statement.
+   *
+   * The container's own account is refused: it holds the board the stack was
+   * built around, and nothing in the UI should be able to reach it.
+   */
+  fastify.delete<{ Params: { id: string } }>(
+    '/users/:id',
+    { config: { rateLimit: false } },
+    async (request, reply) => {
+      const secret = request.headers['x-internal-secret'];
+      if (typeof secret !== 'string' || secret !== getJwtSecret()) {
+        return reply.status(401).send({ error: 'Unauthorized' });
+      }
+
+      const id = Number.parseInt(request.params.id, 10);
+      if (!Number.isFinite(id)) {
+        return reply.status(400).send({ error: 'Invalid user id' });
+      }
+
+      const user = await prisma.user.findUnique({ where: { id } });
+      if (!user) {
+        // Already gone: the caller wants it absent, and it is.
+        return reply.status(200).send({ deleted: false });
+      }
+
+      const containerAccount = process.env.SP_SYNC_ACCOUNT_EMAIL?.trim().toLowerCase();
+      if (containerAccount && user.email.toLowerCase() === containerAccount) {
+        return reply
+          .status(400)
+          .send({ error: 'Refusing to delete the container account' });
+      }
+
+      await prisma.user.delete({ where: { id } });
+      Logger.info(`[auto-provision] Purged account and all its data (ID: ${id})`);
+      return reply.status(200).send({ deleted: true });
+    },
+  );
+
   fastify.post('/token', { config: { rateLimit: false } }, async (request, reply) => {
     const secret = request.headers['x-internal-secret'];
     if (typeof secret !== 'string' || secret !== getJwtSecret()) {
@@ -112,12 +227,8 @@ export const provisionRoutes = async (fastify: FastifyInstance): Promise<void> =
       return reply.status(503).send({ error: 'Account not provisioned yet' });
     }
 
-    const token = jwt.sign(
-      { userId: user.id, email: user.email, tokenVersion: user.tokenVersion ?? 0 },
-      getJwtSecret(),
-      { expiresIn: JWT_EXPIRY },
-    );
-
-    return reply.status(200).send({ token, userId: user.id, email: user.email });
+    return reply
+      .status(200)
+      .send({ token: signToken(user), userId: user.id, email: user.email });
   });
 };

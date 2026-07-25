@@ -36,6 +36,19 @@ export interface BridgeConfig {
   /** Session lifetime in hours (sliding) */
   authSessionTtlHours: number;
   /**
+   * The container's own SuperSync account, from the same vars the sync server
+   * provisions it with. The bridge needs it to recognise which board belongs to
+   * the stack itself, so an upgraded single-user deployment keeps its data.
+   */
+  syncAccountEmail: string;
+  syncAccountPassword: string;
+  /**
+   * Sync URL as the BROWSER should reach it — root-relative under the
+   * single-port layout, which is not the same as `syncServerUrl` (how this
+   * process reaches it on the compose network).
+   */
+  publicSyncUrl: string;
+  /**
    * Mark session cookies Secure. Derived from ALLOW_INSECURE_HTTP so putting
    * the stack behind TLS hardens the cookie automatically, instead of leaving
    * it quietly insecure because nobody remembered a separate switch.
@@ -85,5 +98,9 @@ export const loadConfig = (): BridgeConfig => ({
   databaseUrl: resolveDatabaseUrl(),
   webUrl: (process.env.SP_PUBLIC_WEB_URL ?? '').replace(/\/+$/, ''),
   authSessionTtlHours: Number(process.env.SP_AUTH_SESSION_TTL_H ?? 720),
+  syncAccountEmail: (process.env.SP_SYNC_ACCOUNT_EMAIL ?? '').trim().toLowerCase(),
+  syncAccountPassword: process.env.SP_SYNC_ACCOUNT_PASSWORD ?? '',
+  // Same default and same var the web entrypoint uses, so both agree on the URL.
+  publicSyncUrl: (process.env.SP_SYNC_SERVER_URL ?? '/sync').replace(/\/+$/, ''),
   authSecureCookie: process.env.ALLOW_INSECURE_HTTP !== 'true',
 });

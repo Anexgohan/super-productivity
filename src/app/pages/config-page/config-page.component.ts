@@ -70,6 +70,11 @@ import { MatTooltip } from '@angular/material/tooltip';
 import { MatButton } from '@angular/material/button';
 import { NgTemplateOutlet } from '@angular/common';
 import { LocalBackupService } from '../../imex/local-backup/local-backup.service';
+import {
+  ContainerAuthorityService,
+  IS_CONTAINER_MANAGED,
+} from '../../imex/sync/container-authority.service';
+import { USER_ACCOUNTS_FORM_CFG } from '../../features/config/form-cfgs/user-accounts-form.const';
 
 @Component({
   selector: 'config-page',
@@ -106,6 +111,7 @@ export class ConfigPageComponent implements OnInit {
   private readonly _translateService = inject(TranslateService);
   private readonly _isAndroidWebView = inject(IS_ANDROID_WEB_VIEW_TOKEN);
   private readonly _updateCheckService = inject(UpdateCheckService);
+  private readonly _containerAuthority = inject(ContainerAuthorityService);
 
   readonly configService = inject(GlobalConfigService);
   readonly syncSettingsService = inject(SyncConfigService);
@@ -170,7 +176,12 @@ export class ConfigPageComponent implements OnInit {
 
   constructor() {
     // Initialize tab-specific form configurations
-    this.generalFormCfg = GLOBAL_GENERAL_FORM_CONFIG.slice();
+    // Accounts only exist when the container owns the data; a desktop or
+    // standalone build has nothing to manage. Filtered here rather than in the
+    // const because IS_CONTAINER_MANAGED() is not settled at module load.
+    this.generalFormCfg = GLOBAL_GENERAL_FORM_CONFIG.slice().filter(
+      (s) => s.customSection !== 'USER_ACCOUNTS_CFG' || IS_CONTAINER_MANAGED(),
+    );
     this.timeTrackingFormCfg = GLOBAL_TIME_TRACKING_FORM_CONFIG.slice();
     this.pluginsShortcutsFormCfg = GLOBAL_PLUGINS_FORM_CONFIG.slice();
     this.globalImexFormCfg = GLOBAL_IMEX_FORM_CONFIG.slice();
@@ -230,6 +241,15 @@ export class ConfigPageComponent implements OnInit {
   }
 
   ngOnInit(): void {
+    // The constructor filtered on IS_CONTAINER_MANAGED(), which is set during
+    // startup — but a cold deep-link to /config can construct this page first.
+    // Asking the service settles it either way; the call is idempotent.
+    void this._containerAuthority.isContainerManaged().then((isManaged) => {
+      if (isManaged && !this.generalFormCfg.some((s) => s === USER_ACCOUNTS_FORM_CFG)) {
+        this.generalFormCfg = [...this.generalFormCfg, USER_ACCOUNTS_FORM_CFG];
+      }
+    });
+
     this.configService.cfg$
       .pipe(takeUntilDestroyed(this._destroyRef))
       .subscribe((cfg) => {

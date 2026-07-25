@@ -1,0 +1,42 @@
+<button
+  mat-icon-button
+  [matMenuTriggerFor]="accountMenu"
+  [matTooltip]="me() ? me()!.username : (T.ACCOUNT_MENU.TITLE | translate)"
+>
+  <mat-icon>account_circle</mat-icon>
+</button>
+
+<mat-menu #accountMenu="matMenu">
+  @if (me(); as user) {
+    <div class="identity">
+      <span class="username">{{ user.username }}</span>
+      <span class="role">{{ user.role }}</span>
+    </div>
+    <mat-divider></mat-divider>
+  }
+
+  <button
+    mat-menu-item
+    (click)="openSettings()"
+  >
+    <mat-icon>manage_accounts</mat-icon>
+    <span>{{ T.ACCOUNT_MENU.ACCOUNT | translate }}</span>
+  </button>
+  <button
+    mat-menu-item
+    (click)="openSettings()"
+  >
+    <mat-icon>settings</mat-icon>
+    <span>{{ T.ACCOUNT_MENU.SETTINGS | translate }}</span>
+  </button>
+
+  <mat-divider></mat-divider>
+
+  <button
+    mat-menu-item
+    (click)="logout()"
+  >
+    <mat-icon>logout</mat-icon>
+    <span>{{ T.ACCOUNT_MENU.LOGOUT | translate }}</span>
+  </button>
+</mat-menu>

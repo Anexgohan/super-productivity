@@ -68,6 +68,18 @@ export const RAW_REBUILD_INCOMPLETE_META_KEY = 'raw_rebuild_incomplete' as const
  */
 export const RAW_REBUILD_RECOVERY_META_KEY = 'raw_rebuild_recovery' as const;
 
+/**
+ * Meta key recording whose data this replica holds: the stack that served it
+ * and the account that was signed in when it was written.
+ *
+ * The local replica is otherwise anonymous, which is what let it attach itself
+ * to whoever opened the tab next — a different user, or the same URL after a
+ * wipe. Stamped, it is a cache with provenance instead of a peer with standing.
+ * Absent means unstamped (legacy replica, or a deployment that serves no
+ * identity), which is adopted rather than purged.
+ */
+export const REPLICA_IDENTITY_META_KEY = 'replica_identity' as const;
+
 /** Versioned marker for the one-time legacy terminal remote failure repair. */
 export const LEGACY_TERMINAL_REMOTE_FAILURES_MIGRATION_META_KEY =
   'legacy_terminal_remote_failures_migration' as const;

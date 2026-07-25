@@ -19,6 +19,7 @@ import { SHORT_SYNTAX_FORM_CFG } from './form-cfgs/short-syntax-form.const';
 import { CLIPBOARD_IMAGES_FORM } from './form-cfgs/clipboard-images-form.const';
 import { TASKS_SETTINGS_FORM_CFG } from './form-cfgs/tasks-settings-form.const';
 import { TASK_WIDGET_FORM_CFG } from './form-cfgs/task-widget-form.const';
+import { USER_ACCOUNTS_FORM_CFG } from './form-cfgs/user-accounts-form.const';
 
 const filterGlobalConfigForm = (cfg: ConfigFormSection<any>): boolean => {
   return (
@@ -35,6 +36,9 @@ export const GLOBAL_GENERAL_FORM_CONFIG: ConfigFormConfig = [
   TASK_WIDGET_FORM_CFG,
   KEYBOARD_SETTINGS_FORM_CFG,
   CLIPBOARD_IMAGES_FORM,
+  // Dropped again at runtime unless the container is the authority — see
+  // ConfigPageComponent, where IS_CONTAINER_MANAGED() has settled.
+  USER_ACCOUNTS_FORM_CFG,
 ].filter(filterGlobalConfigForm);
 
 // Tab: Time & Tracking - Time Tracking, Idle, Schedule, Reminder

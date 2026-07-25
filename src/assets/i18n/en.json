@@ -1,4 +1,10 @@
 {
+  "ACCOUNT_MENU": {
+    "ACCOUNT": "Account",
+    "LOGOUT": "Log out",
+    "SETTINGS": "Settings",
+    "TITLE": "Account"
+  },
   "APP": {
     "B_INSTALL": {
       "IGNORE": "Ignore",
@@ -2355,6 +2361,51 @@
     "YESTERDAY": "Yesterday"
   },
   "GCF": {
+    "ACCOUNTS": {
+      "ACTIONS": "Actions",
+      "ADD_USER": "Add user",
+      "CANCEL": "Cancel",
+      "CHANGE_PASSWORD": "Change password",
+      "CONFIRM_PASSWORD": "Confirm new password",
+      "CREATE": "Create",
+      "CURRENT_PASSWORD": "Current password",
+      "DELETE_CONFIRM_PROMPT": "Type {{username}} to confirm",
+      "DELETE_USER": "Delete account",
+      "DELETE_WARNING": "This permanently deletes {{username}} and all of their tasks, projects and history. It cannot be undone.",
+      "EDIT": "Edit",
+      "EDIT_ACCOUNT": "Edit account",
+      "EMAIL": "Email",
+      "EMAIL_HINT": "Optional, and only a label — it does not affect sign-in or which board you see.",
+      "EMAIL_SAVED": "Email saved",
+      "HELP": "Your sign-in details, and — for admins — the accounts on this server. Each account has its own separate board.",
+      "LAST_ADMIN": "This is the only admin, so the role cannot be changed and the account cannot be deleted.",
+      "MANAGE_USERS": "Manage users",
+      "MOVE_DOWN": "Move down",
+      "MOVE_UP": "Move up",
+      "NEW_PASSWORD": "New password",
+      "NO_EMAIL": "No email set",
+      "NO_OTHER_USERS": "No other accounts yet.",
+      "ORDER_SAVED": "Order saved",
+      "PASSWORD": "Password",
+      "PASSWORDS_DO_NOT_MATCH": "Passwords do not match",
+      "PASSWORD_CHANGED": "Password updated",
+      "PASSWORD_UNCHANGED_HINT": "Leave blank to keep their current password.",
+      "RESET_PASSWORD": "Reset password",
+      "ROLE": "Role",
+      "SAVE": "Save changes",
+      "SAVE_EMAIL": "Save email",
+      "SELF_REGISTRATION": "Allow self-registration",
+      "SELF_REGISTRATION_HINT": "Anyone who can reach the sign-in page may create their own account. New accounts start as viewers.",
+      "SIGNED_IN_AS": "Signed in as",
+      "TITLE": "Accounts",
+      "USER": "User",
+      "USERNAME": "Username",
+      "USER_CREATED": "Account created",
+      "USER_DELETED": "Account deleted",
+      "USER_UPDATED": "Account updated",
+      "YOU": "you",
+      "YOUR_ACCOUNT": "Your account"
+    },
     "APP_FEATURES": {
       "BOARDS": "Boards",
       "DONATE_PAGE": "Donate page",
@@ -2456,12 +2507,6 @@
       "HELP": "These settings apply only to this device and are not synced.",
       "L_IS_LOOP_BREAK_END_ALARM": "Loop the break-end sound until I dismiss the break (this device only)",
       "TITLE": "Focus Mode (this device)"
-    },
-    "TASK_WIDGET": {
-      "TITLE": "Task Widget",
-      "IS_ENABLED": "Enable task widget",
-      "IS_ALWAYS_SHOW": "Always show task widget (even when main window is visible)",
-      "OPACITY": "Task widget opacity"
     },
     "IDLE": {
       "HELP": "<div><p>When idle time handling is enabled, a dialog will open after a specified amount of time to check if - and on which - task you want to track your time when you have been idle.</p></div>",
@@ -2709,6 +2754,12 @@
       "IS_TRAY_SHOW_CURRENT": "Show current task in the tray / status menu (macOS/Windows only)",
       "NOTES_TEMPLATE": "Task description template",
       "TITLE": "Tasks"
+    },
+    "TASK_WIDGET": {
+      "TITLE": "Task Widget",
+      "IS_ENABLED": "Enable task widget",
+      "IS_ALWAYS_SHOW": "Always show task widget (even when main window is visible)",
+      "OPACITY": "Task widget opacity"
     },
     "TIME_TRACKING": {
       "HELP": "The time tracking reminder is a banner that will appear if you forgot to start time tracking.",

@@ -15,6 +15,7 @@ import type { BridgeCore, TaskFilter } from './core';
 import type { StateStore } from './state-store';
 import type { AuthStore } from './auth/store';
 import type { SessionManager } from './auth/session';
+import type { SyncIdentityProvider } from './auth/sync-identity';
 import { registerAuthRoutes, sessionFromRequest } from './auth/routes';
 import { verifyApiKey } from './auth/api-key';
 
@@ -109,7 +110,36 @@ export interface AuthWiring {
   sessions: SessionManager;
   /** Public URL of the web app, for the post-login redirect. */
   webUrl?: string;
+  /** Removes a SuperSync account and its data when an admin deletes a user. */
+  purgeSyncAccount?: (supersyncUserId: number) => Promise<void>;
+  /** Serves each browser its own board's credentials (see below). */
+  override?: SessionOverrideWiring;
 }
+
+/**
+ * Per-session sync config. The web container bakes one override file at
+ * startup, which is why every browser used to arrive as the same user; served
+ * from here instead, the answer depends on who is asking.
+ *
+ * The app needs no change for this: it fetches the path same-origin, so the
+ * session cookie rides along and it never learns the file became dynamic.
+ */
+export interface SessionOverrideWiring {
+  /** Where the app should reach sync — "/sync" under the single-port layout. */
+  baseUrl: string;
+  /** Container-wide E2E passphrase. One key for everyone, by design — see the explainer, "Encryption is container-wide, deliberately". */
+  encryptKey: string;
+  identities: SyncIdentityProvider;
+  /**
+   * Identity of this stack's data, so a browser can tell whose replica it is
+   * holding. Wiping the database mints a new one, which is what makes a wipe
+   * actually reach the browsers — see the explainer, "The browser is a cache".
+   */
+  instanceId: () => Promise<string>;
+}
+
+/** The path the app fetches. Real file on disk in the web image; proxied here when the bridge is wired up. */
+export const OVERRIDE_PATH = '/assets/sync-config-default-override.json';
 
 /**
  * Container-to-container wiring. Not part of the public API: these routes serve
@@ -147,6 +177,9 @@ const PUBLIC_PATHS = new Set([
   '/api/auth/logout',
   '/api/auth/status',
   '/api/auth/verify',
+  // Signing up necessarily happens without a session. The route refuses unless
+  // an admin enabled self-registration, so the gate is there, not here.
+  '/api/auth/register',
   // Carries its own X-Internal-Secret guard (see below). Listed here because
   // its caller is the web container's entrypoint, which holds JWT_SECRET but
   // deliberately not SP_BRIDGE_API_KEY.
@@ -164,6 +197,47 @@ export const createRestServer = (
 
   if (auth) {
     registerAuthRoutes(app, auth);
+  }
+
+  if (auth?.override) {
+    const { baseUrl, encryptKey, identities, instanceId } = auth.override;
+    app.get(OVERRIDE_PATH, async (req, reply) => {
+      const session = sessionFromRequest(req, auth.sessions);
+      if (!session) return reply.status(401).send({ error: 'Not signed in' });
+
+      const user = await auth.store.findUserById(session.user.userId);
+      // Session outlives the account it names — the row was deleted while a
+      // cookie was still valid. 403 rather than 404: nginx falls back to the
+      // baked single-account file on 404, which would hand this stale session
+      // the container account's board.
+      if (!user) return reply.status(403).send({ error: 'No board for this session' });
+
+      try {
+        const accessToken = await identities.tokenForUser(user);
+        // Never cached: the response is per-user, and a shared cache entry
+        // would hand one user's token to the next.
+        reply.header('Cache-Control', 'no-store');
+        return {
+          syncProvider: 'SuperSync',
+          superSync: {
+            baseUrl,
+            accessToken,
+            ...(encryptKey ? { encryptKey, isEncryptionEnabled: true } : {}),
+          },
+          // Whose data this browser is entitled to hold. The client compares it
+          // against the stamp on its local replica and purges on a mismatch, so
+          // a wiped stack or a different user cannot inherit the last one's
+          // board. Absent from the baked fallback file, and absence means
+          // "ungated" — never a mismatch.
+          identity: { instanceId: await instanceId(), userId: user.id },
+        };
+      } catch (err) {
+        // 503, not 500: the sync server being slow to come up is the usual
+        // cause, and the app treats any non-OK as "no override" and keeps the
+        // credentials it already holds.
+        return reply.status(503).send({ error: (err as Error).message });
+      }
+    });
   }
 
   if (internal) {
