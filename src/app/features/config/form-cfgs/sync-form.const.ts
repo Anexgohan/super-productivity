@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/naming-convention */
 import { T } from '../../../t.const';
+import { IS_CONTAINER_MANAGED } from '../../../imex/sync/container-authority.service';
 import { ConfigFormSection, SyncConfig } from '../global-config.model';
 import { SyncProviderId } from '../../../op-log/sync-providers/provider.const';
 import { IS_ANDROID_WEB_VIEW } from '../../../util/is-android-web-view';
@@ -493,6 +494,9 @@ export const SYNC_FORM: ConfigFormSection<SyncConfig> = {
           },
         },
         {
+          // Hidden under container authority: rotating the passphrase here wipes server history and re-encrypts from this one browser,
+          // while .env, the bridge and every other browser keep the old key, so nothing but this tab could read the result.
+          hideExpression: () => IS_CONTAINER_MANAGED(),
           type: 'btn',
           className: 'e2e-change-password-btn',
           templateOptions: {

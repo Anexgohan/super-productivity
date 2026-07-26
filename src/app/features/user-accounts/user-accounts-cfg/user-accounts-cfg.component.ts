@@ -30,6 +30,7 @@ import { T } from '../../../t.const';
 import { ConfigFormSection } from '../../config/global-config.model';
 import { SnackService } from '../../../core/snack/snack.service';
 import { Log } from '../../../core/log';
+import { ShareService } from '../../../core/share/share.service';
 import {
   UserAccountsService,
   type ApiKeyRow,
@@ -74,6 +75,7 @@ export class UserAccountsCfgComponent implements OnInit {
   private readonly _translate = inject(TranslateService);
   private readonly _matDialog = inject(MatDialog);
   private readonly _cd = inject(ChangeDetectorRef);
+  private readonly _share = inject(ShareService);
 
   // Set by ConfigSectionComponent when it instantiates us; unused here, but the
   // host assigns them unconditionally.
@@ -408,14 +410,11 @@ export class UserAccountsCfgComponent implements OnInit {
     });
   }
 
+  /** ShareService, not navigator.clipboard: the Clipboard API is absent on an insecure origin, and this stack is served over plain HTTP. */
   async copyKey(key: ApiKeyRow): Promise<void> {
     if (!key.key) return;
-    try {
-      await navigator.clipboard.writeText(key.key);
-      this._ok(T.GCF.ACCOUNTS.API_KEY_COPIED);
-    } catch (err) {
-      this._fail(err);
-    }
+    const result = await this._share.copyToClipboard(key.key, 'Key');
+    if (!result.success) this._fail(new Error(result.error ?? 'Copy failed'));
   }
 
   trackKeyById(_i: number, key: ApiKeyRow): number {

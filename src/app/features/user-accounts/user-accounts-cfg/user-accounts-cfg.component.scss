@@ -34,6 +34,15 @@
   background: rgba(128, 128, 128, 0.25);
 }
 
+/* styles.scss turns selection off app-wide for a desktop feel, and its `*` rule beats inheritance, so the descendants have to opt back in explicitly. */
+/* This table is reference data: keys, emails, usernames. Being unable to select it left no way to get a key out once the Clipboard API was unavailable. */
+.u-table-head,
+.u-table-head *,
+.user-list,
+.user-list * {
+  user-select: text;
+}
+
 .u-table-head,
 .u-row {
   display: flex;
