@@ -312,7 +312,7 @@ builds, where they make sense.
 - Role is re-read from the database on every REST request, so a demotion bites immediately there. The `/api/auth/*` routes still read the role out of the session JWT via `requireAdmin`, so a demoted admin keeps account-management powers until their session is reissued.
 - `DELETE /api/sync/data` on the sync server is scoped to the calling user (`getAuthUser(req).userId`), so it wipes only that account. It is still unguarded by role, meaning a viewer can erase their own board despite being read-only everywhere else.
 
-Closed since the first draft: the role ACL is enforcing (`canWrite` gates every non-read method in the bridge's `onRequest` hook), and API keys are per-user rather than one container-wide key.
+Closed since the first draft: the role ACL is enforcing (`canWrite` gates every non-read method in the bridge's `onRequest` hook), API keys are per-user rather than one container-wide key, and the bridge no longer reports zero boards for an account whose browser is showing the built-in defaults.
 
 ---
 
@@ -414,6 +414,20 @@ a task appears in that column because it **carries that tag**. So "move this tas
 to the In Progress column" means **add the `KANBAN_IN_PROGRESS` tag** (and
 usually remove the previous column's tag). You do board moves through the tag
 endpoints, not a dedicated board endpoint.
+
+Two practical consequences when you build a column rather than move a card through one. A new column needs a tag to filter on, so creating the column is usually two writes, not one. And its tag has to be excluded from the columns to its left, or the same card shows up in two places at once, which is why the stock To Do panel excludes `KANBAN_IN_PROGRESS`.
+
+### Starter boards exist before they are stored
+
+The two boards a fresh install shows, the Eisenhower Matrix and a Kanban, are not data. They are `DEFAULT_BOARDS`, the NgRx initial state, and nothing is written to the op-log until somebody edits a board for the first time.
+
+That used to mean the browser and the bridge disagreed about reality. A browser drew two boards; the bridge, reading the op-log, correctly reported none. Anything trusting the bridge would then create a board that already existed on screen, and the add-board op appended it, leaving two identical Kanbans.
+
+`DEFAULT_BOARDS` now lives in `@sp/shared-schema` so both sides read one definition, and the bridge treats an account with no board record as holding the defaults. The first write of any kind stores the whole default set before applying the change, so an edit to a starter board has something real to land on.
+
+The distinction that makes this safe is between an **absent** board record and a **stored empty** one. The materializer creates `state.BOARD` on the first board op of any kind, so absent means untouched and empty means the owner deleted everything. Only absent gets defaults. Delete every board and it stays deleted through a refresh, a re-login, and a bridge restart.
+
+The seed is also gated on a completed `refresh()`, because a store that is merely behind on ops looks identical to a fresh one, and seeding on that misread would duplicate boards another client had already edited.
 
 ### The Today list
 

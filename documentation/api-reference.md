@@ -93,6 +93,8 @@ ordering, attachments — have their own endpoints.)
 
 **Projects** · [create](#post-apiprojects) · [update](#patch-apiprojectsid) · [delete](#delete-apiprojectsid)
 
+**Boards** · [list](#get-apiboards) · [single](#get-apiboardsid) · [create](#post-apiboards) · [update](#patch-apiboardsid) · [delete](#delete-apiboardsid) · [reorder](#put-apiboardsorder) · [add column](#post-apiboardsidpanels) · [update column](#patch-apiboardsidpanelspanelid) · [delete column](#delete-apiboardsidpanelspanelid) · [card order](#put-apipanelspanelidtaskids)
+
 **Accounts and keys** · [me](#get-apiauthme) · [list keys](#get-apiauthusersidkeys) · [create key](#post-apiauthusersidkeys) · [revoke key](#post-apiauthusersidkeyskeyidrevoke) · [delete key](#delete-apiauthusersidkeyskeyid)
 
 ---
@@ -551,6 +553,90 @@ Returns `{"deleted": "<id>", "taskCount": <n>}`. `INBOX_PROJECT` is protected
 > ⚠️ Destructive and not undoable through the API. The task set is derived by
 > scanning every task's `projectId`, so it is accurate even if ordering lists are
 > stale.
+
+---
+
+## Boards
+
+A board is a Kanban view over tasks you already have. It stores no tasks of its own: each panel is a filter, and a card appears in a column because the task matches that column's filter. See [Boards (Kanban) are tag-driven](./super-productivity-explainer.md#boards-kanban-are-tag-driven) before writing one.
+
+### Starter boards and what "empty" means
+
+A fresh account shows two boards, the Eisenhower Matrix and a Kanban, and neither has been written to the op-log. They are the app's built-in defaults, and nothing is stored until someone edits a board for the first time.
+
+The API accounts for that: `GET /api/boards` on an account that has never touched boards returns those defaults rather than `[]`, so what you read matches what the owner sees in a browser. The first write of any kind stores the whole default set and then applies your change, which is why editing a starter board works even though it had never been saved.
+
+`[]` therefore means something specific: the owner had boards and deleted every one. That state is preserved, not repaired, so the defaults never come back on their own.
+
+One consequence worth knowing if you are writing automation: do not read `[]` as "no boards exist here, I should create one". That was possible before this behaviour existed and produced a duplicate board sitting alongside an identical one the browser was already drawing. `POST` now returns `409` for an id that belongs to the default set.
+
+### `GET /api/boards`
+
+Every board with its panels. Titles of default boards and their panels are i18n keys, not display text, so you will see `F.BOARDS.DEFAULT.KANBAN` rather than "Kanban". The client resolves them at render time. Boards you create carry whatever title you gave them, verbatim.
+
+### `GET /api/boards/:id`
+
+One board. `404` on an unknown id.
+
+### `POST /api/boards`
+
+Creates a board. → `201`. Body: `{"title": "...", "id": "OPTIONAL_ID", "cols": 3, "panels": [...]}`.
+
+`id` is generated when omitted. `cols` defaults to the panel count, so a new board is not born with empty gaps. `409` if the id already exists, including the ids of the starter boards.
+
+### `PATCH /api/boards/:id`
+
+Updates a board. Writable: `title`, `cols`, `panels`.
+
+Panels have no update action of their own upstream, so a panel edit is a `PATCH` carrying the board's whole replacement `panels` array. The panel routes below are conveniences over exactly that.
+
+### `DELETE /api/boards/:id`
+
+Deletes a board. Returns `{"deleted": "<id>"}`. Deleting every board is allowed and is remembered, per the note above.
+
+### `PUT /api/boards/order`
+
+Reorders boards. Body: `{"ids": ["...", "..."]}`.
+
+The list must name every board. A partial list is far more likely to be a caller bug than an intent to shuffle a subset, and the reducer would silently park the omitted boards at the tail.
+
+### `POST /api/boards/:id/panels`
+
+Adds a column. → `201`. Body is one panel:
+
+```json
+{
+  "id": "BLOCKED",
+  "title": "Blocked",
+  "includedTagIds": ["<tagId>"],
+  "excludedTagIds": [],
+  "taskDoneState": 3,
+  "scheduledState": 1,
+  "backlogState": 2,
+  "isParentTasksOnly": false,
+  "projectIds": [""]
+}
+```
+
+`taskDoneState`: 1 all, 2 done, 3 undone. `scheduledState`: 1 all, 2 scheduled, 3 not scheduled. `backlogState`: 1 all, 2 no backlog, 3 only backlog. `projectIds: [""]` means all projects, which is the app's own convention rather than a typo.
+
+`cols` grows with the panel count so the new column is visible instead of wrapping under the others. The panel is appended; reorder with a `PATCH` on the board.
+
+Two things this route will not do for you. A tag-driven column usually needs its tag excluded from the columns to its left, or a card shows up in both at once. And a column added to fill a middle position arrives at the end until you reorder.
+
+### `PATCH /api/boards/:id/panels/:panelId`
+
+Updates one column's filters. Writable: everything except `id` and `taskIds`.
+
+### `DELETE /api/boards/:id/panels/:panelId`
+
+Removes a column. Returns `{"deleted": "<panelId>"}`, and `cols` shrinks to match.
+
+Removing a column does not touch the tag it filtered on, nor any exclusion of that tag on the other columns. Left behind, such an exclusion hides matching tasks from every column, so clean those up in the same pass.
+
+### `PUT /api/panels/:panelId/taskIds`
+
+Sets the manual card order inside one column. Body: `{"taskIds": [...]}`. Panel ids are unique across boards, so no board id is needed, and this route sits outside `/api/boards` for that reason. Unknown task ids are rejected with `400`.
 
 ---
 

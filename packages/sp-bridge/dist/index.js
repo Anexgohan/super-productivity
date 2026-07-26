@@ -1,9 +1,24 @@
-import { Materializer, SyncClient } from './chunk-P3LHLXUO.js';
+import { Materializer, SyncClient, mintSuperSyncToken } from './chunk-BKQKDC6L.js';
 
 // src/index.ts
-import { join } from 'path';
+import { randomUUID } from 'crypto';
 
 // src/config.ts
+var resolveDatabaseUrl = () => {
+  const explicit = process.env.DATABASE_URL;
+  if (explicit) {
+    return explicit;
+  }
+  const password = process.env.POSTGRES_PASSWORD;
+  if (!password) {
+    return '';
+  }
+  const user = process.env.POSTGRES_USER ?? 'sp_user';
+  const database = process.env.POSTGRES_DB ?? 'db_sp';
+  const host = process.env.POSTGRES_HOST ?? 'sp_postgres';
+  const port = process.env.POSTGRES_PORT ?? '5432';
+  return `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${database}`;
+};
 var requireEnv = (name) => {
   const value = process.env[name];
   if (!value) {
@@ -12,7 +27,7 @@ var requireEnv = (name) => {
   return value;
 };
 var loadConfig = () => ({
-  syncServerUrl: (process.env.SP_BRIDGE_SYNC_URL ?? 'http://supersync:1900').replace(
+  syncServerUrl: (process.env.SP_BRIDGE_SYNC_URL ?? 'http://sp_supersync:1900').replace(
     /\/+$/,
     '',
   ),
@@ -20,11 +35,16 @@ var loadConfig = () => ({
   encryptionPassword: requireEnv('SP_SYNC_ENCRYPTION_PASSWORD'),
   clientId: process.env.SP_BRIDGE_CLIENT_ID ?? 'sp-bridge',
   dataDir: process.env.SP_BRIDGE_DATA_DIR ?? './data',
-  apiKey: requireEnv('SP_BRIDGE_API_KEY'),
   apiPort: Number(process.env.SP_BRIDGE_API_PORT ?? 1902),
   pollIntervalSec: Number(process.env.SP_BRIDGE_POLL_INTERVAL_SEC ?? 15),
   authEnabled: process.env.SP_AUTH_ENABLED !== 'false',
+  databaseUrl: resolveDatabaseUrl(),
+  webUrl: (process.env.SP_PUBLIC_WEB_URL ?? '').replace(/\/+$/, ''),
   authSessionTtlHours: Number(process.env.SP_AUTH_SESSION_TTL_H ?? 720),
+  syncAccountEmail: (process.env.SP_SYNC_ACCOUNT_EMAIL ?? '').trim().toLowerCase(),
+  syncAccountPassword: process.env.SP_SYNC_ACCOUNT_PASSWORD ?? '',
+  // Same default and same var the web entrypoint uses, so both agree on the URL.
+  publicSyncUrl: (process.env.SP_SYNC_SERVER_URL ?? '/sync').replace(/\/+$/, ''),
   authSecureCookie: process.env.ALLOW_INSECURE_HTTP !== 'true',
 });
 
@@ -65,41 +85,83 @@ var runDump = async () => {
 };
 var runServe = async () => {
   const cfg = loadConfig();
-  const { StateStore } = await import('./state-store-5FDYD6B4.js');
-  const { BridgeCore } = await import('./core-OGRV64U7.js');
-  const { createRestServer } = await import('./rest-IWQHPB4N.js');
-  const { OpFactory } = await import('./op-factory-2HE5SILV.js');
+  const { StateStore } = await import('./state-store-264HWJI4.js');
+  const { BridgeCore } = await import('./core-MGH2DCR6.js');
+  const { createRestServer } = await import('./rest-TH6GNENU.js');
+  const { OpFactory } = await import('./op-factory-NXIK3L3D.js');
   const store = new StateStore(cfg);
   await store.start(cfg.pollIntervalSec * 1e3);
+  const { AuthStore, INSTANCE_ID_SETTING_KEY } = await import('./store-NO2S626E.js');
+  const authStore = cfg.databaseUrl ? new AuthStore(cfg.databaseUrl) : void 0;
+  if (authStore) {
+    await authStore.init();
+  }
   let auth;
   if (cfg.authEnabled) {
-    const { AuthStore } = await import('./store-ZMUE7AVY.js');
-    const { SessionManager } = await import('./session-F3MRIMKM.js');
-    const authStore = new AuthStore(join(cfg.dataDir, 'auth.sqlite'));
-    const secret = authStore.getOrCreateSetting(SessionManager.secretSettingKey, () =>
-      SessionManager.generateSecret(),
+    if (!authStore) {
+      throw new Error(
+        'sp-bridge: SP_AUTH_ENABLED requires DATABASE_URL (set SP_AUTH_ENABLED=false to run without browser auth)',
+      );
+    }
+    const { SessionManager } = await import('./session-ATFLACIU.js');
+    const secret = await authStore.getOrCreateSetting(
+      SessionManager.secretSettingKey,
+      () => SessionManager.generateSecret(),
     );
+    const { SyncIdentityProvider, purgeSyncAccount, boardHasData } =
+      await import('./sync-identity-2ZHH42Y4.js');
     auth = {
       store: authStore,
+      jwtSecret: cfg.jwtSecret,
+      webUrl: cfg.webUrl,
+      purgeSyncAccount: (supersyncUserId) => purgeSyncAccount(cfg, supersyncUserId),
       sessions: new SessionManager(secret, {
         ttlSeconds: cfg.authSessionTtlHours * 3600,
         secureCookie: cfg.authSecureCookie,
       }),
+      override: {
+        baseUrl: cfg.publicSyncUrl,
+        encryptKey: cfg.encryptionPassword,
+        identities: new SyncIdentityProvider(authStore, cfg),
+        boardHasData: (supersyncUserId) => boardHasData(cfg, supersyncUserId),
+        // Resolved per request rather than captured at boot: the value has to
+        // follow the database, and a bridge that outlives a wipe would
+        // otherwise keep serving the dead instance's id.
+        instanceId: () =>
+          authStore.getOrCreateSetting(INSTANCE_ID_SETTING_KEY, () => randomUUID()),
+      },
     };
-    const n = authStore.userCount();
+    const n = await authStore.userCount();
     console.log(
       n === 0
-        ? 'sp-bridge: auth enabled \u2014 no account yet, visit /login to create one'
+        ? 'sp-bridge: auth enabled - no account yet, visit /login to create one'
         : `sp-bridge: auth enabled (${n} account${n === 1 ? '' : 's'})`,
     );
   }
+  let internal;
+  if (authStore) {
+    const { WebappTokenProvider } = await import('./webapp-token-HAGLTMJM.js');
+    const webappToken = new WebappTokenProvider(authStore, () => mintSuperSyncToken(cfg));
+    internal = { secret: cfg.jwtSecret, webappToken: () => webappToken.get() };
+  }
+  if (!auth) {
+    throw new Error(
+      'sp-bridge: the REST API requires SP_AUTH_ENABLED=true and DATABASE_URL: API keys are issued per user account',
+    );
+  }
   const core = new BridgeCore(store, new OpFactory(cfg.clientId, cfg.encryptionPassword));
-  const app = createRestServer(core, store, cfg.apiKey, auth);
+  let boards;
+  if (auth?.override) {
+    const { UserBoards } = await import('./user-boards-HUXW4J5F.js');
+    boards = new UserBoards(cfg, auth.override.identities, { core, store });
+  }
+  const app = createRestServer(core, store, auth, internal, boards);
   await app.listen({ port: cfg.apiPort, host: '0.0.0.0' });
   console.log(
     `sp-bridge: REST API on :${cfg.apiPort} (poll every ${cfg.pollIntervalSec}s, seq ${store.lastServerSeq})`,
   );
   const shutdown = async () => {
+    boards?.stopAll();
     store.stop();
     await app.close();
     process.exit(0);

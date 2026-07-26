@@ -81,3 +81,21 @@ export type {
   SuperSyncRestoreSnapshotResponse,
   SuperSyncDeleteAllDataResponse,
 } from './supersync-http-contract';
+
+// Board shapes and starter boards (shared so the bridge sees what a fresh browser draws)
+export {
+  BoardPanelCfgTaskDoneState,
+  BoardPanelCfgScheduledState,
+  BoardPanelCfgTaskTypeFilter,
+  BOARD_TAG_IDS,
+  DEFAULT_BOARDS,
+  cloneDefaultBoards,
+} from './boards';
+export type {
+  BoardCfg,
+  BoardPanelCfg,
+  BoardSrcCfg,
+  BoardSortField,
+  BoardMatchMode,
+  BoarFieldsToRemove,
+} from './boards';

@@ -3,31 +3,36 @@ import {
   SuperSyncDownloadOpsResponseSchema,
   SuperSyncUploadOpsResponseSchema,
 } from '@sp/shared-schema';
+var mintSuperSyncToken = async (cfg) => {
+  const res = await fetch(`${cfg.syncServerUrl}/api/internal/token`, {
+    method: 'POST',
+    headers: { 'X-Internal-Secret': cfg.jwtSecret },
+  });
+  if (!res.ok) {
+    throw new Error(
+      `sp-bridge: token fetch failed (${res.status}) - is SP_SYNC_AUTO_PROVISION=true on the sync server?`,
+    );
+  }
+  const body = await res.json();
+  if (!body.token) {
+    throw new Error('sp-bridge: token endpoint returned no token');
+  }
+  return body.token;
+};
 var SyncClient = class {
-  constructor(cfg) {
+  /**
+   * `mintToken` defaults to the container account. A per-user board passes the
+   * token for its own user instead - the same one that user's browser gets, so
+   * the bridge sees exactly the board they see.
+   */
+  constructor(cfg, mintToken = mintSuperSyncToken, clientId = cfg.clientId) {
     this.cfg = cfg;
+    this.mintToken = mintToken;
+    this.clientId = clientId;
   }
   _token = null;
-  /**
-   * Access token via the auto-provision internal endpoint (same mechanism the
-   * web container's entrypoint uses). Requires SP_SYNC_AUTO_PROVISION=true on
-   * the server.
-   */
   async authenticate() {
-    const res = await fetch(`${this.cfg.syncServerUrl}/api/internal/token`, {
-      method: 'POST',
-      headers: { 'X-Internal-Secret': this.cfg.jwtSecret },
-    });
-    if (!res.ok) {
-      throw new Error(
-        `sp-bridge: token fetch failed (${res.status}) \u2014 is SP_SYNC_AUTO_PROVISION=true on the sync server?`,
-      );
-    }
-    const body = await res.json();
-    if (!body.token) {
-      throw new Error('sp-bridge: token endpoint returned no token');
-    }
-    this._token = body.token;
+    this._token = await this.mintToken(this.cfg);
   }
   /** Current access token, or null before authenticate(). Used by the WS client. */
   get token() {
@@ -76,7 +81,7 @@ var SyncClient = class {
     const res = await fetch(`${this.cfg.syncServerUrl}/api/sync/ops`, {
       method: 'POST',
       headers: { ...this._authHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ops, clientId: this.cfg.clientId, lastKnownServerSeq }),
+      body: JSON.stringify({ ops, clientId: this.clientId, lastKnownServerSeq }),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
@@ -154,7 +159,7 @@ var Materializer = class {
   }
   _state = {};
   _lastServerSeq = 0;
-  /** Component-wise max of every vector clock seen — basis for write clocks. */
+  /** Component-wise max of every vector clock seen - basis for write clocks. */
   _mergedClock = {};
   get lastServerSeq() {
     return this._lastServerSeq;
@@ -179,7 +184,7 @@ var Materializer = class {
     };
   }
   /**
-   * Applies server rows in order. Each row is { serverSeq, op, receivedAt } —
+   * Applies server rows in order. Each row is { serverSeq, op, receivedAt } -
    * the operation itself nests under `.op` (SuperSyncServerOperationSchema).
    */
   async applyOps(rows) {
@@ -254,6 +259,72 @@ var Materializer = class {
       METRIC: 'metric',
     };
     return map[entityType] ?? entityType.toLowerCase();
+  }
+  /**
+   * Boards are not an entity map. The whole feature is a single
+   * `{ boardCfgs: BoardCfg[] }` record, so the generic id-keyed path below
+   * would write a sibling key *beside* the array rather than touch a board -
+   * which is why board ops were silently dropped and the bridge only ever saw
+   * boards via a full-state SYNC_IMPORT.
+   *
+   * Mirrors src/app/features/boards/store/boards.reducer.ts so a board edited
+   * in a browser and one edited through the REST API converge on the same
+   * result.
+   *
+   * `[Boards] Update Panel Cfg` is deliberately unhandled: its reducer case is
+   * commented out upstream, so acting on it here would move the bridge to a
+   * state no browser would ever reach. Panel edits arrive as an
+   * `[Boards] Update Board` carrying a replacement `panels` array.
+   */
+  _applyBoardOp(op, payload) {
+    const action = asRecord(extractActionPayload(payload));
+    const state = (this._state.BOARD ??= {});
+    const boards = Array.isArray(state.boardCfgs) ? state.boardCfgs : [];
+    switch (op.actionType) {
+      case '[Boards] Add Board': {
+        const board = asRecord(action.board);
+        if (typeof board.id === 'string' && board.id) {
+          state.boardCfgs = [...boards, board];
+        }
+        break;
+      }
+      case '[Boards] Update Board': {
+        const id = action.id || op.entityId;
+        const updates = asRecord(action.updates);
+        if (!id || Object.keys(updates).length === 0) break;
+        state.boardCfgs = boards.map((b) => (b.id === id ? { ...b, ...updates } : b));
+        break;
+      }
+      case '[Boards] Remove Board': {
+        const id = action.id || op.entityId;
+        if (!id) break;
+        state.boardCfgs = boards.filter((b) => b.id !== id);
+        break;
+      }
+      case '[Boards] Sort Boards': {
+        const ids = Array.isArray(action.ids) ? action.ids : [];
+        if (!ids.length) break;
+        const byId = new Map(boards.map((b) => [b.id, b]));
+        const ordered = ids.map((id) => byId.get(id)).filter((b) => !!b);
+        const seen = new Set(ids);
+        state.boardCfgs = [...ordered, ...boards.filter((b) => !seen.has(b.id))];
+        break;
+      }
+      case '[Boards] Update Panel Cfg TaskIds': {
+        const panelId = action.panelId || op.entityId;
+        const taskIds = Array.isArray(action.taskIds) ? action.taskIds : [];
+        if (!panelId) break;
+        state.boardCfgs = boards.map((b) => {
+          const panels = Array.isArray(b.panels) ? b.panels : [];
+          if (!panels.some((p) => p.id === panelId)) return b;
+          return {
+            ...b,
+            panels: panels.map((p) => (p.id === panelId ? { ...p, taskIds } : p)),
+          };
+        });
+        break;
+      }
+    }
   }
   _applyFromActionPayload(op, payload) {
     const entityType = op.entityType;
@@ -451,6 +522,10 @@ var Materializer = class {
       (this._state.MENU_TREE ??= {}).tree = action;
       return;
     }
+    if (entityType === 'BOARD') {
+      this._applyBoardOp(op, payload);
+      return;
+    }
     const bucket = (this._state[entityType] ??= {});
     const payloadKey = this._payloadKeyFor(entityType);
     switch (op.opType) {
@@ -622,4 +697,4 @@ var Materializer = class {
   }
 };
 
-export { SyncClient, Materializer };
+export { mintSuperSyncToken, SyncClient, Materializer };

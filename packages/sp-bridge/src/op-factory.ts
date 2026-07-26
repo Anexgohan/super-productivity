@@ -15,6 +15,11 @@
 import { randomBytes } from 'node:crypto';
 import { encrypt } from '@sp/sync-core';
 import type { SuperSyncOperation } from '@sp/shared-schema';
+import {
+  BoardPanelCfgScheduledState,
+  BoardPanelCfgTaskDoneState,
+  BoardPanelCfgTaskTypeFilter,
+} from '@sp/shared-schema';
 
 export const CURRENT_SCHEMA_VERSION = 4;
 
@@ -165,12 +170,7 @@ export const buildProjectEntity = (input: NewProjectInput): Record<string, unkno
   theme: buildTheme(input.color ?? DEFAULT_PROJECT_COLOR),
 });
 
-/**
- * Panel filter fields, defaulted to match a stock Kanban column
- * (src/app/features/boards/boards.const.ts). Enum values are inlined as
- * numbers because the app's enums live in the Angular tree, which the bridge
- * does not import: UnDone=3, All=1 (scheduled), NoBacklog=2 (backlog).
- */
+/** Panel filter fields, defaulted to match a stock Kanban column. Enums come from `@sp/shared-schema`, so these are the app's values, not a copy. */
 export interface NewPanelInput {
   title: string;
   id?: string;
@@ -193,9 +193,9 @@ export const buildPanelEntity = (input: NewPanelInput): Record<string, unknown> 
   includedTagIds: input.includedTagIds ?? [],
   excludedTagIds: input.excludedTagIds ?? [],
   taskIds: [],
-  taskDoneState: input.taskDoneState ?? 3,
-  scheduledState: input.scheduledState ?? 1,
-  backlogState: input.backlogState ?? 2,
+  taskDoneState: input.taskDoneState ?? BoardPanelCfgTaskDoneState.UnDone,
+  scheduledState: input.scheduledState ?? BoardPanelCfgScheduledState.All,
+  backlogState: input.backlogState ?? BoardPanelCfgTaskTypeFilter.NoBacklog,
   isParentTasksOnly: input.isParentTasksOnly ?? false,
   projectIds: input.projectIds ?? [''],
 });

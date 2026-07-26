@@ -1,4 +1,5 @@
 import { Tag } from './tag.model';
+import { BOARD_TAG_IDS } from '@sp/shared-schema';
 import {
   DEFAULT_TAG_COLOR,
   DEFAULT_TODAY_TAG_COLOR,
@@ -58,7 +59,8 @@ export const URGENT_TAG: Tag = {
   ...WORK_CONTEXT_DEFAULT_COMMON,
   icon: 'emergency',
   title: 'urgent',
-  id: 'EM_URGENT',
+  // Sourced from the shared package because the starter boards filter on it: one definition means a rename cannot decouple the tag from its panel.
+  id: BOARD_TAG_IDS.urgent,
   theme: {
     ...WORK_CONTEXT_DEFAULT_THEME,
     primary: '#c618e1',
@@ -73,7 +75,7 @@ export const IMPORTANT_TAG: Tag = {
   ...WORK_CONTEXT_DEFAULT_COMMON,
   icon: 'priority_high',
   title: 'important',
-  id: 'EM_IMPORTANT',
+  id: BOARD_TAG_IDS.important,
   theme: {
     ...WORK_CONTEXT_DEFAULT_THEME,
     primary: '#e11826',
@@ -87,7 +89,7 @@ export const IN_PROGRESS_TAG: Tag = {
   created: Date.now(),
   ...WORK_CONTEXT_DEFAULT_COMMON,
   title: 'in-progress',
-  id: 'KANBAN_IN_PROGRESS',
+  id: BOARD_TAG_IDS.inProgress,
   theme: {
     ...WORK_CONTEXT_DEFAULT_THEME,
     backgroundImageDark: '',

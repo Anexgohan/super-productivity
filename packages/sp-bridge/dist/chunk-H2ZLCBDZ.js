@@ -1,6 +1,11 @@
 // src/op-factory.ts
 import { randomBytes } from 'crypto';
 import { encrypt } from '@sp/sync-core';
+import {
+  BoardPanelCfgScheduledState,
+  BoardPanelCfgTaskDoneState,
+  BoardPanelCfgTaskTypeFilter,
+} from '@sp/shared-schema';
 var CURRENT_SCHEMA_VERSION = 4;
 var NANOID_ALPHABET = 'useandom-26T198340PX75pxJACKVERYMINDBUSHWOLF_GQZbfghjklqvwyzrict';
 var nanoid = (size = 21) => {
@@ -106,6 +111,29 @@ var buildProjectEntity = (input) => ({
   advancedCfg: DEFAULT_ADVANCED_CFG,
   theme: buildTheme(input.color ?? DEFAULT_PROJECT_COLOR),
 });
+var buildPanelEntity = (input) => ({
+  id: input.id ?? nanoid(),
+  title: input.title,
+  includedTagIds: input.includedTagIds ?? [],
+  excludedTagIds: input.excludedTagIds ?? [],
+  taskIds: [],
+  taskDoneState: input.taskDoneState ?? BoardPanelCfgTaskDoneState.UnDone,
+  scheduledState: input.scheduledState ?? BoardPanelCfgScheduledState.All,
+  backlogState: input.backlogState ?? BoardPanelCfgTaskTypeFilter.NoBacklog,
+  isParentTasksOnly: input.isParentTasksOnly ?? false,
+  projectIds: input.projectIds ?? [''],
+});
+var buildBoardEntity = (input) => {
+  const panels = (input.panels ?? []).map(buildPanelEntity);
+  return {
+    id: input.id ?? nanoid(),
+    title: input.title,
+    // Columns default to the panel count so a new board is not born with empty
+    // gaps or a squeezed grid; explicit `cols` still wins.
+    cols: input.cols ?? Math.max(panels.length, 1),
+    panels,
+  };
+};
 var OpFactory = class {
   constructor(clientId, encryptionPassword) {
     this.clientId = clientId;
@@ -133,7 +161,7 @@ var OpFactory = class {
     };
   }
   /**
-   * [Task Shared] addTask — clone of the live client template. The task is added
+   * [Task Shared] addTask - clone of the live client template. The task is added
    * to its own PROJECT context (not forced into the Today view); planning to
    * Today is an explicit, separate action.
    */
@@ -154,7 +182,7 @@ var OpFactory = class {
       vectorClock,
     });
   }
-  /** [Task Shared] updateTask — NgRx Update<Task> shape { task: { id, changes } }. */
+  /** [Task Shared] updateTask - NgRx Update<Task> shape { task: { id, changes } }. */
   updateTask(id, changes, vectorClock) {
     return this._makeOp({
       actionType: '[Task Shared] updateTask',
@@ -165,7 +193,7 @@ var OpFactory = class {
       vectorClock,
     });
   }
-  /** [Task Shared] deleteTask — expects the full task (with subTasks array). */
+  /** [Task Shared] deleteTask - expects the full task (with subTasks array). */
   deleteTask(task, vectorClock) {
     const subTaskIds = Array.isArray(task.subTaskIds) ? task.subTaskIds : [];
     return this._makeOp({
@@ -178,7 +206,7 @@ var OpFactory = class {
       vectorClock,
     });
   }
-  /** [Task Shared] moveToOtherProject — expects the full task (with subTasks). */
+  /** [Task Shared] moveToOtherProject - expects the full task (with subTasks). */
   moveTaskToProject(task, targetProjectId, vectorClock) {
     return this._makeOp({
       actionType: '[Task Shared] moveToOtherProject',
@@ -190,7 +218,7 @@ var OpFactory = class {
     });
   }
   /**
-   * [Task] Add SubTask — creates a task nested under parentId. The full subtask
+   * [Task] Add SubTask - creates a task nested under parentId. The full subtask
    * entity travels in { task }; receiving clients append it to the parent's
    * subTaskIds via their reducer.
    */
@@ -204,7 +232,7 @@ var OpFactory = class {
       vectorClock,
     });
   }
-  /** [Task Shared] convertToSubTask — reparent a main task under targetParentId. */
+  /** [Task Shared] convertToSubTask - reparent a main task under targetParentId. */
   convertToSubTask(taskId, targetParentId, vectorClock) {
     return this._makeOp({
       actionType: '[Task Shared] convertToSubTask',
@@ -215,7 +243,7 @@ var OpFactory = class {
       vectorClock,
     });
   }
-  /** [Task Shared] convertToMainTask — promote a subtask to top-level (full task). */
+  /** [Task Shared] convertToMainTask - promote a subtask to top-level (full task). */
   convertToMainTask(task, vectorClock) {
     return this._makeOp({
       actionType: '[Task Shared] convertToMainTask',
@@ -226,7 +254,7 @@ var OpFactory = class {
       vectorClock,
     });
   }
-  /** [Task Shared] planTasksForToday — add tasks to the TODAY list (bulk). */
+  /** [Task Shared] planTasksForToday - add tasks to the TODAY list (bulk). */
   planTasksForToday(taskIds, today, vectorClock) {
     return this._makeOp({
       actionType: '[Task Shared] planTasksForToday',
@@ -238,7 +266,7 @@ var OpFactory = class {
       vectorClock,
     });
   }
-  /** [Task Shared] removeTasksFromTodayTag — remove tasks from the TODAY list (bulk). */
+  /** [Task Shared] removeTasksFromTodayTag - remove tasks from the TODAY list (bulk). */
   removeTasksFromTodayTag(taskIds, vectorClock) {
     return this._makeOp({
       actionType: '[Task Shared] removeTasksFromTodayTag',
@@ -251,7 +279,7 @@ var OpFactory = class {
     });
   }
   // ── Tags ────────────────────────────────────────────────────────────────────
-  /** [Tag] Add Tag — full Tag entity in { tag }. */
+  /** [Tag] Add Tag - full Tag entity in { tag }. */
   addTag(tag, vectorClock) {
     return this._makeOp({
       actionType: '[Tag] Add Tag',
@@ -262,7 +290,7 @@ var OpFactory = class {
       vectorClock,
     });
   }
-  /** [Tag] Update Tag — NgRx Update<Tag> shape { tag: { id, changes } }. */
+  /** [Tag] Update Tag - NgRx Update<Tag> shape { tag: { id, changes } }. */
   updateTag(id, changes, vectorClock) {
     return this._makeOp({
       actionType: '[Tag] Update Tag',
@@ -274,7 +302,7 @@ var OpFactory = class {
     });
   }
   /**
-   * [Tag] Delete Tag — payload is just { id }. Receiving clients re-dispatch
+   * [Tag] Delete Tag - payload is just { id }. Receiving clients re-dispatch
    * the action, whose meta-reducer atomically cascades the cleanup (strips the
    * tag from every task's tagIds, board panels, etc.). One op = full cascade.
    */
@@ -289,7 +317,7 @@ var OpFactory = class {
     });
   }
   /**
-   * [TaskAttachment] Add TaskAttachment — appends a link/file attachment to a
+   * [TaskAttachment] Add TaskAttachment - appends a link/file attachment to a
    * task. Persisted as a TASK update; the client reducer pushes it onto
    * task.attachments.
    */
@@ -305,7 +333,7 @@ var OpFactory = class {
   }
   // ── Projects ────────────────────────────────────────────────────────────────
   /**
-   * [Task Shared] deleteProject — deletes a project and (via the client
+   * [Task Shared] deleteProject - deletes a project and (via the client
    * meta-reducer) all its tasks/notes. Carries the delete-wins marker so the LWW
    * conflict planner does not resurrect an emptied project.
    */
@@ -319,7 +347,7 @@ var OpFactory = class {
       vectorClock,
     });
   }
-  /** [Project] Add Project — full Project entity in { project }. */
+  /** [Project] Add Project - full Project entity in { project }. */
   addProject(project, vectorClock) {
     return this._makeOp({
       actionType: '[Project] Add Project',
@@ -330,7 +358,7 @@ var OpFactory = class {
       vectorClock,
     });
   }
-  /** [Project] Update Project — NgRx Update<Project> shape { project: { id, changes } }. */
+  /** [Project] Update Project - NgRx Update<Project> shape { project: { id, changes } }. */
   updateProject(id, changes, vectorClock) {
     return this._makeOp({
       actionType: '[Project] Update Project',
@@ -338,6 +366,70 @@ var OpFactory = class {
       entityType: 'PROJECT',
       entityId: id,
       actionPayload: { project: { id, changes } },
+      vectorClock,
+    });
+  }
+  // ── Boards ────────────────────────────────────────────────────────────────
+  // Payload shapes are the action creators' own props, verbatim from
+  // src/app/features/boards/store/boards.actions.ts - receiving clients
+  // re-dispatch the action, so anything else would be ignored by the reducer.
+  /** [Boards] Add Board - payload { board }. */
+  addBoard(board, vectorClock) {
+    return this._makeOp({
+      actionType: '[Boards] Add Board',
+      opType: 'CRT',
+      entityType: 'BOARD',
+      entityId: board.id,
+      actionPayload: { board },
+      vectorClock,
+    });
+  }
+  /**
+   * [Boards] Update Board - payload { id, updates }, NOT the NgRx Update shape
+   * the other entities use. Panels are replaced wholesale when `updates.panels`
+   * is present, which is also how the app edits a single panel.
+   */
+  updateBoard(id, updates, vectorClock) {
+    return this._makeOp({
+      actionType: '[Boards] Update Board',
+      opType: 'UPD',
+      entityType: 'BOARD',
+      entityId: id,
+      actionPayload: { id, updates },
+      vectorClock,
+    });
+  }
+  /** [Boards] Remove Board - payload { id }. */
+  removeBoard(id, vectorClock) {
+    return this._makeOp({
+      actionType: '[Boards] Remove Board',
+      opType: 'DEL',
+      entityType: 'BOARD',
+      entityId: id,
+      actionPayload: { id },
+      vectorClock,
+    });
+  }
+  /** [Boards] Sort Boards - bulk MOV over every board id, in display order. */
+  sortBoards(ids, vectorClock) {
+    return this._makeOp({
+      actionType: '[Boards] Sort Boards',
+      opType: 'MOV',
+      entityType: 'BOARD',
+      entityId: ids[0] ?? '',
+      entityIds: ids,
+      actionPayload: { ids },
+      vectorClock,
+    });
+  }
+  /** [Boards] Update Panel Cfg TaskIds - manual card order within one panel. */
+  updatePanelTaskIds(panelId, taskIds, vectorClock) {
+    return this._makeOp({
+      actionType: '[Boards] Update Panel Cfg TaskIds',
+      opType: 'UPD',
+      entityType: 'BOARD',
+      entityId: panelId,
+      actionPayload: { panelId, taskIds },
       vectorClock,
     });
   }
@@ -351,5 +443,7 @@ export {
   buildTaskEntity,
   buildTagEntity,
   buildProjectEntity,
+  buildPanelEntity,
+  buildBoardEntity,
   OpFactory,
 };

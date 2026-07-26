@@ -86,6 +86,24 @@ const DOCS = {
       'create project; body: {title (required), color?, isEnableBacklog?}',
     'PATCH /api/projects/:id':
       'update project; body: partial of {title, isEnableBacklog, isArchived}',
+    'GET /api/boards':
+      'list boards with their panels; an account that has never edited a board gets the app defaults rather than [], so this matches what its owner sees in a browser. [] means every board was deleted',
+    'GET /api/boards/:id': 'single board by id',
+    'POST /api/boards':
+      'create board; body: {title (required), id?, cols?, panels?}; 409 on an existing id, including the default board ids',
+    'PATCH /api/boards/:id':
+      'update board; body: partial of {title, cols, panels}; a panel edit is a full replacement panels array',
+    'DELETE /api/boards/:id': 'delete board; deleting all of them is remembered',
+    'PUT /api/boards/order':
+      'reorder boards; body: {ids: string[]} must name every board',
+    'POST /api/boards/:id/panels':
+      'add a column; body: one panel {title (required), id?, includedTagIds?, excludedTagIds?, taskDoneState?, scheduledState?, backlogState?, isParentTasksOnly?, projectIds?}; appended, and cols grows to match',
+    'PATCH /api/boards/:id/panels/:panelId':
+      'update one column; writable: everything but id and taskIds',
+    'DELETE /api/boards/:id/panels/:panelId':
+      'remove a column; leaves its tag and any exclusion of that tag on other columns for the caller to clean up',
+    'PUT /api/panels/:panelId/taskIds':
+      'set manual card order in one column; body: {taskIds: string[]}; panel ids are unique across boards',
   },
 } as const;
 

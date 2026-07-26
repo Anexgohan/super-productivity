@@ -1,17 +1,35 @@
 import {
   ALLOWED_TASK_FIELDS,
+  buildBoardEntity,
+  buildPanelEntity,
   buildProjectEntity,
   buildTagEntity,
   buildTaskEntity,
   nanoid,
-} from './chunk-G5JMHLQU.js';
+} from './chunk-H2ZLCBDZ.js';
 
 // src/core.ts
+import { cloneDefaultBoards } from '@sp/shared-schema';
 var ALLOWED_TAG_FIELDS = /* @__PURE__ */ new Set(['title', 'color', 'icon']);
 var ALLOWED_PROJECT_FIELDS = /* @__PURE__ */ new Set([
   'title',
   'isEnableBacklog',
   'isArchived',
+]);
+var ALLOWED_BOARD_FIELDS = /* @__PURE__ */ new Set(['title', 'cols', 'panels']);
+var ALLOWED_PANEL_FIELDS = /* @__PURE__ */ new Set([
+  'title',
+  'includedTagIds',
+  'excludedTagIds',
+  'includedTagsMatch',
+  'excludedTagsMatch',
+  'projectIds',
+  'taskDoneState',
+  'scheduledState',
+  'backlogState',
+  'isParentTasksOnly',
+  'sortBy',
+  'sortDir',
 ]);
 var TODAY_TAG_ID = 'TODAY';
 var err = (message, statusCode) => Object.assign(new Error(message), { statusCode });
@@ -157,7 +175,7 @@ var BridgeCore = class {
     }
     return byDay;
   }
-  /** Raw access to any materialized entity bucket — API-only superset feature. */
+  /** Raw access to any materialized entity bucket - API-only superset feature. */
   listEntityTypes() {
     return Object.keys(this.store.state);
   }
@@ -166,7 +184,7 @@ var BridgeCore = class {
   }
   // ── Writes ────────────────────────────────────────────────────────────────
   // Every write is a real sync op (cloned from live client op shapes), uploaded
-  // to the server and round-tripped back through refresh() — the bridge state
+  // to the server and round-tripped back through refresh() - the bridge state
   // you read after a write is what every other client will materialize.
   async createTask(input) {
     if (!input.title || typeof input.title !== 'string') {
@@ -207,7 +225,7 @@ var BridgeCore = class {
   }
   /**
    * Applies per-task updates as N ops in a single upload+refresh. Every id is
-   * validated up front — if any is unknown or has an illegal field, nothing is
+   * validated up front - if any is unknown or has an illegal field, nothing is
    * submitted (all-or-nothing), so a bad item never partially applies.
    */
   async bulkUpdate(updates) {
@@ -376,7 +394,7 @@ var BridgeCore = class {
    *  - { parentId }  → a parent's subtask list
    *  - { today: true } → the TODAY list
    * `taskIds` must be a permutation of that list's current members (reorder
-   * only — no adds or drops).
+   * only - no adds or drops).
    */
   async reorderTasks(container, taskIds) {
     if (!Array.isArray(taskIds) || taskIds.length === 0) {
@@ -660,9 +678,176 @@ var BridgeCore = class {
     await this.store.submitOps([op]);
     return { deleted: id, taskCount: allTaskIds.length };
   }
+  // ── Boards ──────────────────────────────────────────────────────────────────
+  // Boards are one `{ boardCfgs: [] }` record rather than an id-keyed map, so
+  // these read and write the array directly instead of going through _bucket().
+  // Panels have no create/update actions of their own - the app edits a panel by
+  // replacing the parent board's whole `panels` array, and so do we.
+  /**
+   * True when no board op has ever been applied to this account.
+   *
+   * The materializer creates `state.BOARD` on the first board op of any kind, so an absent record and an empty `boardCfgs` mean different things.
+   * Absent is "untouched, the browser is drawing the starter boards"; empty is "the owner deleted them all".
+   * Only absent gets defaults, which is what keeps a deleted board deleted across a refresh and a re-login.
+   */
+  _boardsUntouched() {
+    return this.store.state.BOARD === void 0;
+  }
+  _boardCfgs() {
+    if (this._boardsUntouched()) {
+      return cloneDefaultBoards();
+    }
+    const board = this.store.state.BOARD;
+    return Array.isArray(board.boardCfgs) ? board.boardCfgs : [];
+  }
+  /**
+   * Writes the starter boards down before the first edit lands on one of them.
+   *
+   * Without this, an edit to a starter board emits an op against a board the server has never heard of.
+   * An update or panel change then matches nothing and is dropped, and a create appends a second board beside the one the browser already drew.
+   *
+   * The refresh is the guard that makes this safe: an absent record could equally mean "this store is behind".
+   * Seeding on that misread would duplicate boards someone else edited, so the decision is made against a state confirmed current a moment ago.
+   */
+  async _seedDefaultBoardsIfUntouched() {
+    if (!this._boardsUntouched()) return;
+    await this.store.refresh();
+    if (!this._boardsUntouched()) return;
+    const ops = [];
+    for (const board of cloneDefaultBoards()) {
+      ops.push(await this.ops.addBoard(board, this.store.nextWriteClock()));
+    }
+    await this.store.submitOps(ops);
+  }
+  listBoards() {
+    return this._boardCfgs();
+  }
+  getBoard(id) {
+    return this._boardCfgs().find((b) => b.id === id);
+  }
+  _requireBoard(id) {
+    const board = this.getBoard(id);
+    if (!board) throw err('Board not found', 404);
+    return board;
+  }
+  _panelsOf(board) {
+    return Array.isArray(board.panels) ? board.panels : [];
+  }
+  async createBoard(input) {
+    if (!input.title || typeof input.title !== 'string') {
+      throw err('title (string) is required', 400);
+    }
+    await this._seedDefaultBoardsIfUntouched();
+    if (input.id && this.getBoard(input.id)) {
+      throw err(`Board already exists: ${input.id}`, 409);
+    }
+    const board = buildBoardEntity(input);
+    const op = await this.ops.addBoard(board, this.store.nextWriteClock());
+    await this.store.submitOps([op]);
+    return this.getBoard(board.id) ?? board;
+  }
+  async updateBoard(id, updates) {
+    await this._seedDefaultBoardsIfUntouched();
+    this._requireBoard(id);
+    const bad = Object.keys(updates).filter((k) => !ALLOWED_BOARD_FIELDS.has(k));
+    if (bad.length) throw err(`Field(s) not writable: ${bad.join(', ')}`, 400);
+    if (Object.keys(updates).length === 0) throw err('No changes given', 400);
+    const op = await this.ops.updateBoard(id, updates, this.store.nextWriteClock());
+    await this.store.submitOps([op]);
+    return this._requireBoard(id);
+  }
+  async deleteBoard(id) {
+    await this._seedDefaultBoardsIfUntouched();
+    this._requireBoard(id);
+    const op = await this.ops.removeBoard(id, this.store.nextWriteClock());
+    await this.store.submitOps([op]);
+    return { deleted: id };
+  }
+  /**
+   * Reorders boards. The id list must name every board: a partial one is far
+   * more likely to be a caller bug than an intent to shuffle a subset, and the
+   * reducer would silently park the omitted boards at the tail.
+   */
+  async sortBoards(ids) {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      throw err('ids (string[]) is required', 400);
+    }
+    await this._seedDefaultBoardsIfUntouched();
+    const known = new Set(this._boardCfgs().map((b) => b.id));
+    const unknown = ids.filter((id) => !known.has(id));
+    if (unknown.length) throw err(`Unknown board id(s): ${unknown.join(', ')}`, 400);
+    if (ids.length !== known.size) {
+      throw err(`ids must list all ${known.size} boards (got ${ids.length})`, 400);
+    }
+    const op = await this.ops.sortBoards(ids, this.store.nextWriteClock());
+    await this.store.submitOps([op]);
+    return this.listBoards();
+  }
+  async addPanel(boardId, input) {
+    if (!input.title || typeof input.title !== 'string') {
+      throw err('title (string) is required', 400);
+    }
+    const board = this._requireBoard(boardId);
+    const panels = this._panelsOf(board);
+    if (input.id && panels.some((p) => p.id === input.id)) {
+      throw err(`Panel already exists on this board: ${input.id}`, 409);
+    }
+    const panel = buildPanelEntity(input);
+    await this.updateBoard(boardId, {
+      panels: [...panels, panel],
+      cols: Math.max(Number(board.cols) || 0, panels.length + 1),
+    });
+    return panel;
+  }
+  async updatePanel(boardId, panelId, changes) {
+    const board = this._requireBoard(boardId);
+    const panels = this._panelsOf(board);
+    const existing = panels.find((p) => p.id === panelId);
+    if (!existing) throw err('Panel not found', 404);
+    const bad = Object.keys(changes).filter((k) => !ALLOWED_PANEL_FIELDS.has(k));
+    if (bad.length) throw err(`Field(s) not writable: ${bad.join(', ')}`, 400);
+    if (Object.keys(changes).length === 0) throw err('No changes given', 400);
+    await this.updateBoard(boardId, {
+      panels: panels.map((p) => (p.id === panelId ? { ...p, ...changes } : p)),
+    });
+    return this._panelsOf(this._requireBoard(boardId)).find((p) => p.id === panelId);
+  }
+  async removePanel(boardId, panelId) {
+    const board = this._requireBoard(boardId);
+    const panels = this._panelsOf(board);
+    if (!panels.some((p) => p.id === panelId)) throw err('Panel not found', 404);
+    const remaining = panels.filter((p) => p.id !== panelId);
+    await this.updateBoard(boardId, {
+      panels: remaining,
+      cols: Math.max(remaining.length, 1),
+    });
+    return { deleted: panelId };
+  }
+  /** Manual card order within one panel. Panel ids are unique across boards. */
+  async setPanelTaskIds(panelId, taskIds) {
+    if (!Array.isArray(taskIds)) throw err('taskIds (string[]) is required', 400);
+    await this._seedDefaultBoardsIfUntouched();
+    const board = this._boardCfgs().find((b) =>
+      this._panelsOf(b).some((p) => p.id === panelId),
+    );
+    if (!board) throw err('Panel not found', 404);
+    const unknown = taskIds.filter((id) => !this.getTask(id));
+    if (unknown.length) throw err(`Unknown task id(s): ${unknown.join(', ')}`, 400);
+    const op = await this.ops.updatePanelTaskIds(
+      panelId,
+      taskIds,
+      this.store.nextWriteClock(),
+    );
+    await this.store.submitOps([op]);
+    return this._panelsOf(this._requireBoard(board.id)).find((p) => p.id === panelId);
+  }
   status() {
     const counts = {};
     for (const [type, entities] of Object.entries(this.store.state)) {
+      if (type === 'BOARD') {
+        counts[type] = this._boardCfgs().length;
+        continue;
+      }
       counts[type] =
         entities && typeof entities === 'object' ? Object.keys(entities).length : 0;
     }
@@ -676,4 +861,5 @@ var BridgeCore = class {
     };
   }
 };
+
 export { BridgeCore };

@@ -4,6 +4,7 @@
  * no MCP layer; agents consume the API directly).
  */
 import type { StateStore } from './state-store';
+import { cloneDefaultBoards } from '@sp/shared-schema';
 import {
   ALLOWED_TASK_FIELDS,
   buildTaskEntity,
@@ -849,11 +850,50 @@ export class BridgeCore {
   // Panels have no create/update actions of their own - the app edits a panel by
   // replacing the parent board's whole `panels` array, and so do we.
 
+  /**
+   * True when no board op has ever been applied to this account.
+   *
+   * The materializer creates `state.BOARD` on the first board op of any kind, so an absent record and an empty `boardCfgs` mean different things.
+   * Absent is "untouched, the browser is drawing the starter boards"; empty is "the owner deleted them all".
+   * Only absent gets defaults, which is what keeps a deleted board deleted across a refresh and a re-login.
+   */
+  private _boardsUntouched(): boolean {
+    return this.store.state.BOARD === undefined;
+  }
+
   private _boardCfgs(): Record<string, unknown>[] {
-    const board = (this.store.state.BOARD ?? {}) as Record<string, unknown>;
+    if (this._boardsUntouched()) {
+      return cloneDefaultBoards() as unknown as Record<string, unknown>[];
+    }
+    const board = this.store.state.BOARD as Record<string, unknown>;
     return Array.isArray(board.boardCfgs)
       ? (board.boardCfgs as Record<string, unknown>[])
       : [];
+  }
+
+  /**
+   * Writes the starter boards down before the first edit lands on one of them.
+   *
+   * Without this, an edit to a starter board emits an op against a board the server has never heard of.
+   * An update or panel change then matches nothing and is dropped, and a create appends a second board beside the one the browser already drew.
+   *
+   * The refresh is the guard that makes this safe: an absent record could equally mean "this store is behind".
+   * Seeding on that misread would duplicate boards someone else edited, so the decision is made against a state confirmed current a moment ago.
+   */
+  private async _seedDefaultBoardsIfUntouched(): Promise<void> {
+    if (!this._boardsUntouched()) return;
+    await this.store.refresh();
+    if (!this._boardsUntouched()) return;
+    const ops = [];
+    for (const board of cloneDefaultBoards()) {
+      ops.push(
+        await this.ops.addBoard(
+          board as unknown as Record<string, unknown>,
+          this.store.nextWriteClock(),
+        ),
+      );
+    }
+    await this.store.submitOps(ops);
   }
 
   listBoards(): Record<string, unknown>[] {
@@ -878,6 +918,8 @@ export class BridgeCore {
     if (!input.title || typeof input.title !== 'string') {
       throw err('title (string) is required', 400);
     }
+    // Seed before the duplicate check so a caller cannot create a second copy of a starter board that was real all along, just never written down.
+    await this._seedDefaultBoardsIfUntouched();
     if (input.id && this.getBoard(input.id)) {
       throw err(`Board already exists: ${input.id}`, 409);
     }
@@ -891,6 +933,7 @@ export class BridgeCore {
     id: string,
     updates: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
+    await this._seedDefaultBoardsIfUntouched();
     this._requireBoard(id);
     const bad = Object.keys(updates).filter((k) => !ALLOWED_BOARD_FIELDS.has(k));
     if (bad.length) throw err(`Field(s) not writable: ${bad.join(', ')}`, 400);
@@ -901,6 +944,7 @@ export class BridgeCore {
   }
 
   async deleteBoard(id: string): Promise<{ deleted: string }> {
+    await this._seedDefaultBoardsIfUntouched();
     this._requireBoard(id);
     const op = await this.ops.removeBoard(id, this.store.nextWriteClock());
     await this.store.submitOps([op]);
@@ -916,6 +960,7 @@ export class BridgeCore {
     if (!Array.isArray(ids) || ids.length === 0) {
       throw err('ids (string[]) is required', 400);
     }
+    await this._seedDefaultBoardsIfUntouched();
     const known = new Set(this._boardCfgs().map((b) => b.id as string));
     const unknown = ids.filter((id) => !known.has(id));
     if (unknown.length) throw err(`Unknown board id(s): ${unknown.join(', ')}`, 400);
@@ -985,6 +1030,7 @@ export class BridgeCore {
     taskIds: string[],
   ): Promise<Record<string, unknown>> {
     if (!Array.isArray(taskIds)) throw err('taskIds (string[]) is required', 400);
+    await this._seedDefaultBoardsIfUntouched();
     const board = this._boardCfgs().find((b) =>
       this._panelsOf(b).some((p) => p.id === panelId),
     );
