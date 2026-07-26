@@ -22,6 +22,13 @@ export interface SessionUser {
   userId: number;
   username: string;
   role: string;
+  /**
+   * Whose published board this browser is currently reading, when it is not their own.
+   *
+   * Lives in the session rather than on the account because it is a property of this browser, not of the person: the same account can read a colleague's board
+   * in one window and their own in another. Switching reissues the cookie, and it is signed, so a viewer cannot name a board they were not granted.
+   */
+  viewingUserId?: number;
 }
 
 export interface VerifiedSession {
@@ -83,6 +90,7 @@ export class SessionManager {
         sub: String(user.userId),
         username: user.username,
         role: user.role,
+        ...(user.viewingUserId ? { viewing: user.viewingUserId } : {}),
         iat: now,
         exp: now + this.ttlSeconds,
       }),
@@ -115,6 +123,7 @@ export class SessionManager {
       sub?: string;
       username?: string;
       role?: string;
+      viewing?: number;
       iat?: number;
       exp?: number;
     } | null;
@@ -134,6 +143,10 @@ export class SessionManager {
         userId: Number.parseInt(claims.sub, 10),
         username: claims.username,
         role: claims.role,
+        // Only a positive integer counts. A tampered or malformed claim reads as "viewing nothing", which falls back to the caller's own board.
+        ...(Number.isInteger(claims.viewing) && (claims.viewing as number) > 0
+          ? { viewingUserId: claims.viewing }
+          : {}),
       },
       ageSeconds: now - (claims.iat ?? now),
     };

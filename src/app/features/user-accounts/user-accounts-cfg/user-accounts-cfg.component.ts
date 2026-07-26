@@ -115,7 +115,7 @@ export class UserAccountsCfgComponent implements OnInit {
   readonly rows = computed<UserRow[]>(() => {
     if (this.isAdmin) return this.users();
     const me = this.me();
-    return me ? [{ ...me, email: me.email ?? null, isPublic: false }] : [];
+    return me ? [{ ...me, email: me.email ?? null, isPublic: me.isPublic ?? false }] : [];
   });
 
   /** Guards the UI against actions the server would refuse anyway. */
@@ -159,6 +159,33 @@ export class UserAccountsCfgComponent implements OnInit {
 
   private _ok(key: string, params?: Record<string, unknown>): void {
     this._snack.open({ type: 'SUCCESS', msg: this._translate.instant(key, params) });
+  }
+
+  // ── Sharing a board ───────────────────────────────────────────────────────
+  /**
+   * Shares this account's board read-only, or stops sharing it.
+   *
+   * Whole-board, because the server holds encrypted operations it cannot read and so cannot share only part of one.
+   * Readers get a token that the sync server refuses on every route that changes data, so sharing never grants a way to edit.
+   */
+  async togglePublic(u: UserRow, isPublic: boolean): Promise<void> {
+    this.isBusy.set(true);
+    try {
+      await this._api.setPublic(u.id, isPublic);
+      if (this.isAdmin) {
+        await this._reloadUsers();
+      } else {
+        this.me.set({ ...this.me()!, isPublic });
+      }
+      this._ok(isPublic ? T.GCF.ACCOUNTS.S_SHARED : T.GCF.ACCOUNTS.S_UNSHARED, {
+        username: u.username,
+      });
+    } catch (err) {
+      this._fail(err);
+    } finally {
+      this.isBusy.set(false);
+      this._cd.markForCheck();
+    }
   }
 
   // ── Manage users (admin) ──────────────────────────────────────────────────

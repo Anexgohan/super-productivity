@@ -3,17 +3,18 @@ import { WEBAPP_TOKEN_SETTING_KEY, WebappTokenProvider } from './chunk-QFVUSAKW.
 // src/auth/sync-identity.ts
 import { createHmac } from 'crypto';
 var tokenSettingKey = (userId) => `supersync.user_token.${userId}`;
+var readTokenSettingKey = (ownerId) => `supersync.board_read_token.${ownerId}`;
 var deriveSyncPassword = (jwtSecret, address) =>
   createHmac('sha256', jwtSecret).update(`sync-account:${address}`).digest('base64url');
 var syncAddressFor = (bridgeUserId) => `sp-user-${bridgeUserId}@sp.invalid`;
-var provision = async (cfg, email, password) => {
+var provision = async (cfg, email, password, scope) => {
   const res = await fetch(`${cfg.syncServerUrl}/api/internal/provision`, {
     method: 'POST',
     headers: {
       'X-Internal-Secret': cfg.jwtSecret,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, password, ...(scope ? { scope } : {}) }),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -55,6 +56,7 @@ var SyncIdentityProvider = class {
     this._cfg = _cfg;
   }
   _tokens = /* @__PURE__ */ new Map();
+  _readTokens = /* @__PURE__ */ new Map();
   /**
    * The address a user's board lives under.
    *
@@ -110,6 +112,45 @@ var SyncIdentityProvider = class {
     );
     this._tokens.set(user.id, provider);
     return provider.get();
+  }
+  /**
+   * A read-only token for `owner`'s board, to hand to somebody who is not the owner.
+   *
+   * This is the credential that makes publishing safe. It names the owner's sync account, because that is whose op-log the reader must download, but carries
+   * `scope: 'read'`, which the sync server refuses on every route that changes data. Without the scope this would be an unrestricted write credential for
+   * someone else's board: the sync API is on the same public origin as the app and authenticates by token alone, so the bridge's own role check never sees it.
+   *
+   * Refuses an owner with no sync account. There is no board to read yet, and provisioning one here would create an empty account as a side effect of
+   * somebody trying to view it.
+   */
+  async tokenForBoardRead(owner) {
+    if (!owner.supersyncUserId) {
+      throw new Error(`No board to read: user ${owner.id} has no sync account yet`);
+    }
+    const existing = this._readTokens.get(owner.id);
+    if (existing) return existing.get();
+    const address = await this._addressFor(owner);
+    const isContainerAccount = Boolean(
+      this._cfg.syncAccountEmail && address === this._cfg.syncAccountEmail,
+    );
+    const password =
+      isContainerAccount && this._cfg.syncAccountPassword
+        ? this._cfg.syncAccountPassword
+        : deriveSyncPassword(this._cfg.jwtSecret, address);
+    const provider = new WebappTokenProvider(
+      this._store,
+      async () => (await provision(this._cfg, address, password, 'read')).token,
+      readTokenSettingKey(owner.id),
+    );
+    this._readTokens.set(owner.id, provider);
+    return provider.get();
+  }
+  /**
+   * Drops any cached read token for a board.
+   * Called when a board is unpublished so the next viewer mints afresh rather than being served from a map that outlived the permission.
+   */
+  forgetBoardReadToken(ownerId) {
+    this._readTokens.delete(ownerId);
   }
 };
 export {

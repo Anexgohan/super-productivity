@@ -1,5 +1,5 @@
 import { ROLES, ROLE_LEVELS, isRole } from './chunk-PGFRD7XM.js';
-import { SESSION_COOKIE, parseCookies } from './chunk-4IBWU5IS.js';
+import { SESSION_COOKIE, parseCookies } from './chunk-CLT5BPMR.js';
 
 // src/rest.ts
 import Fastify from 'fastify';
@@ -301,7 +301,7 @@ var sessionFromRequest = (req, sessions) => {
 };
 var registerAuthRoutes = (
   app,
-  { store, sessions, jwtSecret, webUrl, purgeSyncAccount },
+  { store, sessions, jwtSecret, webUrl, purgeSyncAccount, forgetBoardReadToken },
 ) => {
   const limiter = new LoginRateLimiter();
   const appHome = webUrl || '/';
@@ -313,11 +313,12 @@ var registerAuthRoutes = (
     }
     return reply.redirect(sessionFromRequest(req, sessions) ? webUrl : '/login');
   });
-  const issue = (reply, user) => {
+  const issue = (reply, user, viewingUserId) => {
     const token = sessions.sign({
       userId: user.id,
       username: user.username,
       role: user.role,
+      viewingUserId,
     });
     reply.header('Set-Cookie', sessions.cookie(token));
     return { username: user.username, role: user.role };
@@ -385,6 +386,10 @@ var registerAuthRoutes = (
       username: user.username,
       role: user.role,
       email: user.email,
+      // Own publish state, so a non-admin's row can show and change it. Admins read everyone's from /api/auth/users instead.
+      isPublic: user.isPublic,
+      // Whose board this browser is reading, when it is not their own.
+      viewingUserId: session.user.viewingUserId ?? null,
       setupRequired: false,
     };
   });
@@ -591,7 +596,7 @@ var registerAuthRoutes = (
     console.log(`sp-bridge: account self-registered: ${user.username}`);
     return issue(reply, user);
   });
-  const keyPrincipal = async (req, reply, targetId) => {
+  const mayActOnUser = async (req, reply, targetId) => {
     const session = sessionFromRequest(req, sessions);
     if (!session) {
       await reply.status(401).send({ error: 'Unauthorized' });
@@ -603,6 +608,71 @@ var registerAuthRoutes = (
     }
     return true;
   };
+  app.put('/api/auth/users/:id/public', async (req, reply) => {
+    const targetId = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(targetId)) {
+      return reply.status(400).send({ error: 'Invalid user id' });
+    }
+    if (!(await mayActOnUser(req, reply, targetId))) return;
+    const isPublic = req.body?.isPublic;
+    if (typeof isPublic !== 'boolean') {
+      return reply.status(400).send({ error: 'isPublic (boolean) is required' });
+    }
+    const target = await store.findUserById(targetId);
+    if (!target) return reply.status(404).send({ error: 'No such user' });
+    if (isPublic && !target.supersyncUserId) {
+      return reply
+        .status(409)
+        .send({ error: 'This account has no board yet; it must sign in once first' });
+    }
+    await store.setPublic(targetId, isPublic);
+    if (!isPublic) forgetBoardReadToken?.(targetId);
+    return { id: targetId, isPublic };
+  });
+  app.get('/api/auth/public-boards', async (req, reply) => {
+    const session = sessionFromRequest(req, sessions);
+    if (!session) return reply.status(401).send({ error: 'Unauthorized' });
+    const rows = await store.listPublicUsers();
+    return {
+      viewing: session.user.viewingUserId ?? null,
+      boards: rows
+        .filter((u) => u.id !== session.user.userId)
+        .map((u) => ({ id: u.id, username: u.username })),
+    };
+  });
+  app.post('/api/auth/viewing', async (req, reply) => {
+    const session = sessionFromRequest(req, sessions);
+    if (!session) return reply.status(401).send({ error: 'Unauthorized' });
+    const raw = req.body?.userId;
+    if (raw === null || raw === void 0) {
+      issue(reply, {
+        id: session.user.userId,
+        username: session.user.username,
+        role: session.user.role,
+      });
+      return { viewing: null };
+    }
+    if (!Number.isInteger(raw)) {
+      return reply.status(400).send({ error: 'userId must be an integer or null' });
+    }
+    const targetId = raw;
+    if (targetId === session.user.userId) {
+      return reply.status(400).send({ error: 'That is your own board' });
+    }
+    const published = await store.listPublicUsers();
+    const target = published.find((u) => u.id === targetId);
+    if (!target) return reply.status(404).send({ error: 'No such published board' });
+    issue(
+      reply,
+      {
+        id: session.user.userId,
+        username: session.user.username,
+        role: session.user.role,
+      },
+      targetId,
+    );
+    return { viewing: { id: target.id, username: target.username } };
+  });
   const publicKey = (row) => ({
     id: row.id,
     label: row.label,
@@ -617,7 +687,7 @@ var registerAuthRoutes = (
     if (!Number.isInteger(targetId)) {
       return reply.status(400).send({ error: 'Invalid user id' });
     }
-    if (!(await keyPrincipal(req, reply, targetId))) return;
+    if (!(await mayActOnUser(req, reply, targetId))) return;
     const rows = await store.listApiKeys(targetId);
     return { keys: rows.map(publicKey) };
   });
@@ -626,7 +696,7 @@ var registerAuthRoutes = (
     if (!Number.isInteger(targetId)) {
       return reply.status(400).send({ error: 'Invalid user id' });
     }
-    if (!(await keyPrincipal(req, reply, targetId))) return;
+    if (!(await mayActOnUser(req, reply, targetId))) return;
     if (!(await store.findUserById(targetId))) {
       return reply.status(404).send({ error: 'No such user' });
     }
@@ -644,7 +714,7 @@ var registerAuthRoutes = (
       await reply.status(400).send({ error: 'Invalid id' });
       return null;
     }
-    if (!(await keyPrincipal(req, reply, targetId))) return null;
+    if (!(await mayActOnUser(req, reply, targetId))) return null;
     const row = await store.findApiKey(keyId);
     if (!row || row.userId !== targetId) {
       await reply.status(404).send({ error: 'No such key' });
@@ -849,7 +919,20 @@ var createRestServer = (core, store, auth, internal, boards) => {
     if (!boards || !auth?.override) return container;
     const user = principals.get(req);
     if (!user) return container;
-    return boards.forUser(user, await auth.override.identities.isContainerAccount(user));
+    const owner = await viewedOwner(req);
+    const target = owner ?? user;
+    return boards.forUser(
+      target,
+      await auth.override.identities.isContainerAccount(target),
+    );
+  };
+  const viewedOwner = async (req) => {
+    if (!auth) return void 0;
+    const session = sessionFromRequest(req, auth.sessions);
+    const viewingId = session?.user.viewingUserId;
+    if (!viewingId) return void 0;
+    if (principals.get(req)?.id !== session?.user.userId) return void 0;
+    return (await auth.store.listPublicUsers()).find((u) => u.id === viewingId);
   };
   const coreFor = async (req) => (await boardFor(req)).core;
   if (auth) {
@@ -862,8 +945,17 @@ var createRestServer = (core, store, auth, internal, boards) => {
       if (!session) return reply.status(401).send({ error: 'Not signed in' });
       const user = await auth.store.findUserById(session.user.userId);
       if (!user) return reply.status(403).send({ error: 'No board for this session' });
+      const viewingId = session.user.viewingUserId;
+      const owner = viewingId
+        ? (await auth.store.listPublicUsers()).find((u) => u.id === viewingId)
+        : void 0;
+      if (viewingId && !owner) {
+        return reply.status(409).send({ error: 'That board is no longer published' });
+      }
       try {
-        const accessToken = await identities.tokenForUser(user);
+        const accessToken = owner
+          ? await identities.tokenForBoardRead(owner)
+          : await identities.tokenForUser(user);
         reply.header('Cache-Control', 'no-store');
         return {
           syncProvider: 'SuperSync',
@@ -888,11 +980,14 @@ var createRestServer = (core, store, auth, internal, boards) => {
           // board was populated - the gate then adopted where it should purge.
           identity: {
             instanceId: await instanceId(),
-            userId: user.id,
+            // The BOARD, not the reader. These are the same person unless a published board is being read, and stamping such a replica with the reader's id
+            // would make it match again when they switch back to their own board - so the gate would adopt the owner's data as theirs instead of purging it.
+            userId: (owner ?? user).id,
             // Re-read: tokenForUser() provisions on first login and writes the
             // sync id, so the row fetched above is stale for a brand-new user.
             serverHasData: await boardHasData(
-              (await auth.store.findUserById(user.id))?.supersyncUserId ?? null,
+              (await auth.store.findUserById((owner ?? user).id))?.supersyncUserId ??
+                null,
             ),
           },
         };
@@ -930,6 +1025,9 @@ var createRestServer = (core, store, auth, internal, boards) => {
     if (url.startsWith('/api/auth/')) return;
     if (!isReadOnlyRequest(req.method) && !canWrite(principal.role)) {
       return reply.status(403).send({ error: 'Read-only account', role: principal.role });
+    }
+    if (!isReadOnlyRequest(req.method) && (await viewedOwner(req))) {
+      return reply.status(403).send({ error: 'Read-only: viewing another board' });
     }
   });
   app.get('/api/health', async () => ({ status: 'ok' }));

@@ -3,7 +3,9 @@
     "ACCOUNT": "Account",
     "LOGOUT": "Log out",
     "SETTINGS": "Settings",
-    "TITLE": "Account"
+    "TITLE": "Account",
+    "VIEWING": "Viewing {{username}}'s board",
+    "YOUR_BOARD": "Your board"
   },
   "APP": {
     "B_INSTALL": {
@@ -2379,7 +2381,7 @@
       "API_KEY_HIDE": "Hide key",
       "API_KEY_HINT": "Send a key as the X-API-Key header, or as Authorization: Bearer. It acts as this account: same board, same permissions.",
       "API_KEY_LABEL": "What is it for?",
-      "API_KEY_LAST_USED": "used {{when}}",
+      "API_KEY_LAST_USED": "last used {{when}}",
       "API_KEY_NEVER_USED": "never used",
       "API_KEY_NEW": "New key",
       "API_KEY_NONE": "No keys yet.",
@@ -2420,7 +2422,12 @@
       "SAVE_EMAIL": "Save email",
       "SELF_REGISTRATION": "Allow self-registration",
       "SELF_REGISTRATION_HINT": "Anyone who can reach the sign-in page may create their own account. New accounts start as viewers.",
+      "SHARED": "Shared",
+      "SHARED_OFF": "Disable for viewer role",
+      "SHARED_ON": "Enable for viewer role",
       "SIGNED_IN_AS": "Signed in as",
+      "S_SHARED": "{{username}}'s board is now shared",
+      "S_UNSHARED": "{{username}}'s board is no longer shared",
       "TITLE": "Accounts",
       "USER": "User",
       "USERNAME": "Username",

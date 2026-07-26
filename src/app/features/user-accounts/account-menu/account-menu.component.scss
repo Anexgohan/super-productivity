@@ -14,3 +14,10 @@
   text-transform: uppercase;
   opacity: 0.6;
 }
+
+/* Not dimmed like the role: whose data is on screen is the one thing here worth noticing. */
+.viewing {
+  font-size: 0.75rem;
+  margin-top: 0.25rem;
+  color: var(--c-accent, #6495ed);
+}

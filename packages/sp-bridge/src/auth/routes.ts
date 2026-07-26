@@ -106,6 +106,12 @@ export interface AuthDeps {
    * has to go back out over the internal channel.
    */
   purgeSyncAccount?: (supersyncUserId: number) => Promise<void>;
+  /**
+   * Drops the cached read-only token for a board, called when it is unpublished.
+   * The token itself stays valid until it expires, so this closes the cache rather than the credential; what actually stops a viewer is the board no longer
+   * appearing in the published list and the override refusing to serve it.
+   */
+  forgetBoardReadToken?: (ownerId: number) => void;
 }
 
 /** Reads and validates the session cookie on a request. */
@@ -120,7 +126,14 @@ export const sessionFromRequest = (
 
 export const registerAuthRoutes = (
   app: FastifyInstance,
-  { store, sessions, jwtSecret, webUrl, purgeSyncAccount }: AuthDeps,
+  {
+    store,
+    sessions,
+    jwtSecret,
+    webUrl,
+    purgeSyncAccount,
+    forgetBoardReadToken,
+  }: AuthDeps,
 ): void => {
   const limiter = new LoginRateLimiter();
   const appHome = webUrl || '/';
@@ -139,11 +152,13 @@ export const registerAuthRoutes = (
   const issue = (
     reply: FastifyReply,
     user: { id: number; username: string; role: string },
+    viewingUserId?: number,
   ) => {
     const token = sessions.sign({
       userId: user.id,
       username: user.username,
       role: user.role,
+      viewingUserId,
     });
     reply.header('Set-Cookie', sessions.cookie(token));
     return { username: user.username, role: user.role };
@@ -234,6 +249,10 @@ export const registerAuthRoutes = (
       username: user.username,
       role: user.role,
       email: user.email,
+      // Own publish state, so a non-admin's row can show and change it. Admins read everyone's from /api/auth/users instead.
+      isPublic: user.isPublic,
+      // Whose board this browser is reading, when it is not their own.
+      viewingUserId: session.user.viewingUserId ?? null,
       setupRequired: false,
     };
   });
@@ -546,12 +565,12 @@ export const registerAuthRoutes = (
   );
 
   /**
-   * Whether the caller may act on `targetId`'s keys: themselves, or an admin.
+   * Whether the caller may act on `targetId`'s account: themselves, or an admin.
    *
-   * Admin sees everyone's keys in full, including the key strings.
+   * Used for keys and for publishing, which share the rule. Admin sees everyone's keys in full, including the key strings.
    * That is deliberate: this is one person's container and the admin already holds JWT_SECRET, so they could derive any key by hand anyway.
    */
-  const keyPrincipal = async (
+  const mayActOnUser = async (
     req: FastifyRequest,
     reply: FastifyReply,
     targetId: number,
@@ -567,6 +586,98 @@ export const registerAuthRoutes = (
     }
     return true;
   };
+
+  /**
+   * Publishes or unpublishes a board. Owner or admin, per `mayActOnUser`.
+   *
+   * Publishing is whole-board: the server holds encrypted ops it cannot read, so it has no way to filter one down to "just the public projects".
+   */
+  app.put<{ Params: { id: string }; Body: { isPublic?: unknown } }>(
+    '/api/auth/users/:id/public',
+    async (req, reply) => {
+      const targetId = Number.parseInt(req.params.id, 10);
+      if (!Number.isInteger(targetId)) {
+        return reply.status(400).send({ error: 'Invalid user id' });
+      }
+      if (!(await mayActOnUser(req, reply, targetId))) return;
+      const isPublic = req.body?.isPublic;
+      if (typeof isPublic !== 'boolean') {
+        return reply.status(400).send({ error: 'isPublic (boolean) is required' });
+      }
+      const target = await store.findUserById(targetId);
+      if (!target) return reply.status(404).send({ error: 'No such user' });
+      // A board with no sync account holds nothing, so publishing it would advertise something a viewer could never open.
+      if (isPublic && !target.supersyncUserId) {
+        return reply
+          .status(409)
+          .send({ error: 'This account has no board yet; it must sign in once first' });
+      }
+      await store.setPublic(targetId, isPublic);
+      if (!isPublic) forgetBoardReadToken?.(targetId);
+      return { id: targetId, isPublic };
+    },
+  );
+
+  /**
+   * Boards this caller may open besides their own.
+   *
+   * Any signed-in account may read the list: publishing is the decision, and hiding the list from operators would only mean they cannot find what has
+   * deliberately been shared with them. Their own row is filtered out, since their own board is what they already get by default.
+   */
+  app.get('/api/auth/public-boards', async (req, reply) => {
+    const session = sessionFromRequest(req, sessions);
+    if (!session) return reply.status(401).send({ error: 'Unauthorized' });
+    const rows = await store.listPublicUsers();
+    return {
+      viewing: session.user.viewingUserId ?? null,
+      boards: rows
+        .filter((u) => u.id !== session.user.userId)
+        .map((u) => ({ id: u.id, username: u.username })),
+    };
+  });
+
+  /**
+   * Switches which board this browser reads. `{ "userId": null }` returns to the caller's own.
+   *
+   * Publication is re-checked here rather than trusted from the list the browser last saw, and again on every override fetch, so a board unpublished mid-session
+   * stops being served rather than running until the cookie expires.
+   */
+  app.post<{ Body: { userId?: unknown } }>('/api/auth/viewing', async (req, reply) => {
+    const session = sessionFromRequest(req, sessions);
+    if (!session) return reply.status(401).send({ error: 'Unauthorized' });
+
+    const raw = req.body?.userId;
+    if (raw === null || raw === undefined) {
+      issue(reply, {
+        id: session.user.userId,
+        username: session.user.username,
+        role: session.user.role,
+      });
+      return { viewing: null };
+    }
+    if (!Number.isInteger(raw)) {
+      return reply.status(400).send({ error: 'userId must be an integer or null' });
+    }
+    const targetId = raw as number;
+    if (targetId === session.user.userId) {
+      return reply.status(400).send({ error: 'That is your own board' });
+    }
+    const published = await store.listPublicUsers();
+    const target = published.find((u) => u.id === targetId);
+    // 404 rather than 403: an unpublished board should not be distinguishable from one that does not exist.
+    if (!target) return reply.status(404).send({ error: 'No such published board' });
+
+    issue(
+      reply,
+      {
+        id: session.user.userId,
+        username: session.user.username,
+        role: session.user.role,
+      },
+      targetId,
+    );
+    return { viewing: { id: target.id, username: target.username } };
+  });
 
   /** Rows carry no secret, so the key itself is re-derived for the response. */
   const publicKey = (row: ApiKeyRow): Record<string, unknown> => ({
@@ -584,7 +695,7 @@ export const registerAuthRoutes = (
     if (!Number.isInteger(targetId)) {
       return reply.status(400).send({ error: 'Invalid user id' });
     }
-    if (!(await keyPrincipal(req, reply, targetId))) return;
+    if (!(await mayActOnUser(req, reply, targetId))) return;
     const rows = await store.listApiKeys(targetId);
     return { keys: rows.map(publicKey) };
   });
@@ -596,7 +707,7 @@ export const registerAuthRoutes = (
       if (!Number.isInteger(targetId)) {
         return reply.status(400).send({ error: 'Invalid user id' });
       }
-      if (!(await keyPrincipal(req, reply, targetId))) return;
+      if (!(await mayActOnUser(req, reply, targetId))) return;
       if (!(await store.findUserById(targetId))) {
         return reply.status(404).send({ error: 'No such user' });
       }
@@ -624,7 +735,7 @@ export const registerAuthRoutes = (
       await reply.status(400).send({ error: 'Invalid id' });
       return null;
     }
-    if (!(await keyPrincipal(req, reply, targetId))) return null;
+    if (!(await mayActOnUser(req, reply, targetId))) return null;
     const row = await store.findApiKey(keyId);
     if (!row || row.userId !== targetId) {
       await reply.status(404).send({ error: 'No such key' });

@@ -9,6 +9,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  computed,
   inject,
   OnInit,
   signal,
@@ -49,6 +50,18 @@ export class AccountMenuComponent implements OnInit {
   readonly T = T;
   readonly me = signal<CurrentUser | null>(null);
 
+  /** Boards other people have shared. Empty for most deployments, which is why the whole section is hidden when it is. */
+  readonly sharedBoards = signal<{ id: number; username: string }[]>([]);
+  /** Whose board is on screen, or null for your own. */
+  readonly viewing = signal<number | null>(null);
+
+  readonly viewingName = computed(() => {
+    const id = this.viewing();
+    return id === null
+      ? null
+      : (this.sharedBoards().find((b) => b.id === id)?.username ?? null);
+  });
+
   async ngOnInit(): Promise<void> {
     try {
       this.me.set(await this._api.me());
@@ -56,7 +69,33 @@ export class AccountMenuComponent implements OnInit {
       // No session, or auth disabled. The button still works as a way into
       // settings; only the identity line goes missing.
       Log.err('AccountMenu: could not load current user', err);
+      return;
     }
+    try {
+      const { viewing, boards } = await this._api.publicBoards();
+      this.sharedBoards.set(boards);
+      this.viewing.set(viewing);
+    } catch (err) {
+      // Nothing shared, or an older bridge. The menu just omits the section.
+      Log.err('AccountMenu: could not load shared boards', err);
+    }
+  }
+
+  /**
+   * Opens somebody else's shared board, or returns to your own.
+   *
+   * Reloads rather than swapping in place: sync credentials are read once at startup, so the app has to boot against the new board.
+   * The replica is stamped with the board it holds, so the mismatch clears the old copy on the way in. That is what stops the two mixing.
+   */
+  async view(userId: number | null): Promise<void> {
+    if (userId === this.viewing()) return;
+    try {
+      await this._api.setViewing(userId);
+    } catch (err) {
+      Log.err('AccountMenu: could not switch board', err);
+      return;
+    }
+    window.location.reload();
   }
 
   openSettings(): void {

@@ -88,11 +88,14 @@ const runServe = async (): Promise<void> => {
     // Each browser gets its own board's credentials, resolved from its session.
     const { SyncIdentityProvider, purgeSyncAccount, boardHasData } =
       await import('./auth/sync-identity');
+    // One provider instance: the routes and the override must share its token caches, or each would mint and persist its own.
+    const identities = new SyncIdentityProvider(authStore, cfg);
     auth = {
       store: authStore,
       jwtSecret: cfg.jwtSecret,
       webUrl: cfg.webUrl,
       purgeSyncAccount: (supersyncUserId) => purgeSyncAccount(cfg, supersyncUserId),
+      forgetBoardReadToken: (ownerId) => identities.forgetBoardReadToken(ownerId),
       sessions: new SessionManager(secret, {
         ttlSeconds: cfg.authSessionTtlHours * 3600,
         secureCookie: cfg.authSecureCookie,
@@ -100,7 +103,7 @@ const runServe = async (): Promise<void> => {
       override: {
         baseUrl: cfg.publicSyncUrl,
         encryptKey: cfg.encryptionPassword,
-        identities: new SyncIdentityProvider(authStore, cfg),
+        identities,
         boardHasData: (supersyncUserId) => boardHasData(cfg, supersyncUserId),
         // Resolved per request rather than captured at boot: the value has to
         // follow the database, and a bridge that outlives a wipe would

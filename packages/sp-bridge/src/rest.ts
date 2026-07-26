@@ -182,6 +182,8 @@ export interface AuthWiring {
   webUrl?: string;
   /** Removes a SuperSync account and its data when an admin deletes a user. */
   purgeSyncAccount?: (supersyncUserId: number) => Promise<void>;
+  /** Drops the cached read-only token for a board when it is unpublished. */
+  forgetBoardReadToken?: (ownerId: number) => void;
   /** Serves each browser its own board's credentials (see below). */
   override?: SessionOverrideWiring;
 }
@@ -312,7 +314,29 @@ export const createRestServer = (
     if (!boards || !auth?.override) return container;
     const user = principals.get(req);
     if (!user) return container;
-    return boards.forUser(user, await auth.override.identities.isContainerAccount(user));
+    // A session reading somebody else's published board reads THAT board here too, so the API and the browser never disagree about what is on screen.
+    const owner = await viewedOwner(req);
+    const target = owner ?? user;
+    return boards.forUser(
+      target,
+      await auth.override.identities.isContainerAccount(target),
+    );
+  };
+
+  /**
+   * The published board this request is reading, or undefined for the caller's own.
+   *
+   * Only a session can name one: an API key has no session and so always addresses its owner's board. Publication is re-checked on every request rather than
+   * trusted from the cookie, so unpublishing takes effect immediately instead of when the session expires.
+   */
+  const viewedOwner = async (req: FastifyRequest): Promise<UserRow | undefined> => {
+    if (!auth) return undefined;
+    const session = sessionFromRequest(req, auth.sessions);
+    const viewingId = session?.user.viewingUserId;
+    if (!viewingId) return undefined;
+    // A key presented alongside a browser's cookie must not inherit that browser's delegated board.
+    if (principals.get(req)?.id !== session?.user.userId) return undefined;
+    return (await auth.store.listPublicUsers()).find((u) => u.id === viewingId);
   };
 
   const coreFor = async (req: FastifyRequest): Promise<BridgeCore> =>
@@ -335,8 +359,22 @@ export const createRestServer = (
       // the container account's board.
       if (!user) return reply.status(403).send({ error: 'No board for this session' });
 
+      // Reading somebody else's published board. Re-checked here rather than trusted from the cookie, so unpublishing takes effect on the next config fetch
+      // instead of whenever the session happens to expire.
+      const viewingId = session.user.viewingUserId;
+      const owner = viewingId
+        ? (await auth.store.listPublicUsers()).find((u) => u.id === viewingId)
+        : undefined;
+      if (viewingId && !owner) {
+        return reply.status(409).send({ error: 'That board is no longer published' });
+      }
+
       try {
-        const accessToken = await identities.tokenForUser(user);
+        // A delegated board gets a read-scoped token. The sync API authenticates by token alone on the same public origin as the app, so an unscoped one here
+        // would hand a reader full write access to data that is not theirs, whatever the bridge's own role check says.
+        const accessToken = owner
+          ? await identities.tokenForBoardRead(owner)
+          : await identities.tokenForUser(user);
         // Never cached: the response is per-user, and a shared cache entry
         // would hand one user's token to the next.
         reply.header('Cache-Control', 'no-store');
@@ -363,11 +401,14 @@ export const createRestServer = (
           // board was populated - the gate then adopted where it should purge.
           identity: {
             instanceId: await instanceId(),
-            userId: user.id,
+            // The BOARD, not the reader. These are the same person unless a published board is being read, and stamping such a replica with the reader's id
+            // would make it match again when they switch back to their own board - so the gate would adopt the owner's data as theirs instead of purging it.
+            userId: (owner ?? user).id,
             // Re-read: tokenForUser() provisions on first login and writes the
             // sync id, so the row fetched above is stale for a brand-new user.
             serverHasData: await boardHasData(
-              (await auth.store.findUserById(user.id))?.supersyncUserId ?? null,
+              (await auth.store.findUserById((owner ?? user).id))?.supersyncUserId ??
+                null,
             ),
           },
         };
@@ -423,6 +464,12 @@ export const createRestServer = (
     // create tasks or delete boards. Writes now require operator or above.
     if (!isReadOnlyRequest(req.method) && !canWrite(principal.role)) {
       return reply.status(403).send({ error: 'Read-only account', role: principal.role });
+    }
+
+    // Somebody else's board is read-only regardless of rank. Publishing grants a look, never a hand: an admin browsing an operator's board is a reader there,
+    // and the sync token served for it is read-scoped for the same reason.
+    if (!isReadOnlyRequest(req.method) && (await viewedOwner(req))) {
+      return reply.status(403).send({ error: 'Read-only: viewing another board' });
     }
   });
 

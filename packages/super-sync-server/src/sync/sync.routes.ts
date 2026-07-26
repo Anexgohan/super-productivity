@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { SuperSyncDownloadOpsQuerySchema } from '@sp/shared-schema';
-import { authenticate, getAuthUser } from '../middleware';
+import { authenticate, getAuthUser, requireWriteScope } from '../middleware';
 import { getSyncService } from './sync.service';
 import { Logger } from '../logger';
 import {
@@ -79,6 +79,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
       // `parseCompressedJsonBody` still enforces MAX_COMPRESSED_SIZE_OPS
       // against decoded gzip bytes.
       bodyLimit: MAX_RAW_BODY_SIZE_OPS,
+      preHandler: requireWriteScope,
       preParsing: createRawBodyLimitPreParsingHook(
         MAX_COMPRESSED_SIZE_OPS,
         MAX_RAW_BODY_SIZE_OPS,
@@ -189,6 +190,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
     '/snapshot',
     {
       bodyLimit: MAX_RAW_BODY_SIZE_SNAPSHOT,
+      preHandler: requireWriteScope,
       preParsing: createRawBodyLimitPreParsingHook(
         MAX_COMPRESSED_SIZE_SNAPSHOT,
         MAX_RAW_BODY_SIZE_SNAPSHOT,
@@ -256,6 +258,8 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
   fastify.delete(
     '/data',
     {
+      // The most destructive route on the server: a delegated token reaching it would let a viewer erase the board's owner.
+      preHandler: requireWriteScope,
       config: {
         rateLimit: {
           max: 3,

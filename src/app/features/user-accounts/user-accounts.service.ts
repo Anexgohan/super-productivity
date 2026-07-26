@@ -32,6 +32,10 @@ export interface CurrentUser {
   username: string;
   role: Role;
   email?: string | null;
+  /** Whether this account's own board is shared read-only with everyone signed in. */
+  isPublic?: boolean;
+  /** Whose shared board this browser is reading, or null for your own. */
+  viewingUserId?: number | null;
 }
 
 /**
@@ -138,6 +142,37 @@ export class UserAccountsService {
       `/api/auth/users/${userId}/keys/${keyId}`,
       'DELETE',
     );
+  }
+
+  // ── Publishing: own board, or anyone's when the caller is an admin ─────────
+  /**
+   * Shares a board read-only. Whole-board by necessity: the server holds encrypted ops it cannot read, so it has no way to share only part of one.
+   */
+  setPublic(
+    userId: number,
+    isPublic: boolean,
+  ): Promise<{ id: number; isPublic: boolean }> {
+    return send<{ id: number; isPublic: boolean }>(
+      `/api/auth/users/${userId}/public`,
+      'PUT',
+      { isPublic },
+    );
+  }
+
+  /** Boards shared with this account, and which one it is currently reading. */
+  publicBoards(): Promise<{
+    viewing: number | null;
+    boards: { id: number; username: string }[];
+  }> {
+    return send('/api/auth/public-boards', 'GET');
+  }
+
+  /**
+   * Opens somebody else's shared board, or `null` to go back to your own.
+   * The browser reloads afterwards: sync credentials are read at startup, so the app boots against the new board rather than swapping it mid-flight.
+   */
+  setViewing(userId: number | null): Promise<unknown> {
+    return send('/api/auth/viewing', 'POST', { userId });
   }
 
   getRegistration(): Promise<{ isEnabled: boolean }> {

@@ -11,7 +11,36 @@
     <div class="identity">
       <span class="username">{{ user.username }}</span>
       <span class="role">{{ user.role }}</span>
+      <!-- Says whose data is on screen, because everything else in the app looks identical whichever board you are reading. -->
+      @if (viewingName(); as owner) {
+        <span class="viewing">{{
+          T.ACCOUNT_MENU.VIEWING | translate: { username: owner }
+        }}</span>
+      }
     </div>
+    <mat-divider></mat-divider>
+  }
+
+  <!-- Hidden entirely when nobody has shared a board, which is the usual case. -->
+  @if (sharedBoards().length) {
+    <button
+      mat-menu-item
+      [disabled]="viewing() === null"
+      (click)="view(null)"
+    >
+      <mat-icon>person</mat-icon>
+      <span>{{ T.ACCOUNT_MENU.YOUR_BOARD | translate }}</span>
+    </button>
+    @for (board of sharedBoards(); track board.id) {
+      <button
+        mat-menu-item
+        [disabled]="viewing() === board.id"
+        (click)="view(board.id)"
+      >
+        <mat-icon>visibility</mat-icon>
+        <span>{{ board.username }}</span>
+      </button>
+    }
     <mat-divider></mat-divider>
   }
 

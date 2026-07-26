@@ -20,7 +20,7 @@ import * as bcrypt from 'bcryptjs';
 import * as jwt from 'jsonwebtoken';
 import { prisma } from './db';
 import { Logger } from './logger';
-import { getJwtSecret, JWT_EXPIRY } from './auth';
+import { getJwtSecret, JWT_EXPIRY, type TokenScope } from './auth';
 
 const BCRYPT_ROUNDS = 12;
 const MIN_PASSWORD_LENGTH = 8;
@@ -126,9 +126,22 @@ const ensureAccount = async (
   return user;
 };
 
-const signToken = (user: { id: number; email: string; tokenVersion: number | null }) =>
+/**
+ * `scope: 'read'` is for a board handed to somebody who does not own it.
+ * The sync API authenticates by token alone and is reachable on the same public origin as the app, so an unscoped delegated token is a write credential for
+ * the owner's board no matter what the bridge's own role check says.
+ */
+const signToken = (
+  user: { id: number; email: string; tokenVersion: number | null },
+  scope?: TokenScope,
+) =>
   jwt.sign(
-    { userId: user.id, email: user.email, tokenVersion: user.tokenVersion ?? 0 },
+    {
+      userId: user.id,
+      email: user.email,
+      tokenVersion: user.tokenVersion ?? 0,
+      ...(scope ? { scope } : {}),
+    },
     getJwtSecret(),
     { expiresIn: JWT_EXPIRY },
   );
@@ -143,7 +156,7 @@ const signToken = (user: { id: number; email: string; tokenVersion: number | nul
  * can only ever serve the container's own account.
  */
 export const provisionRoutes = async (fastify: FastifyInstance): Promise<void> => {
-  fastify.post<{ Body: { email?: string; password?: string } }>(
+  fastify.post<{ Body: { email?: string; password?: string; scope?: string } }>(
     '/provision',
     { config: { rateLimit: false } },
     async (request, reply) => {
@@ -151,6 +164,13 @@ export const provisionRoutes = async (fastify: FastifyInstance): Promise<void> =
       if (typeof secret !== 'string' || secret !== getJwtSecret()) {
         return reply.status(401).send({ error: 'Unauthorized' });
       }
+
+      // Anything other than the literal 'read' is rejected rather than ignored: a typo must not quietly mint a full-access token.
+      const rawScope = request.body?.scope;
+      if (rawScope !== undefined && rawScope !== 'read') {
+        return reply.status(400).send({ error: "scope, when given, must be 'read'" });
+      }
+      const scope = rawScope as TokenScope | undefined;
 
       const email = request.body?.email?.trim().toLowerCase();
       const password = request.body?.password;
@@ -166,7 +186,7 @@ export const provisionRoutes = async (fastify: FastifyInstance): Promise<void> =
       const user = await ensureAccount(email, password);
       return reply
         .status(200)
-        .send({ token: signToken(user), userId: user.id, email: user.email });
+        .send({ token: signToken(user, scope), userId: user.id, email: user.email });
     },
   );
 

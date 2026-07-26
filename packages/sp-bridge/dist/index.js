@@ -87,7 +87,7 @@ var runServe = async () => {
   const cfg = loadConfig();
   const { StateStore } = await import('./state-store-264HWJI4.js');
   const { BridgeCore } = await import('./core-MGH2DCR6.js');
-  const { createRestServer } = await import('./rest-TH6GNENU.js');
+  const { createRestServer } = await import('./rest-2AFW33YK.js');
   const { OpFactory } = await import('./op-factory-NXIK3L3D.js');
   const store = new StateStore(cfg);
   await store.start(cfg.pollIntervalSec * 1e3);
@@ -103,18 +103,20 @@ var runServe = async () => {
         'sp-bridge: SP_AUTH_ENABLED requires DATABASE_URL (set SP_AUTH_ENABLED=false to run without browser auth)',
       );
     }
-    const { SessionManager } = await import('./session-ATFLACIU.js');
+    const { SessionManager } = await import('./session-2KISGRHT.js');
     const secret = await authStore.getOrCreateSetting(
       SessionManager.secretSettingKey,
       () => SessionManager.generateSecret(),
     );
     const { SyncIdentityProvider, purgeSyncAccount, boardHasData } =
-      await import('./sync-identity-2ZHH42Y4.js');
+      await import('./sync-identity-UGGVM5ZY.js');
+    const identities = new SyncIdentityProvider(authStore, cfg);
     auth = {
       store: authStore,
       jwtSecret: cfg.jwtSecret,
       webUrl: cfg.webUrl,
       purgeSyncAccount: (supersyncUserId) => purgeSyncAccount(cfg, supersyncUserId),
+      forgetBoardReadToken: (ownerId) => identities.forgetBoardReadToken(ownerId),
       sessions: new SessionManager(secret, {
         ttlSeconds: cfg.authSessionTtlHours * 3600,
         secureCookie: cfg.authSecureCookie,
@@ -122,7 +124,7 @@ var runServe = async () => {
       override: {
         baseUrl: cfg.publicSyncUrl,
         encryptKey: cfg.encryptionPassword,
-        identities: new SyncIdentityProvider(authStore, cfg),
+        identities,
         boardHasData: (supersyncUserId) => boardHasData(cfg, supersyncUserId),
         // Resolved per request rather than captured at boot: the value has to
         // follow the database, and a bridge that outlives a wipe would

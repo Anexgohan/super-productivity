@@ -179,8 +179,15 @@ export const replaceToken = async (
   return { token, user: { id: userId, email } };
 };
 
+/**
+ * Read-only tokens exist so a board can be delegated without handing over write access.
+ * The sync API is reachable by any token holder and has no other permission concept, so without this a delegated token is a full write credential.
+ * Absent means unrestricted, which is every token minted before this existed and every token minted for an account's own client.
+ */
+export type TokenScope = 'read';
+
 export type TokenVerificationResult =
-  | { valid: true; userId: number; email: string }
+  | { valid: true; userId: number; email: string; scope?: TokenScope }
   | { valid: false; reason: string };
 
 export const verifyToken = async (token: string): Promise<TokenVerificationResult> => {
@@ -189,17 +196,28 @@ export const verifyToken = async (token: string): Promise<TokenVerificationResul
       userId: number;
       email: string;
       tokenVersion?: number;
+      scope?: TokenScope;
     }>((resolve, reject) => {
       jwt.verify(token, JWT_SECRET, (err, decoded) => {
         if (err) return reject(err);
-        resolve(decoded as { userId: number; email: string; tokenVersion?: number });
+        resolve(
+          decoded as {
+            userId: number;
+            email: string;
+            tokenVersion?: number;
+            scope?: TokenScope;
+          },
+        );
       });
     });
+    // Only 'read' is honoured. An unrecognised value must not silently widen access, so anything else is treated as read-only rather than ignored.
+    const scope: TokenScope | undefined =
+      payload.scope === undefined ? undefined : 'read';
 
     const tokenVersion = payload.tokenVersion ?? 0;
     const cachedUser = authCache.get(payload.userId);
     if (cachedUser && cachedUser.isVerified && cachedUser.tokenVersion === tokenVersion) {
-      return { valid: true, userId: payload.userId, email: payload.email };
+      return { valid: true, userId: payload.userId, email: payload.email, scope };
     }
     const cacheVersionBeforeRead = authCache.getInvalidationVersion(payload.userId);
 
@@ -240,7 +258,7 @@ export const verifyToken = async (token: string): Promise<TokenVerificationResul
     }
 
     authCache.setIfCurrent(payload.userId, currentVersion, true, cacheVersionBeforeRead);
-    return { valid: true, userId: payload.userId, email: payload.email };
+    return { valid: true, userId: payload.userId, email: payload.email, scope };
   } catch (err) {
     if (err instanceof TokenExpiredError) {
       return {

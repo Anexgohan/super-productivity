@@ -41,6 +41,7 @@ var SessionManager = class {
         sub: String(user.userId),
         username: user.username,
         role: user.role,
+        ...(user.viewingUserId ? { viewing: user.viewingUserId } : {}),
         iat: now,
         exp: now + this.ttlSeconds,
       }),
@@ -80,6 +81,10 @@ var SessionManager = class {
         userId: Number.parseInt(claims.sub, 10),
         username: claims.username,
         role: claims.role,
+        // Only a positive integer counts. A tampered or malformed claim reads as "viewing nothing", which falls back to the caller's own board.
+        ...(Number.isInteger(claims.viewing) && claims.viewing > 0
+          ? { viewingUserId: claims.viewing }
+          : {}),
       },
       ageSeconds: now - (claims.iat ?? now),
     };
