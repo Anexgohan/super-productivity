@@ -1,7 +1,8 @@
 import { Materializer, SyncClient, mintSuperSyncToken } from './chunk-BKQKDC6L.js';
 
 // src/index.ts
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
+import { setDeploymentEncryptSalt } from '@sp/sync-core';
 
 // src/config.ts
 var resolveDatabaseUrl = () => {
@@ -87,14 +88,20 @@ var runServe = async () => {
   const cfg = loadConfig();
   const { StateStore } = await import('./state-store-264HWJI4.js');
   const { BridgeCore } = await import('./core-MGH2DCR6.js');
-  const { createRestServer } = await import('./rest-2AFW33YK.js');
+  const { createRestServer } = await import('./rest-EVVSPB47.js');
   const { OpFactory } = await import('./op-factory-NXIK3L3D.js');
   const store = new StateStore(cfg);
   await store.start(cfg.pollIntervalSec * 1e3);
-  const { AuthStore, INSTANCE_ID_SETTING_KEY } = await import('./store-NO2S626E.js');
+  const { AuthStore, INSTANCE_ID_SETTING_KEY, ENCRYPT_SALT_SETTING_KEY } =
+    await import('./store-QYTLY2J2.js');
   const authStore = cfg.databaseUrl ? new AuthStore(cfg.databaseUrl) : void 0;
+  let encryptSaltB64;
   if (authStore) {
     await authStore.init();
+    encryptSaltB64 = await authStore.getOrCreateSetting(ENCRYPT_SALT_SETTING_KEY, () =>
+      randomBytes(16).toString('base64'),
+    );
+    setDeploymentEncryptSalt(new Uint8Array(Buffer.from(encryptSaltB64, 'base64')));
   }
   let auth;
   if (cfg.authEnabled) {
@@ -124,6 +131,9 @@ var runServe = async () => {
       override: {
         baseUrl: cfg.publicSyncUrl,
         encryptKey: cfg.encryptionPassword,
+        // Generated once and persisted: it must be stable for the life of the deployment, since changing it only makes the next session derive a new key.
+        // Resolved at startup above, so browsers and this process are guaranteed to be writing under the same salt.
+        encryptSalt: async () => encryptSaltB64,
         identities,
         boardHasData: (supersyncUserId) => boardHasData(cfg, supersyncUserId),
         // Resolved per request rather than captured at boot: the value has to

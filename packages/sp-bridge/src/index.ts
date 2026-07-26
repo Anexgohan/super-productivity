@@ -5,7 +5,8 @@
  * materialize, and print a state summary. Verifies the entire read path
  * end-to-end before any server/API work builds on it.
  */
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { setDeploymentEncryptSalt } from '@sp/sync-core';
 import { loadConfig } from './config';
 import { SyncClient, mintSuperSyncToken } from './sync-client';
 import { Materializer } from './materializer';
@@ -65,10 +66,18 @@ const runServe = async (): Promise<void> => {
 
   // Postgres backs two independent things - browser accounts and the durable
   // web-app sync token - so it is opened once here rather than by either.
-  const { AuthStore, INSTANCE_ID_SETTING_KEY } = await import('./auth/store');
+  const { AuthStore, INSTANCE_ID_SETTING_KEY, ENCRYPT_SALT_SETTING_KEY } =
+    await import('./auth/store');
   const authStore = cfg.databaseUrl ? new AuthStore(cfg.databaseUrl) : undefined;
+  let encryptSaltB64: string | undefined;
   if (authStore) {
     await authStore.init();
+    // Resolved at startup and applied to this process too, not just handed to browsers: an op the bridge writes with its own random salt costs every
+    // client a separate ~200ms key derivation on the next cold load, so API writes would keep re-introducing the exact cost the shared salt removes.
+    encryptSaltB64 = await authStore.getOrCreateSetting(ENCRYPT_SALT_SETTING_KEY, () =>
+      randomBytes(16).toString('base64'),
+    );
+    setDeploymentEncryptSalt(new Uint8Array(Buffer.from(encryptSaltB64, 'base64')));
   }
 
   // Browser auth (username/password + session cookies). The signing secret is
@@ -103,6 +112,9 @@ const runServe = async (): Promise<void> => {
       override: {
         baseUrl: cfg.publicSyncUrl,
         encryptKey: cfg.encryptionPassword,
+        // Generated once and persisted: it must be stable for the life of the deployment, since changing it only makes the next session derive a new key.
+        // Resolved at startup above, so browsers and this process are guaranteed to be writing under the same salt.
+        encryptSalt: async () => encryptSaltB64 as string,
         identities,
         boardHasData: (supersyncUserId) => boardHasData(cfg, supersyncUserId),
         // Resolved per request rather than captured at boot: the value has to

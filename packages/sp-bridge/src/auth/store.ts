@@ -121,6 +121,12 @@ const SCHEMA = 'bridge';
  */
 export const INSTANCE_ID_SETTING_KEY = 'bridge.instance_id';
 
+/**
+ * Deployment-wide Argon2 salt, so every browser derives the same key from the container passphrase.
+ * Must never be regenerated: a new salt only means the next session derives a new key, leaving already-written operations on the old one.
+ */
+export const ENCRYPT_SALT_SETTING_KEY = 'bridge.encrypt_salt';
+
 export class AuthStore {
   private readonly _pool: Pool;
 

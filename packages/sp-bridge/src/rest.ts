@@ -201,6 +201,13 @@ export interface SessionOverrideWiring {
   baseUrl: string;
   /** Container-wide E2E passphrase. One key for everyone, by design - see the explainer, "Encryption is container-wide, deliberately". */
   encryptKey: string;
+  /**
+   * Deployment-wide Argon2 salt, base64. Generated once and served to every browser so they all derive the SAME key from the passphrase.
+   *
+   * Without it each session invents its own salt, so reading a board back costs one ~200ms derivation per operation rather than one per session: a hundred
+   * operations meant a twenty-second first sync. Random and per-deployment, so it still prevents precomputation; per-message uniqueness is the IV's job.
+   */
+  encryptSalt: () => Promise<string>;
   identities: SyncIdentityProvider;
   /** Whether that user's own board holds any ops - see boardHasData. */
   boardHasData: (supersyncUserId: number | null) => Promise<boolean>;
@@ -347,7 +354,8 @@ export const createRestServer = (
   }
 
   if (auth?.override) {
-    const { baseUrl, encryptKey, identities, instanceId, boardHasData } = auth.override;
+    const { baseUrl, encryptKey, encryptSalt, identities, instanceId, boardHasData } =
+      auth.override;
     app.get(OVERRIDE_PATH, async (req, reply) => {
       const session = sessionFromRequest(req, auth.sessions);
       if (!session) return reply.status(401).send({ error: 'Not signed in' });
@@ -383,8 +391,17 @@ export const createRestServer = (
           superSync: {
             baseUrl,
             accessToken,
-            ...(encryptKey ? { encryptKey, isEncryptionEnabled: true } : {}),
+            ...(encryptKey
+              ? {
+                  encryptKey,
+                  isEncryptionEnabled: true,
+                  encryptSalt: await encryptSalt(),
+                }
+              : {}),
           },
+          // Reading someone else's shared board. The token served above is refused on every write route, so without this the app would attempt uploads,
+          // collect 403s, and report a broken token - then clear its own credentials after three of them.
+          isReadOnly: Boolean(owner),
           // Whose data this browser is entitled to hold. The client compares it
           // against the stamp on its local replica and purges on a mismatch, so
           // a wiped stack or a different user cannot inherit the last one's

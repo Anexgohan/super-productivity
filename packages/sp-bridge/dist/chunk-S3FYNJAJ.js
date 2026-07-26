@@ -37,6 +37,7 @@ var toApiKeyRow = (row) =>
     : null;
 var SCHEMA = 'bridge';
 var INSTANCE_ID_SETTING_KEY = 'bridge.instance_id';
+var ENCRYPT_SALT_SETTING_KEY = 'bridge.encrypt_salt';
 var AuthStore = class {
   _pool;
   constructor(connectionString) {
@@ -343,4 +344,11 @@ var AuthStore = class {
   }
 };
 
-export { ROLES, ROLE_LEVELS, isRole, INSTANCE_ID_SETTING_KEY, AuthStore };
+export {
+  ROLES,
+  ROLE_LEVELS,
+  isRole,
+  INSTANCE_ID_SETTING_KEY,
+  ENCRYPT_SALT_SETTING_KEY,
+  AuthStore,
+};

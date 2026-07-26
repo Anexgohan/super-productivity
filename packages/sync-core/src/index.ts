@@ -57,12 +57,15 @@ export {
   deriveKeyFromPassword,
   clearSessionKeyCache,
   getSessionKeyCacheStats,
+  setDeploymentEncryptSalt,
+  getDeploymentEncryptSalt,
+  setKeyCacheStore,
   getArgon2Params,
   isCryptoSubtleAvailable,
   setArgon2ParamsForTesting,
   setLegacyKdfWarningHandler,
 } from './encryption';
-export type { DerivedKey } from './encryption';
+export type { DerivedKey, KeyCacheStore } from './encryption';
 
 // Generic error helpers.
 export { extractErrorMessage } from './error.util';

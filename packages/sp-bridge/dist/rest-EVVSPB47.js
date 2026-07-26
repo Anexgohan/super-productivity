@@ -1,4 +1,4 @@
-import { ROLES, ROLE_LEVELS, isRole } from './chunk-PGFRD7XM.js';
+import { ROLES, ROLE_LEVELS, isRole } from './chunk-S3FYNJAJ.js';
 import { SESSION_COOKIE, parseCookies } from './chunk-CLT5BPMR.js';
 
 // src/rest.ts
@@ -939,7 +939,8 @@ var createRestServer = (core, store, auth, internal, boards) => {
     registerAuthRoutes(app, auth);
   }
   if (auth?.override) {
-    const { baseUrl, encryptKey, identities, instanceId, boardHasData } = auth.override;
+    const { baseUrl, encryptKey, encryptSalt, identities, instanceId, boardHasData } =
+      auth.override;
     app.get(OVERRIDE_PATH, async (req, reply) => {
       const session = sessionFromRequest(req, auth.sessions);
       if (!session) return reply.status(401).send({ error: 'Not signed in' });
@@ -962,8 +963,17 @@ var createRestServer = (core, store, auth, internal, boards) => {
           superSync: {
             baseUrl,
             accessToken,
-            ...(encryptKey ? { encryptKey, isEncryptionEnabled: true } : {}),
+            ...(encryptKey
+              ? {
+                  encryptKey,
+                  isEncryptionEnabled: true,
+                  encryptSalt: await encryptSalt(),
+                }
+              : {}),
           },
+          // Reading someone else's shared board. The token served above is refused on every write route, so without this the app would attempt uploads,
+          // collect 403s, and report a broken token - then clear its own credentials after three of them.
+          isReadOnly: Boolean(owner),
           // Whose data this browser is entitled to hold. The client compares it
           // against the stamp on its local replica and purges on a mismatch, so
           // a wiped stack or a different user cannot inherit the last one's

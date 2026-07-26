@@ -1,6 +1,30 @@
 import { Injectable, signal } from '@angular/core';
+import { setDeploymentEncryptSalt, setKeyCacheStore } from '@sp/sync-core';
 import { IS_ELECTRON } from '../../app.constants';
 import { SyncConfig } from '../../features/config/global-config.model';
+
+/** Local rather than imported: this service is deliberately a leaf, and a base64 decode is not worth a dependency. */
+const base64ToBytes = (b64: string): Uint8Array =>
+  Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+
+const KEY_CACHE_STORAGE_KEY = 'SUP_sync_key_cache';
+
+/**
+ * Carries derived encryption keys across reloads.
+ *
+ * Deriving a key is deliberately expensive (Argon2id, ~200ms), and an op is decrypted with a key derived from its own salt.
+ * A board spanning many salts pays that cost once per salt on EVERY cold load, recomputing bytes it already had.
+ * Keeping them makes the second load, and every load after it, free.
+ *
+ * Installed only under container authority, where the deployment already hands this browser the encryption password itself.
+ * The stored keys are less sensitive than that credential, so this adds no exposure that did not exist a line earlier.
+ */
+const installKeyCacheStore = (): void => {
+  setKeyCacheStore({
+    load: () => localStorage.getItem(KEY_CACHE_STORAGE_KEY),
+    save: (serialized) => localStorage.setItem(KEY_CACHE_STORAGE_KEY, serialized),
+  });
+};
 
 /**
  * The same answer as `ContainerAuthorityService.isContainerManaged()`, readable
@@ -77,6 +101,25 @@ export class ContainerAuthorityService {
     ) {
       return undefined;
     }
+
+    // Deployment-wide Argon2 salt, applied here because this is where the container's config arrives, and it must precede the first decrypt.
+    // Without it every session invents its own salt, so ops written on different days each cost a separate ~200ms derivation on read.
+    //
+    // Stripped afterwards: it is not part of SyncConfig, and leaving it would carry an unknown field into the synced config model.
+    const withSalt = override.superSync as typeof override.superSync & {
+      encryptSalt?: unknown;
+    };
+    if (typeof withSalt.encryptSalt === 'string' && withSalt.encryptSalt) {
+      try {
+        setDeploymentEncryptSalt(base64ToBytes(withSalt.encryptSalt));
+      } catch {
+        // Ignored on purpose: a malformed salt must not stop the app booting, and falling back to a per-session salt is slow, not broken.
+      }
+    }
+    delete withSalt.encryptSalt;
+
+    // Installed before the first decrypt, for the same reason the salt is: a store arriving later would miss the one load that needed it.
+    installKeyCacheStore();
 
     // A root-relative baseUrl (e.g. "/sync") means the container fronts sync on this origin; made absolute because WebSocket rejects relative URLs.
     if (override.superSync.baseUrl.startsWith('/')) {

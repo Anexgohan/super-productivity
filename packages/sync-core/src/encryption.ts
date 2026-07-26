@@ -68,9 +68,13 @@ export {
   deriveKeyFromPassword,
 } from './encryption/argon2';
 export type { DerivedKey } from './encryption/argon2';
+export type { KeyCacheStore } from './encryption/session-cache';
 export {
   clearSessionKeyCache,
   getSessionKeyCacheStats,
+  setKeyCacheStore,
+  setDeploymentEncryptSalt,
+  getDeploymentEncryptSalt,
 } from './encryption/session-cache';
 export { isCryptoSubtleAvailable } from './encryption/web-crypto';
 export { setLegacyKdfWarningHandler } from './encryption/legacy';
