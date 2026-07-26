@@ -1,15 +1,15 @@
 /**
- * Local auth store — users + small key/value settings, in Postgres.
+ * Local auth store - users + small key/value settings, in Postgres.
  *
  * Lives in the SAME Postgres the stack already runs, under its own `bridge`
  * schema. One engine, one backup, one thing to operate: a `pg_dump` of the
  * database now captures accounts as well as sync data. The dedicated schema is
  * what keeps us clear of SuperSync's Prisma migrations, which only ever touch
- * their own tables — isolation without a second datastore.
+ * their own tables - isolation without a second datastore.
  *
  * Multi-user readiness (wanted later, not now): `users` is a real table with
  * ids and roles rather than a single admin blob, so adding accounts is INSERTs
- * and per-user data scoping is one more column plus a join — additive, not a
+ * and per-user data scoping is one more column plus a join - additive, not a
  * rewrite. Everything downstream already carries a userId.
  */
 import { Pool } from 'pg';
@@ -19,7 +19,7 @@ export interface UserRow {
   username: string;
   passwordHash: string;
   role: string;
-  /** Profile data, shown in the UI. NOT the sync identity — see sync-identity.ts. */
+  /** Profile data, shown in the UI. NOT the sync identity - see sync-identity.ts. */
   email: string | null;
   /** The sync server's own user id, resolved at provisioning time. */
   supersyncUserId: number | null;
@@ -67,6 +67,46 @@ const toUserRow = (row: UserRecord | undefined): UserRow | null =>
         supersyncUserId: row.supersync_user_id,
         isPublic: row.is_public,
         sortOrder: row.sort_order,
+      }
+    : null;
+
+/** An API key row. Never carries the key itself, see api-key.ts. */
+export interface ApiKeyRow {
+  id: number;
+  userId: number;
+  label: string;
+  salt: string;
+  version: number;
+  createdAt: number;
+  lastUsedAt: number | null;
+  revokedAt: number | null;
+}
+
+const API_KEY_COLUMNS = `id, user_id, label, salt, version, created_at, last_used_at, revoked_at`;
+
+interface ApiKeyRecord {
+  id: number;
+  user_id: number;
+  label: string;
+  salt: string;
+  version: number;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
+// BIGINT arrives as a string from pg, parsed here so callers never compare a timestamp to a string.
+const toApiKeyRow = (row: ApiKeyRecord | undefined): ApiKeyRow | null =>
+  row
+    ? {
+        id: row.id,
+        userId: row.user_id,
+        label: row.label,
+        salt: row.salt,
+        version: row.version,
+        createdAt: Number(row.created_at),
+        lastUsedAt: row.last_used_at === null ? null : Number(row.last_used_at),
+        revokedAt: row.revoked_at === null ? null : Number(row.revoked_at),
       }
     : null;
 
@@ -128,6 +168,18 @@ export class AuthStore {
             ADD COLUMN IF NOT EXISTS sort_order        INTEGER;
           CREATE UNIQUE INDEX IF NOT EXISTS users_email_key
             ON ${SCHEMA}.users (lower(email)) WHERE email IS NOT NULL;
+          -- Key material only. The key itself is derived on demand (see api-key.ts), so nothing here is a secret.
+          CREATE TABLE IF NOT EXISTS ${SCHEMA}.api_keys (
+            id           SERIAL PRIMARY KEY,
+            user_id      INTEGER NOT NULL REFERENCES ${SCHEMA}.users(id) ON DELETE CASCADE,
+            label        TEXT    NOT NULL,
+            salt         TEXT    NOT NULL,
+            version      INTEGER NOT NULL DEFAULT 1,
+            created_at   BIGINT  NOT NULL,
+            last_used_at BIGINT,
+            revoked_at   BIGINT
+          );
+          CREATE INDEX IF NOT EXISTS api_keys_user_id_idx ON ${SCHEMA}.api_keys (user_id);
         `);
         return;
       } catch (err) {
@@ -195,7 +247,7 @@ export class AuthStore {
 
   async setUsername(id: number, username: string): Promise<boolean> {
     // Case-insensitive collision check mirrors findUser(), which resolves
-    // logins the same way — otherwise "Bob" could shadow "bob" at sign-in.
+    // logins the same way - otherwise "Bob" could shadow "bob" at sign-in.
     const { rowCount } = await this._pool.query(
       `UPDATE ${SCHEMA}.users SET username = $2
        WHERE id = $1
@@ -246,7 +298,7 @@ export class AuthStore {
     ]);
   }
 
-  /** Profile data only — it is not the sync identity, so changing it moves nothing. */
+  /** Profile data only - it is not the sync identity, so changing it moves nothing. */
   async setEmail(id: number, email: string | null): Promise<void> {
     await this._pool.query(`UPDATE ${SCHEMA}.users SET email = $2 WHERE id = $1`, [
       id,
@@ -305,6 +357,76 @@ export class AuthStore {
       email,
     ]);
     return toUserRow(rows[0]);
+  }
+
+  async createApiKey(userId: number, label: string, salt: string): Promise<ApiKeyRow> {
+    const { rows } = await this._pool.query<ApiKeyRecord>(
+      `INSERT INTO ${SCHEMA}.api_keys (user_id, label, salt, created_at)
+       VALUES ($1, $2, $3, $4)
+       RETURNING ${API_KEY_COLUMNS}`,
+      [userId, label, salt, Date.now()],
+    );
+    return toApiKeyRow(rows[0]) as ApiKeyRow;
+  }
+
+  /** Every key a user owns, revoked ones included, since the UI shows them greyed rather than hiding the history. */
+  async listApiKeys(userId: number): Promise<ApiKeyRow[]> {
+    const { rows } = await this._pool.query<ApiKeyRecord>(
+      `SELECT ${API_KEY_COLUMNS} FROM ${SCHEMA}.api_keys
+       WHERE user_id = $1 ORDER BY id`,
+      [userId],
+    );
+    return rows.map((row) => toApiKeyRow(row) as ApiKeyRow);
+  }
+
+  /** Live keys only. Verification must never resurrect a revoked row. */
+  async findLiveApiKey(id: number): Promise<ApiKeyRow | null> {
+    const { rows } = await this._pool.query<ApiKeyRecord>(
+      `SELECT ${API_KEY_COLUMNS} FROM ${SCHEMA}.api_keys
+       WHERE id = $1 AND revoked_at IS NULL`,
+      [id],
+    );
+    return toApiKeyRow(rows[0]);
+  }
+
+  async findApiKey(id: number): Promise<ApiKeyRow | null> {
+    const { rows } = await this._pool.query<ApiKeyRecord>(
+      `SELECT ${API_KEY_COLUMNS} FROM ${SCHEMA}.api_keys WHERE id = $1`,
+      [id],
+    );
+    return toApiKeyRow(rows[0]);
+  }
+
+  /**
+   * Marks a key dead but keeps the row: its label and last-used stamp are the only record of what had been calling in with it.
+   */
+  async revokeApiKey(id: number): Promise<boolean> {
+    const { rowCount } = await this._pool.query(
+      `UPDATE ${SCHEMA}.api_keys SET revoked_at = $2
+       WHERE id = $1 AND revoked_at IS NULL`,
+      [id, Date.now()],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Drops the record entirely.
+   * Safe because a SERIAL sequence only ever moves forward, so the freed id is never handed to a future key and the old string can never verify again.
+   */
+  async deleteApiKey(id: number): Promise<boolean> {
+    const { rowCount } = await this._pool.query(
+      `DELETE FROM ${SCHEMA}.api_keys WHERE id = $1`,
+      [id],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
+  /** Fire-and-forget: a failed usage stamp must never fail the request it describes. */
+  async touchApiKey(id: number): Promise<void> {
+    await this._pool.query(
+      `UPDATE ${SCHEMA}.api_keys SET last_used_at = $2 WHERE id = $1`,
+      [id, Date.now()],
+    );
   }
 
   async getSetting(key: string): Promise<string | null> {

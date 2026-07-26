@@ -1,5 +1,5 @@
 /**
- * Password hashing — scrypt via node:crypto (no external dependency).
+ * Password hashing - scrypt via node:crypto (no external dependency).
  *
  * Cost parameters are embedded in every stored hash, so they can be raised
  * later without invalidating existing accounts: an old hash keeps verifying

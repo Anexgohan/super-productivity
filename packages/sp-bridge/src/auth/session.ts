@@ -1,12 +1,12 @@
 /**
- * Browser sessions — HS256 JWT in an httpOnly cookie.
+ * Browser sessions - HS256 JWT in an httpOnly cookie.
  *
  * Signed with a secret that is generated once and PERSISTED in the auth store,
  * so sessions survive container restarts. That property is the whole point: the
  * failure this system was built to eliminate was a credential that silently
  * changed underneath a browser on every restart.
  *
- * Implemented on node:crypto rather than a JWT library — HS256 is an HMAC over
+ * Implemented on node:crypto rather than a JWT library - HS256 is an HMAC over
  * two base64url segments, and avoiding the dependency keeps the bridge image
  * self-contained. The security-relevant details are handled explicitly:
  *  - the `alg` header is pinned to HS256 (rejects "none"/algorithm confusion)
@@ -26,7 +26,7 @@ export interface SessionUser {
 
 export interface VerifiedSession {
   user: SessionUser;
-  /** Seconds since issuance — drives sliding renewal. */
+  /** Seconds since issuance - drives sliding renewal. */
   ageSeconds: number;
 }
 

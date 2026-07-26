@@ -1,6 +1,6 @@
 /**
  * Builds sync operations shaped EXACTLY like the ones a real v18.15.1 client
- * captures (verified field-for-field against live ops in the op-log — see the
+ * captures (verified field-for-field against live ops in the op-log - see the
  * addTask template at serverSeq 15 of the dev dataset):
  *
  *   envelope: uuidv7 op id, clientId, actionType, opType, entityType/Id,
@@ -9,7 +9,7 @@
  *              entityChanges: [] })
  *
  * Write surface is intentionally narrow (mirrors the desktop REST API's
- * ALLOWED_TASK_FIELDS) — receiving clients replay these through their own
+ * ALLOWED_TASK_FIELDS) - receiving clients replay these through their own
  * reducers, so unknown/malformed shapes are a data-corruption risk.
  */
 import { randomBytes } from 'node:crypto';
@@ -30,7 +30,7 @@ export const nanoid = (size = 21): string => {
   return id;
 };
 
-/** RFC 9562 UUIDv7 (time-ordered) — same format clients use for op ids. */
+/** RFC 9562 UUIDv7 (time-ordered) - same format clients use for op ids. */
 export const uuidv7 = (): string => {
   const now = Date.now();
   const bytes = randomBytes(16);
@@ -46,7 +46,7 @@ export const uuidv7 = (): string => {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 };
 
-/** Fields writable via the API — mirror of desktop's ALLOWED_TASK_FIELDS. */
+/** Fields writable via the API - mirror of desktop's ALLOWED_TASK_FIELDS. */
 export const ALLOWED_TASK_FIELDS = new Set([
   'title',
   'notes',
@@ -183,7 +183,7 @@ export interface NewPanelInput {
   /** 1=All, 2=NoBacklog, 3=OnlyBacklog. */
   backlogState?: number;
   isParentTasksOnly?: boolean;
-  /** [''] means "All Projects" — the app's own convention, not a typo. */
+  /** [''] means "All Projects" - the app's own convention, not a typo. */
   projectIds?: string[];
 }
 
@@ -256,7 +256,7 @@ export class OpFactory {
   }
 
   /**
-   * [Task Shared] addTask — clone of the live client template. The task is added
+   * [Task Shared] addTask - clone of the live client template. The task is added
    * to its own PROJECT context (not forced into the Today view); planning to
    * Today is an explicit, separate action.
    */
@@ -281,7 +281,7 @@ export class OpFactory {
     });
   }
 
-  /** [Task Shared] updateTask — NgRx Update<Task> shape { task: { id, changes } }. */
+  /** [Task Shared] updateTask - NgRx Update<Task> shape { task: { id, changes } }. */
   updateTask(
     id: string,
     changes: Record<string, unknown>,
@@ -297,7 +297,7 @@ export class OpFactory {
     });
   }
 
-  /** [Task Shared] deleteTask — expects the full task (with subTasks array). */
+  /** [Task Shared] deleteTask - expects the full task (with subTasks array). */
   deleteTask(
     task: Record<string, unknown>,
     vectorClock: Record<string, number>,
@@ -316,7 +316,7 @@ export class OpFactory {
     });
   }
 
-  /** [Task Shared] moveToOtherProject — expects the full task (with subTasks). */
+  /** [Task Shared] moveToOtherProject - expects the full task (with subTasks). */
   moveTaskToProject(
     task: Record<string, unknown>,
     targetProjectId: string,
@@ -333,7 +333,7 @@ export class OpFactory {
   }
 
   /**
-   * [Task] Add SubTask — creates a task nested under parentId. The full subtask
+   * [Task] Add SubTask - creates a task nested under parentId. The full subtask
    * entity travels in { task }; receiving clients append it to the parent's
    * subTaskIds via their reducer.
    */
@@ -352,7 +352,7 @@ export class OpFactory {
     });
   }
 
-  /** [Task Shared] convertToSubTask — reparent a main task under targetParentId. */
+  /** [Task Shared] convertToSubTask - reparent a main task under targetParentId. */
   convertToSubTask(
     taskId: string,
     targetParentId: string,
@@ -368,7 +368,7 @@ export class OpFactory {
     });
   }
 
-  /** [Task Shared] convertToMainTask — promote a subtask to top-level (full task). */
+  /** [Task Shared] convertToMainTask - promote a subtask to top-level (full task). */
   convertToMainTask(
     task: Record<string, unknown>,
     vectorClock: Record<string, number>,
@@ -383,7 +383,7 @@ export class OpFactory {
     });
   }
 
-  /** [Task Shared] planTasksForToday — add tasks to the TODAY list (bulk). */
+  /** [Task Shared] planTasksForToday - add tasks to the TODAY list (bulk). */
   planTasksForToday(
     taskIds: string[],
     today: string,
@@ -400,7 +400,7 @@ export class OpFactory {
     });
   }
 
-  /** [Task Shared] removeTasksFromTodayTag — remove tasks from the TODAY list (bulk). */
+  /** [Task Shared] removeTasksFromTodayTag - remove tasks from the TODAY list (bulk). */
   removeTasksFromTodayTag(
     taskIds: string[],
     vectorClock: Record<string, number>,
@@ -418,7 +418,7 @@ export class OpFactory {
 
   // ── Tags ────────────────────────────────────────────────────────────────────
 
-  /** [Tag] Add Tag — full Tag entity in { tag }. */
+  /** [Tag] Add Tag - full Tag entity in { tag }. */
   addTag(
     tag: Record<string, unknown>,
     vectorClock: Record<string, number>,
@@ -433,7 +433,7 @@ export class OpFactory {
     });
   }
 
-  /** [Tag] Update Tag — NgRx Update<Tag> shape { tag: { id, changes } }. */
+  /** [Tag] Update Tag - NgRx Update<Tag> shape { tag: { id, changes } }. */
   updateTag(
     id: string,
     changes: Record<string, unknown>,
@@ -450,7 +450,7 @@ export class OpFactory {
   }
 
   /**
-   * [Tag] Delete Tag — payload is just { id }. Receiving clients re-dispatch
+   * [Tag] Delete Tag - payload is just { id }. Receiving clients re-dispatch
    * the action, whose meta-reducer atomically cascades the cleanup (strips the
    * tag from every task's tagIds, board panels, etc.). One op = full cascade.
    */
@@ -469,7 +469,7 @@ export class OpFactory {
   }
 
   /**
-   * [TaskAttachment] Add TaskAttachment — appends a link/file attachment to a
+   * [TaskAttachment] Add TaskAttachment - appends a link/file attachment to a
    * task. Persisted as a TASK update; the client reducer pushes it onto
    * task.attachments.
    */
@@ -491,7 +491,7 @@ export class OpFactory {
   // ── Projects ────────────────────────────────────────────────────────────────
 
   /**
-   * [Task Shared] deleteProject — deletes a project and (via the client
+   * [Task Shared] deleteProject - deletes a project and (via the client
    * meta-reducer) all its tasks/notes. Carries the delete-wins marker so the LWW
    * conflict planner does not resurrect an emptied project.
    */
@@ -511,7 +511,7 @@ export class OpFactory {
     });
   }
 
-  /** [Project] Add Project — full Project entity in { project }. */
+  /** [Project] Add Project - full Project entity in { project }. */
   addProject(
     project: Record<string, unknown>,
     vectorClock: Record<string, number>,
@@ -526,7 +526,7 @@ export class OpFactory {
     });
   }
 
-  /** [Project] Update Project — NgRx Update<Project> shape { project: { id, changes } }. */
+  /** [Project] Update Project - NgRx Update<Project> shape { project: { id, changes } }. */
   updateProject(
     id: string,
     changes: Record<string, unknown>,
@@ -544,10 +544,10 @@ export class OpFactory {
 
   // ── Boards ────────────────────────────────────────────────────────────────
   // Payload shapes are the action creators' own props, verbatim from
-  // src/app/features/boards/store/boards.actions.ts — receiving clients
+  // src/app/features/boards/store/boards.actions.ts - receiving clients
   // re-dispatch the action, so anything else would be ignored by the reducer.
 
-  /** [Boards] Add Board — payload { board }. */
+  /** [Boards] Add Board - payload { board }. */
   addBoard(
     board: Record<string, unknown>,
     vectorClock: Record<string, number>,
@@ -563,7 +563,7 @@ export class OpFactory {
   }
 
   /**
-   * [Boards] Update Board — payload { id, updates }, NOT the NgRx Update shape
+   * [Boards] Update Board - payload { id, updates }, NOT the NgRx Update shape
    * the other entities use. Panels are replaced wholesale when `updates.panels`
    * is present, which is also how the app edits a single panel.
    */
@@ -582,7 +582,7 @@ export class OpFactory {
     });
   }
 
-  /** [Boards] Remove Board — payload { id }. */
+  /** [Boards] Remove Board - payload { id }. */
   removeBoard(
     id: string,
     vectorClock: Record<string, number>,
@@ -597,7 +597,7 @@ export class OpFactory {
     });
   }
 
-  /** [Boards] Sort Boards — bulk MOV over every board id, in display order. */
+  /** [Boards] Sort Boards - bulk MOV over every board id, in display order. */
   sortBoards(
     ids: string[],
     vectorClock: Record<string, number>,
@@ -613,7 +613,7 @@ export class OpFactory {
     });
   }
 
-  /** [Boards] Update Panel Cfg TaskIds — manual card order within one panel. */
+  /** [Boards] Update Panel Cfg TaskIds - manual card order within one panel. */
   updatePanelTaskIds(
     panelId: string,
     taskIds: string[],

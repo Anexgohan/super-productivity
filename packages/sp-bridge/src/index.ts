@@ -1,7 +1,7 @@
 /**
  * sp-bridge entry point.
  *
- * M1: `dump` command — authenticate, download the full op-log, decrypt,
+ * M1: `dump` command - authenticate, download the full op-log, decrypt,
  * materialize, and print a state summary. Verifies the entire read path
  * end-to-end before any server/API work builds on it.
  */
@@ -52,51 +52,6 @@ const runDump = async (): Promise<void> => {
   summarize(materializer.state);
 };
 
-/**
- * Resolves the digest the REST layer compares presented keys against.
- *
- * An admin-set SP_BRIDGE_API_KEY wins — existing deployments and scripts keep
- * working, and the value stays theirs to rotate. With none set, the bridge
- * mints one and persists only the hash, so the plaintext exists exactly once:
- * in the startup log the operator copies it from.
- */
-const resolveApiKeyHash = async (
-  configured: string,
-  authStore:
-    | { getOrCreateSetting: (k: string, c: () => string) => Promise<string> }
-    | undefined,
-): Promise<string> => {
-  const { hashApiKey, mintApiKey, API_KEY_HASH_SETTING_KEY } =
-    await import('./auth/api-key');
-
-  if (configured) {
-    return hashApiKey(configured);
-  }
-  if (!authStore) {
-    throw new Error(
-      'sp-bridge: set SP_BRIDGE_API_KEY, or provide DATABASE_URL so a key can be minted and its hash persisted',
-    );
-  }
-
-  const minted = mintApiKey();
-  const storedHash = await authStore.getOrCreateSetting(API_KEY_HASH_SETTING_KEY, () =>
-    hashApiKey(minted),
-  );
-  if (storedHash === hashApiKey(minted)) {
-    console.log(
-      `sp-bridge: minted API key (shown once, store it now): ${minted}\n` +
-        'sp-bridge: set SP_BRIDGE_API_KEY in .env to choose the value yourself instead.',
-    );
-  } else {
-    // A key already exists and its plaintext is unrecoverable by design.
-    console.log(
-      'sp-bridge: using the previously minted API key (its hash is stored; the key itself is not).\n' +
-        'sp-bridge: lost it? set SP_BRIDGE_API_KEY in .env to take over.',
-    );
-  }
-  return storedHash;
-};
-
 const runServe = async (): Promise<void> => {
   const cfg = loadConfig();
   const { StateStore } = await import('./state-store');
@@ -108,8 +63,8 @@ const runServe = async (): Promise<void> => {
   const store = new StateStore(cfg);
   await store.start(cfg.pollIntervalSec * 1000);
 
-  // Postgres backs two independent things — browser accounts and the durable
-  // web-app sync token — so it is opened once here rather than by either.
+  // Postgres backs two independent things - browser accounts and the durable
+  // web-app sync token - so it is opened once here rather than by either.
   const { AuthStore, INSTANCE_ID_SETTING_KEY } = await import('./auth/store');
   const authStore = cfg.databaseUrl ? new AuthStore(cfg.databaseUrl) : undefined;
   if (authStore) {
@@ -135,6 +90,7 @@ const runServe = async (): Promise<void> => {
       await import('./auth/sync-identity');
     auth = {
       store: authStore,
+      jwtSecret: cfg.jwtSecret,
       webUrl: cfg.webUrl,
       purgeSyncAccount: (supersyncUserId) => purgeSyncAccount(cfg, supersyncUserId),
       sessions: new SessionManager(secret, {
@@ -156,14 +112,14 @@ const runServe = async (): Promise<void> => {
     const n = await authStore.userCount();
     console.log(
       n === 0
-        ? 'sp-bridge: auth enabled — no account yet, visit /login to create one'
+        ? 'sp-bridge: auth enabled - no account yet, visit /login to create one'
         : `sp-bridge: auth enabled (${n} account${n === 1 ? '' : 's'})`,
     );
   }
 
   // Durable access token for served browsers. Without Postgres there is nowhere
   // to persist it, so the route stays absent and the web entrypoint degrades to
-  // serving no token — browsers then keep whatever config they already hold.
+  // serving no token - browsers then keep whatever config they already hold.
   let internal: InternalWiring | undefined;
   if (authStore) {
     const { WebappTokenProvider } = await import('./webapp-token');
@@ -171,7 +127,14 @@ const runServe = async (): Promise<void> => {
     internal = { secret: cfg.jwtSecret, webappToken: () => webappToken.get() };
   }
 
-  const apiKeyHash = await resolveApiKeyHash(cfg.apiKey, authStore);
+  // API keys belong to users now, so accounts ARE the credential store. With
+  // auth off there is nothing left to authenticate a caller with, and every
+  // route would answer 401, so fail loudly here instead of looking alive.
+  if (!auth) {
+    throw new Error(
+      'sp-bridge: the REST API requires SP_AUTH_ENABLED=true and DATABASE_URL: API keys are issued per user account',
+    );
+  }
 
   const core = new BridgeCore(store, new OpFactory(cfg.clientId, cfg.encryptionPassword));
 
@@ -183,7 +146,7 @@ const runServe = async (): Promise<void> => {
     boards = new UserBoards(cfg, auth.override.identities, { core, store });
   }
 
-  const app = createRestServer(core, store, apiKeyHash, auth, internal, boards);
+  const app = createRestServer(core, store, auth, internal, boards);
   await app.listen({ port: cfg.apiPort, host: '0.0.0.0' });
   console.log(
     `sp-bridge: REST API on :${cfg.apiPort} (poll every ${cfg.pollIntervalSec}s, seq ${store.lastServerSeq})`,

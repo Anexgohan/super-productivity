@@ -178,6 +178,8 @@ The admin manages _accounts_, not _data_ — an operational role, not a
 surveillance one. That limit is a design choice, not a cryptographic guarantee;
 see the encryption note below.
 
+Concretely, no route hands an admin another user's board: `boardFor()` in `rest.ts` resolves the request to the principal's own board and has no override. What an admin does have is the ability to read anyone's API key, and a key acts as its owner. So the honest statement is that an admin cannot read another board directly but can always obtain the means to, which is unavoidable anyway because they hold `JWT_SECRET` and every key is derived from it.
+
 ### Isolation comes from the sync server, which was already multi-tenant
 
 No schema change was needed there: `Operation.userId` scopes every op,
@@ -261,12 +263,25 @@ standalone builds have no accounts:
 
 - **Account menu** in the toolbar, holding the slot upstream's profile switcher
   used to occupy. Who you are, then Account, Settings, and Log out.
-- **Accounts** section in Settings. Everyone gets their username, role, email and
-  change-password; admins also get the user list, per-user edit (name, email,
-  role, password reset), delete, reordering, a create-user form, and the
-  self-registration toggle.
+- **Accounts** section in Settings, which is one table for every rank.
 
-Both talk to the bridge over the session cookie, **not** through
+The table has the same three columns whatever your role: USER, ROLE, ACTIONS. What changes is the number of rows and the number of actions.
+
+An admin sees every account, and each row carries reordering, the API keys toggle, edit, and delete. Everyone else sees exactly one row, their own, carrying the keys toggle and edit. There is no second layout and no separate panel: a non-admin gets the same table with a shorter list.
+
+Editing any account, including your own, goes through the row's edit dialog. That is the only place an account is changed, so there is never a form above the table competing with the row below it. What the dialog offers depends on who you are:
+
+| Editing                  | Username | Role                   | Email | Password | Current password |
+| ------------------------ | -------- | ---------------------- | ----- | -------- | ---------------- |
+| yourself, as admin       | yes      | yes, unless last admin | yes   | yes      | required         |
+| yourself, as anyone else | no       | no                     | yes   | yes      | required         |
+| someone else, as admin   | yes      | yes, unless last admin | yes   | yes      | not asked        |
+
+Changing your own password asks for the current one first. A session proves the browser holds a valid cookie, not that the owner is at the keyboard, so without that check an unattended machine or a copied cookie converts temporary access into permanent credential control. An admin resetting someone else's password is exercising authority rather than proving identity, so it does not apply there. Mechanically this is why a self-edit goes to `PUT /api/auth/me` and `PUT /api/auth/password` while an admin editing someone else goes to `PUT /api/auth/users/:id`.
+
+API keys render as indented sub-rows under the account that owns them, revealed by the key toggle in the actions column, which also shows how many live keys that account has. Each key row carries reveal, copy and revoke; once revoked the row stays, struck through, and offers delete instead. The two are different operations on purpose, see "Revoking and deleting are separate" below.
+
+Both surfaces talk to the bridge over the session cookie, **not** through
 formly/`GlobalConfig`. `GlobalConfig` is synced op-log data — encrypted,
 per-user, unreadable by the server — so access control cannot live in it.
 
@@ -293,12 +308,11 @@ builds, where they make sense.
 
 ### Known gaps
 
-- `DELETE /api/sync/data` answers to **any** authenticated session. It must
-  become admin-only, or any operator can wipe the server.
-- Role lives in the session JWT, so a demotion does not take effect until that
-  user's session is reissued.
-- The role ACL middleware (`ROLE_LEVELS = { viewer: 1, operator: 2, admin: 3 }`
-  plus a route table, ported from pankha) is designed but not yet enforcing.
+- Sync tokens are stored in plaintext in `bridge.settings`, one row per user under `supersync.user_token.<id>`. Anyone with database access holds every user's sync credential. They are not derived like API keys are, because the sync server issues them and we only keep what it hands back.
+- Role is re-read from the database on every REST request, so a demotion bites immediately there. The `/api/auth/*` routes still read the role out of the session JWT via `requireAdmin`, so a demoted admin keeps account-management powers until their session is reissued.
+- `DELETE /api/sync/data` on the sync server is scoped to the calling user (`getAuthUser(req).userId`), so it wipes only that account. It is still unguarded by role, meaning a viewer can erase their own board despite being read-only everywhere else.
+
+Closed since the first draft: the role ACL is enforcing (`canWrite` gates every non-read method in the bridge's `onRequest` hook), and API keys are per-user rather than one container-wide key.
 
 ---
 
@@ -435,13 +449,35 @@ so honestly rather than faking them:
 - **Self-describing:** `GET /api/docs` returns a live map of every route and its
   parameters, so an agent can discover the surface without this file.
 
-The key is only ever compared as a SHA-256 digest, in constant time — a plain
-string compare short-circuits on the first differing byte and on a length
-mismatch, leaking both. Set `SP_BRIDGE_API_KEY` to choose the value yourself, or
-leave it unset and the bridge mints an `spb_`-prefixed key on first boot,
-storing **only the hash** and printing the key once in the startup log. A minted
-key is unrecoverable by design; if it is lost, set `SP_BRIDGE_API_KEY` to take
-over.
+Keys belong to **accounts**, not to the deployment. Each is created in
+Settings → Accounts → API keys (or `POST /api/auth/users/:id/keys`) and acts as
+its owner: it reads and writes that user's board and is held to that user's
+role, so a `viewer`'s key gets `403` on any write. An admin can create, view and
+revoke anyone's keys: this is one person's container, and the admin already
+holds `JWT_SECRET`, so hiding them would only cost them the ability to fix a
+broken integration.
+
+Keys are `spk_<id>_<digest>` and are **derived, never stored**:
+`HMAC(JWT_SECRET, "api-key:v1:<userId>:<keyId>:<salt>:<version>")`. The database
+holds only the ingredients, none of which is a secret, so a leaked backup yields
+no working key and there is no digest in the process to steal. Because
+derivation is repeatable, an owner can re-read a key whenever they ask,
+"copy it now, you will never see it again" is a limitation of servers that threw
+the plaintext away, not a security property. Rotation is a `version` bump.
+
+### Revoking and deleting are separate
+
+`POST /api/auth/users/:id/keys/:keyId/revoke` kills the key and keeps the row. `DELETE /api/auth/users/:id/keys/:keyId` removes the row entirely.
+
+Revoke is the normal action, because the row is the only record that the key ever existed: its label says what it was for and its last-used stamp says when something was still calling in with it. Delete is for tidying up records you no longer want to look at, which is why the UI only offers it once a key is already dead.
+
+Deleting is safe rather than reckless: a `SERIAL` sequence only ever moves forward, so a freed id is never handed to a future key and the old string can never verify again.
+
+Repeated failures from one address add a short delay, but a **correct** key is
+never refused by it. That is deliberately unlike the login limiter, which does
+lock out: passwords have a small guessable space, whereas a key has 96 random
+bits, so a lockout would buy nothing and would deny service to whoever shares
+the caller's address behind a proxy.
 
 A browser session cookie also authenticates these routes, which is what lets the
 web app call the bridge without a key.
@@ -450,8 +486,8 @@ web app call the bridge without a key.
 # liveness (no auth)
 curl http://192.168.100.237:18230/api/health
 
-# everything else needs the key
-curl -H "X-Api-Key: $SP_BRIDGE_API_KEY" \
+# everything else needs a key from Settings -> Accounts -> API keys
+curl -H "X-Api-Key: spk_1_yourkeyhere" \
      http://192.168.100.237:18230/api/tasks?isDone=false
 ```
 
@@ -471,17 +507,16 @@ file via `env_file:`, so a value is written once and no service has an
 
 **Optional** — sensible defaults otherwise:
 
-| Variable                      | Purpose                                                      |
-| ----------------------------- | ------------------------------------------------------------ |
-| `SP_WEB_PORT`                 | the only published port (default `18230`)                    |
-| `SP_IMAGE_TAG`                | published image tag to run (default `latest`)                |
-| `ALLOW_INSECURE_HTTP`         | `true` for plain HTTP on a LAN; `false` behind a TLS proxy   |
-| `SP_BRIDGE_API_KEY`           | API key callers must present; unset = mint one on first boot |
-| `SP_BRIDGE_POLL_INTERVAL_SEC` | websocket-fallback poll interval (default 15)                |
-| `SP_AUTH_ENABLED`             | browser login gate (default on; `false` serves the app open) |
-| `SP_AUTH_SESSION_TTL_H`       | session lifetime in hours, sliding (default 720)             |
-| `POSTGRES_USER` / `_DB`       | database name and role                                       |
-| `POSTGRES_HOST` / `_PORT`     | point these at an external server to drop the bundled one    |
+| Variable                      | Purpose                                                       |
+| ----------------------------- | ------------------------------------------------------------- |
+| `SP_WEB_PORT`                 | the only published port (default `18230`)                     |
+| `SP_IMAGE_TAG`                | published image tag to run (default `latest`)                 |
+| `ALLOW_INSECURE_HTTP`         | `true` for plain HTTP on a LAN; `false` behind a TLS proxy    |
+| `SP_BRIDGE_POLL_INTERVAL_SEC` | websocket-fallback poll interval (default 15)                 |
+| `SP_AUTH_ENABLED`             | browser login gate; must stay on, accounts issue the API keys |
+| `SP_AUTH_SESSION_TTL_H`       | session lifetime in hours, sliding (default 720)              |
+| `POSTGRES_USER` / `_DB`       | database name and role                                        |
+| `POSTGRES_HOST` / `_PORT`     | point these at an external server to drop the bundled one     |
 
 A sync account password under 8 characters **fails quietly**: provisioning
 logs an error and stops, so the stack boots but serves no sync token.

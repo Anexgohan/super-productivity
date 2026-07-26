@@ -14,7 +14,7 @@ import type { BridgeConfig } from './config';
  * Mints a fresh access token from the sync server's auto-provision endpoint.
  *
  * Standalone rather than a method because two callers need it for different
- * reasons: the bridge authenticating itself (a token per process is fine — the
+ * reasons: the bridge authenticating itself (a token per process is fine - the
  * bridge keeps its cursor in its own data dir, not under a token-derived key),
  * and WebappTokenProvider minting the ONE durable token served browsers embed.
  * Requires SP_SYNC_AUTO_PROVISION=true on the server.
@@ -26,7 +26,7 @@ export const mintSuperSyncToken = async (cfg: BridgeConfig): Promise<string> => 
   });
   if (!res.ok) {
     throw new Error(
-      `sp-bridge: token fetch failed (${res.status}) — is SP_SYNC_AUTO_PROVISION=true on the sync server?`,
+      `sp-bridge: token fetch failed (${res.status}) - is SP_SYNC_AUTO_PROVISION=true on the sync server?`,
     );
   }
   const body = (await res.json()) as { token?: string };
@@ -41,7 +41,7 @@ export class SyncClient {
 
   /**
    * `mintToken` defaults to the container account. A per-user board passes the
-   * token for its own user instead — the same one that user's browser gets, so
+   * token for its own user instead - the same one that user's browser gets, so
    * the bridge sees exactly the board they see.
    */
   constructor(
@@ -49,7 +49,7 @@ export class SyncClient {
     private readonly mintToken: (
       cfg: BridgeConfig,
     ) => Promise<string> = mintSuperSyncToken,
-    /** Must equal the clientId on the ops being uploaded — the server rejects a mismatch. */
+    /** Must equal the clientId on the ops being uploaded - the server rejects a mismatch. */
     private readonly clientId: string = cfg.clientId,
   ) {}
 

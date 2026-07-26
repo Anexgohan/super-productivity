@@ -1,4 +1,4 @@
-# Dev only — build the three images from source instead of pulling them.
+# Dev only - build the three images from source instead of pulling them.
 # Docker loads this automatically alongside compose.yml, so `docker compose up
 # -d --build` builds locally while the release asset stays image-only.
 # It is not shipped with releases; delete it to force pulls.

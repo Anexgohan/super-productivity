@@ -1,5 +1,5 @@
 /**
- * sp-bridge configuration — everything user-controlled via env (.env in the
+ * sp-bridge configuration - everything user-controlled via env (.env in the
  * compose stack), nothing hardcoded.
  */
 
@@ -14,19 +14,13 @@ export interface BridgeConfig {
   clientId: string;
   /** Directory for the persisted cursor + state cache */
   dataDir: string;
-  /**
-   * API key required on all non-public REST routes. Optional: leave it unset
-   * and the bridge mints one on first boot, storing only its digest (the
-   * plaintext is printed once). Setting it keeps admin control of the value.
-   */
-  apiKey: string;
   /** REST listen port */
   apiPort: number;
   /** Op-log poll interval in seconds */
   pollIntervalSec: number;
   /** Username/password auth for browsers (login page + session cookies) */
   authEnabled: boolean;
-  /** Postgres connection string — same database the stack already runs, own schema */
+  /** Postgres connection string - same database the stack already runs, own schema */
   databaseUrl: string;
   /**
    * Public URL of the web app. The bridge serves the login page but is not the
@@ -43,7 +37,7 @@ export interface BridgeConfig {
   syncAccountEmail: string;
   syncAccountPassword: string;
   /**
-   * Sync URL as the BROWSER should reach it — root-relative under the
+   * Sync URL as the BROWSER should reach it - root-relative under the
    * single-port layout, which is not the same as `syncServerUrl` (how this
    * process reaches it on the compose network).
    */
@@ -91,7 +85,6 @@ export const loadConfig = (): BridgeConfig => ({
   encryptionPassword: requireEnv('SP_SYNC_ENCRYPTION_PASSWORD'),
   clientId: process.env.SP_BRIDGE_CLIENT_ID ?? 'sp-bridge',
   dataDir: process.env.SP_BRIDGE_DATA_DIR ?? './data',
-  apiKey: process.env.SP_BRIDGE_API_KEY ?? '',
   apiPort: Number(process.env.SP_BRIDGE_API_PORT ?? 1902),
   pollIntervalSec: Number(process.env.SP_BRIDGE_POLL_INTERVAL_SEC ?? 15),
   authEnabled: process.env.SP_AUTH_ENABLED !== 'false',

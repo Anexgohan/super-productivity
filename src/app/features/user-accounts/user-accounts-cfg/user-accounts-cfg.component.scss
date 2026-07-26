@@ -54,7 +54,7 @@
   display: flex;
   align-items: center;
   /* Content is a fixed 254px (112 badge slot + 10 gap + 132); the extra width
-     is deliberate — it is what lets the pair centre under the heading. */
+     is deliberate - it is what lets the pair centre under the heading. */
   justify-content: center;
   gap: 10px;
   flex: 0 0 360px;
@@ -63,8 +63,8 @@
 .col-actions {
   display: flex;
   justify-content: flex-end;
-  /* 24px move column + edit + delete. */
-  flex: 0 0 100px;
+  /* 24px move column + the keys toggle (icon, count, caret) + edit + delete. */
+  flex: 0 0 172px;
 }
 
 /* Must exceed the WIDEST badge (OPERATOR renders at 98px). A flex item cannot
@@ -76,9 +76,15 @@
   flex: 0 0 112px;
 }
 
+/* One account and its keys form a group, closed by a strong rule and divided inside by faded ones, so "next user" and "next key" read as different breaks. */
+/* 2px as well as darker: at 1px the weight difference alone is too subtle to tell the two apart. */
+$separator-strong: rgba(128, 128, 128, 0.55);
+$separator-faded: rgba(128, 128, 128, 0.2);
+
 .u-table-head {
   padding-bottom: 8px;
-  border-bottom: 1px solid var(--divider, rgba(128, 128, 128, 0.3));
+  /* The header closes the same kind of break as a group boundary. */
+  border-bottom: 2px solid $separator-strong;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.07em;
@@ -93,10 +99,13 @@
   list-style: none;
 }
 
+.u-entry {
+  border-bottom: 2px solid $separator-strong;
+}
+
 .u-row {
   min-height: 56px;
   padding: 6px 0;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.2);
 
   .u-meta {
     display: flex;
@@ -238,4 +247,144 @@
     font-size: 0.85em;
     opacity: 0.7;
   }
+}
+
+/* Wider than a plain icon button: it carries an icon, a count and a caret, and
+   the fixed 40px grid would stack them. */
+.keys-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  width: auto;
+  flex: 0 0 auto;
+  padding: 0 4px;
+}
+
+.keys-btn.is-open .caret-k {
+  transform: rotate(180deg);
+}
+
+.k-count {
+  margin-left: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  opacity: 0.7;
+}
+
+.caret-k {
+  width: 18px;
+  height: 18px;
+  font-size: 18px;
+  line-height: 18px;
+  transition: transform 0.15s ease;
+}
+
+/* Indent lives on the container, not the rows, so the faded rules start where the sub-row content starts. */
+/* Only the left edge moves, the right stays put, which is what keeps the key actions aligned under the user's own. */
+.k-rows {
+  margin-left: 18px;
+  padding: 0 0 8px;
+
+  /* Every child, first included: the topmost rule divides the account from its first key. */
+  > * {
+    border-top: 1px solid $separator-faded;
+  }
+}
+
+.k-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 2px 0;
+
+  /* Revoked keys stay listed: the row IS the record that the key existed. */
+  &.is-revoked .k-label,
+  &.is-revoked .k-value {
+    text-decoration: line-through;
+    opacity: 0.5;
+  }
+}
+
+.k-main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.k-label {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.k-value {
+  font-family: monospace;
+  font-size: 0.85em;
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Same widths as the user row's own columns, so the two grids line up. */
+.k-meta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 360px;
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+
+.k-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  flex: 0 0 172px;
+}
+
+.k-tag {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(128, 128, 128, 0.25);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.k-empty {
+  padding: 6px 0;
+  font-size: 0.85em;
+  font-style: italic;
+  opacity: 0.6;
+}
+
+.k-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 4px;
+
+  input {
+    flex: 1;
+    max-width: 260px;
+    height: 34px;
+    padding: 0 10px;
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    font-size: 13px;
+  }
+}
+
+.key-hint {
+  margin: 0 0 0.75rem;
+  font-size: 0.85em;
+  opacity: 0.7;
 }

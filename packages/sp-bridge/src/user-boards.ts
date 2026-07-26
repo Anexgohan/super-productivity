@@ -6,7 +6,7 @@
  * authenticated. With real accounts that is wrong: an operator's key must reach
  * the operator's notes, not the admin's.
  *
- * A board is created on first use and torn down after a period of disuse — each
+ * A board is created on first use and torn down after a period of disuse - each
  * one carries a full materialized state and a websocket, and the bridge runs
  * under a small memory limit, so keeping every account resident forever is not
  * an option on a household-sized deployment either.
@@ -45,7 +45,7 @@ export class UserBoards {
     private readonly _opts: { maxResident?: number; idleMs?: number } = {},
   ) {}
 
-  /** The container account's board — the one started at boot. */
+  /** The container account's board - the one started at boot. */
   get containerBoard(): Board {
     return this._container;
   }
@@ -54,7 +54,7 @@ export class UserBoards {
    * The board belonging to `user`, starting it if needed.
    *
    * The first user reuses the container account, so it returns the already
-   * running store rather than opening a second connection to the same board —
+   * running store rather than opening a second connection to the same board -
    * two stores on one account would double the websockets and fight over the
    * cursor cache.
    */

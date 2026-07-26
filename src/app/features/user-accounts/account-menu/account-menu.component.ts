@@ -2,8 +2,8 @@
  * Toolbar account menu (anex/container-parity).
  *
  * Occupies the slot upstream's profile switcher used to hold. That feature is
- * hidden under container authority — it keeps identity in the browser, where
- * this deployment keeps it on the server — so the avatar would otherwise just
+ * hidden under container authority - it keeps identity in the browser, where
+ * this deployment keeps it on the server - so the avatar would otherwise just
  * be missing. Same affordance, backed by the account you actually signed in as.
  */
 import {
@@ -74,7 +74,7 @@ export class AccountMenuComponent implements OnInit {
     // used to leave a signed-out user's whole board on a shared machine.
     //
     // ReplicaIdentityGateService would catch it at the next sign-in anyway, but
-    // only once someone signs in — this closes the window in between. The cost
+    // only once someone signs in - this closes the window in between. The cost
     // is a full re-download when the same user returns, which is the right
     // trade on a machine where "log out" has to mean something.
     try {

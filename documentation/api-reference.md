@@ -1,9 +1,8 @@
 # sp-bridge REST API Reference
 
-The complete endpoint contract for the containerized Super Productivity API
-(`sp-bridge`, v1 — **40 routes**). For the concepts behind it — the op-log, why
-boards are tags, what the Today list is — read
-[`super-productivity-explainer.md`](./super-productivity-explainer.md) first.
+The complete endpoint contract for the containerized Super Productivity API (`sp-bridge`, v1): **40 data routes**, plus the account routes that mint keys.
+
+For the concepts behind it, the op-log, why boards are tags, and what the Today list is, read [`super-productivity-explainer.md`](./super-productivity-explainer.md) first.
 
 ---
 
@@ -11,20 +10,36 @@ boards are tags, what the Today list is — read
 
 **Base URL** — `http://<host>:<SP_BRIDGE_PORT>` (default port `18232`).
 
-**Auth** — every route except `GET /api/health` and `GET /api/docs` requires the
-key from `SP_BRIDGE_API_KEY`, in either header form:
+**Auth**: every route except `GET /api/health` and `GET /api/docs` requires a
+per-user API key, in either header form:
 
 ```
 Authorization: Bearer <key>
 X-Api-Key: <key>
 ```
 
-Missing or wrong key → `401 {"error":"Unauthorized"}`.
+Missing, wrong or revoked key → `401 {"error":"Unauthorized"}`.
 
-Leave `SP_BRIDGE_API_KEY` unset and the bridge mints an `spb_`-prefixed key on
-first boot, storing only its SHA-256 hash and printing the key once to its log.
-Keys are always verified as digests, in constant time. A browser session cookie
-is accepted in place of a key, which is how the web app calls the bridge.
+Keys belong to accounts, not to the deployment. Create one in **Settings →
+Accounts → API keys**, or over the API at `POST /api/auth/users/:id/keys`. A key
+acts as its owner: it reads and writes that user's board, and it is held to that
+user's role. A `viewer`'s key gets `403` on any write, exactly as their browser
+session would. An admin may create, view and revoke anyone's keys.
+
+Keys are `spk_<id>_<digest>` and are **derived**, not stored:
+`HMAC(JWT_SECRET, "api-key:v1:<userId>:<keyId>:<salt>:<version>")`. The database
+holds only the ingredients, so a leaked backup yields no working key, and
+because derivation is repeatable, the owner can re-read a key at any time
+instead of having one chance to copy it.
+
+Revoking and deleting a key are different operations. Revoking kills the key and keeps the row, so its label and last-used stamp still record what had been calling in. Deleting removes the row. Both are safe against reuse: a `SERIAL` id only ever moves forward, so a freed id is never handed to a future key.
+
+A browser session cookie is accepted in place of a key, which is how the web app
+calls the bridge.
+
+Repeated failures from one address add a short delay. A **correct** key is never
+refused by that throttle. Keys carry 96 bits of entropy, so locking an address
+out would only deny service to whoever shares it behind a proxy.
 
 **Content type** — send `Content-Type: application/json` on requests **that have
 a body**. Do _not_ send it on bodyless `DELETE`s; the server rejects an empty
@@ -77,6 +92,8 @@ ordering, attachments — have their own endpoints.)
 **Tags** · [create](#post-apitags) · [update](#patch-apitagsid) · [delete](#delete-apitagsid)
 
 **Projects** · [create](#post-apiprojects) · [update](#patch-apiprojectsid) · [delete](#delete-apiprojectsid)
+
+**Accounts and keys** · [me](#get-apiauthme) · [list keys](#get-apiauthusersidkeys) · [create key](#post-apiauthusersidkeys) · [revoke key](#post-apiauthusersidkeyskeyidrevoke) · [delete key](#delete-apiauthusersidkeyskeyid)
 
 ---
 
@@ -534,6 +551,40 @@ Returns `{"deleted": "<id>", "taskCount": <n>}`. `INBOX_PROJECT` is protected
 > ⚠️ Destructive and not undoable through the API. The task set is derived by
 > scanning every task's `projectId`, so it is accurate even if ordering lists are
 > stale.
+
+---
+
+## Accounts and keys
+
+These routes live under `/api/auth/` and are how a key is minted in the first place. They accept a session cookie or an API key, exactly like the rest of the API, and each key acts as its owner.
+
+Access rule for every `/keys` route: you may act on your own keys, and an admin may act on anyone's. Naming an id you do not own returns `403 {"error":"Not your account"}`; naming a key that belongs to a different user than the path says returns `404 {"error":"No such key"}`.
+
+### `GET /api/auth/me`
+
+Who the caller is: `{"id": 1, "username": "anex", "role": "admin", "email": "you@example.com", "setupRequired": false}`.
+
+Read from the database rather than the session, so a role or email changed since sign-in is current.
+
+### `GET /api/auth/users/:id/keys`
+
+Every key that account owns, revoked ones included, as `{"keys": [...]}`. Each entry is `{id, label, createdAt, lastUsedAt, revokedAt, key}`.
+
+`key` is the usable key string, re-derived per request. It is `null` once `revokedAt` is set, because a revoked key no longer authenticates anything.
+
+### `POST /api/auth/users/:id/keys`
+
+Body `{"label": "ci runner"}`. Label is optional and defaults to `API key`; over 64 characters is `400`.
+
+Returns `201` with the same shape as a list entry, including the key string. Nothing is hidden afterwards, so there is no "copy it now" moment to miss.
+
+### `POST /api/auth/users/:id/keys/:keyId/revoke`
+
+Kills the key, keeps the record. Returns `{"revoked": true}`, or `{"revoked": false}` if it was already revoked. The key returns `401` on the next request.
+
+### `DELETE /api/auth/users/:id/keys/:keyId`
+
+Removes the record. Returns `{"deleted": true}`.
 
 ---
 

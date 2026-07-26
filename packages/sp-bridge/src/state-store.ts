@@ -104,7 +104,7 @@ export class StateStore {
       }
     }
 
-    // The sync server may still be coming up — `depends_on: service_healthy`
+    // The sync server may still be coming up - `depends_on: service_healthy`
     // orders a `compose up`, but NOT a `compose restart`, which starts every
     // container at once. Without this the first fetch throws, the process
     // exits, and the container crash-loops (recovering, but printing alarming
@@ -124,7 +124,7 @@ export class StateStore {
     });
     this._ws.start();
 
-    // Once live, poll rarely — but never stop entirely, so a silently dead
+    // Once live, poll rarely - but never stop entirely, so a silently dead
     // socket degrades to "slightly stale" instead of "permanently stale".
     this._timer = setInterval(
       () => {

@@ -3,13 +3,14 @@
  * subrequest endpoint an edge proxy uses to gate the app.
  *
  * Threat model this is written against: a LAN deployment where the web port was
- * previously unauthenticated — anyone who could reach it received a fully
+ * previously unauthenticated - anyone who could reach it received a fully
  * logged-in session, because the sync token is embedded in the served config.
  * Gating that config behind a session is the point.
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { hashPassword, verifyPassword } from './passwords';
-import { AuthStore, ROLES, isRole, type Role } from './store';
+import { AuthStore, ROLES, isRole, type ApiKeyRow, type Role } from './store';
+import { formatApiKey, materialFor, mintSalt } from './api-key';
 import { SessionManager, SESSION_COOKIE, parseCookies } from './session';
 import { renderLoginPage } from './login-page';
 
@@ -66,7 +67,7 @@ const REGISTRATION_KEY = 'auth.self_registration_enabled';
 const INVALID_EMAIL = Symbol('invalid-email');
 
 /**
- * Email is profile data, not identity, so blank is always allowed — it just
+ * Email is profile data, not identity, so blank is always allowed - it just
  * clears the field. Only a non-empty value that isn't an address is rejected.
  */
 const normalizeEmail = (value: unknown): string | null | typeof INVALID_EMAIL => {
@@ -79,7 +80,7 @@ const normalizeEmail = (value: unknown): string | null | typeof INVALID_EMAIL =>
 
 const validateCredentials = (username: unknown, password: unknown): string | null => {
   if (typeof username !== 'string' || !USERNAME_PATTERN.test(username)) {
-    return 'Username must be 3–32 characters (letters, numbers, . _ -)';
+    return 'Username must be 3-32 characters (letters, numbers, . _ -)';
   }
   if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {
     return `Password must be at least ${MIN_PASSWORD_LENGTH} characters`;
@@ -90,9 +91,11 @@ const validateCredentials = (username: unknown, password: unknown): string | nul
 export interface AuthDeps {
   store: AuthStore;
   sessions: SessionManager;
+  /** JWT_SECRET, from which every API key is derived. */
+  jwtSecret: string;
   /**
    * Where to send a browser after login. The bridge hosts the login page but is
-   * an API server, not the app — without this, success would land on the
+   * an API server, not the app - without this, success would land on the
    * bridge's own "/" and 404. Empty until an edge proxy serves both from one
    * origin, at which point "/" is correct.
    */
@@ -117,7 +120,7 @@ export const sessionFromRequest = (
 
 export const registerAuthRoutes = (
   app: FastifyInstance,
-  { store, sessions, webUrl, purgeSyncAccount }: AuthDeps,
+  { store, sessions, jwtSecret, webUrl, purgeSyncAccount }: AuthDeps,
 ): void => {
   const limiter = new LoginRateLimiter();
   const appHome = webUrl || '/';
@@ -128,7 +131,7 @@ export const registerAuthRoutes = (
     if (!webUrl) {
       return reply
         .status(404)
-        .send({ error: 'sp-bridge is an API server — see GET /api/docs' });
+        .send({ error: 'sp-bridge is an API server - see GET /api/docs' });
     }
     return reply.redirect(sessionFromRequest(req, sessions) ? webUrl : '/login');
   });
@@ -199,7 +202,7 @@ export const registerAuthRoutes = (
       if (!user || !ok) {
         limiter.fail(ip);
         await sleep(FAIL_DELAY_MS);
-        // Same message either way — don't reveal which usernames exist.
+        // Same message either way - don't reveal which usernames exist.
         return reply.status(401).send({ error: 'Invalid credentials' });
       }
       limiter.reset(ip);
@@ -222,9 +225,15 @@ export const registerAuthRoutes = (
     if (session.ageSeconds > sessions.renewAfterSeconds) {
       reply.header('Set-Cookie', sessions.cookie(sessions.sign(session.user)));
     }
+    // Read back rather than trust the cookie: the session is a login-time snapshot, so an email or role changed since then would come back stale.
+    const user = await store.findUserById(session.user.userId);
+    if (!user) return reply.status(401).send({ error: 'Not signed in' });
     return {
-      username: session.user.username,
-      role: session.user.role,
+      // The client needs its own id to address /api/auth/users/:id/keys.
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      email: user.email,
       setupRequired: false,
     };
   });
@@ -364,7 +373,7 @@ export const registerAuthRoutes = (
       if (!USERNAME_PATTERN.test(username)) {
         return reply
           .status(400)
-          .send({ error: 'Username must be 3–32 characters (letters, numbers, . _ -)' });
+          .send({ error: 'Username must be 3-32 characters (letters, numbers, . _ -)' });
       }
       // Renaming is safe for the user's data: the board is keyed to the account
       // id, never the name (see sync-identity.ts).
@@ -413,8 +422,8 @@ export const registerAuthRoutes = (
   });
 
   /**
-   * Purge. Removes the login, the stored token, and — through the sync server's
-   * internal route — the SuperSync account with every op it owns. Irreversible
+   * Purge. Removes the login, the stored token, and - through the sync server's
+   * internal route - the SuperSync account with every op it owns. Irreversible
    * by design; the UI confirms before calling this.
    */
   app.delete<{ Params: { id: string } }>('/api/auth/users/:id', async (req, reply) => {
@@ -484,7 +493,7 @@ export const registerAuthRoutes = (
     },
   );
 
-  /** Profile data. Changing it moves nothing — see sync-identity.ts. */
+  /** Profile data. Changing it moves nothing - see sync-identity.ts. */
   app.put<{ Body: { email?: string } }>('/api/auth/me', async (req, reply) => {
     const session = sessionFromRequest(req, sessions);
     if (!session) return reply.status(401).send({ error: 'Not signed in' });
@@ -533,6 +542,114 @@ export const registerAuthRoutes = (
 
       console.log(`sp-bridge: account self-registered: ${user.username}`);
       return issue(reply, user);
+    },
+  );
+
+  /**
+   * Whether the caller may act on `targetId`'s keys: themselves, or an admin.
+   *
+   * Admin sees everyone's keys in full, including the key strings.
+   * That is deliberate: this is one person's container and the admin already holds JWT_SECRET, so they could derive any key by hand anyway.
+   */
+  const keyPrincipal = async (
+    req: FastifyRequest,
+    reply: FastifyReply,
+    targetId: number,
+  ): Promise<boolean> => {
+    const session = sessionFromRequest(req, sessions);
+    if (!session) {
+      await reply.status(401).send({ error: 'Unauthorized' });
+      return false;
+    }
+    if (session.user.role !== 'admin' && session.user.userId !== targetId) {
+      await reply.status(403).send({ error: 'Not your account' });
+      return false;
+    }
+    return true;
+  };
+
+  /** Rows carry no secret, so the key itself is re-derived for the response. */
+  const publicKey = (row: ApiKeyRow): Record<string, unknown> => ({
+    id: row.id,
+    label: row.label,
+    createdAt: row.createdAt,
+    lastUsedAt: row.lastUsedAt,
+    revokedAt: row.revokedAt,
+    // Revoked keys no longer verify, so showing the string would be misleading.
+    key: row.revokedAt ? null : formatApiKey(jwtSecret, materialFor(row)),
+  });
+
+  app.get<{ Params: { id: string } }>('/api/auth/users/:id/keys', async (req, reply) => {
+    const targetId = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(targetId)) {
+      return reply.status(400).send({ error: 'Invalid user id' });
+    }
+    if (!(await keyPrincipal(req, reply, targetId))) return;
+    const rows = await store.listApiKeys(targetId);
+    return { keys: rows.map(publicKey) };
+  });
+
+  app.post<{ Params: { id: string }; Body: { label?: string } }>(
+    '/api/auth/users/:id/keys',
+    async (req, reply) => {
+      const targetId = Number.parseInt(req.params.id, 10);
+      if (!Number.isInteger(targetId)) {
+        return reply.status(400).send({ error: 'Invalid user id' });
+      }
+      if (!(await keyPrincipal(req, reply, targetId))) return;
+      if (!(await store.findUserById(targetId))) {
+        return reply.status(404).send({ error: 'No such user' });
+      }
+      const label = (req.body?.label ?? '').trim() || 'API key';
+      if (label.length > 64) {
+        return reply.status(400).send({ error: 'Label too long' });
+      }
+      const row = await store.createApiKey(targetId, label, mintSalt());
+      return reply.status(201).send(publicKey(row));
+    },
+  );
+
+  /**
+   * Resolves a key in the path, refusing anyone who may not act on its owner.
+   *
+   * Ownership is checked rather than trusted: without it, anyone who may manage their own keys could act on someone else's by naming their own id in the path.
+   */
+  const keyInPath = async (
+    req: FastifyRequest<{ Params: { id: string; keyId: string } }>,
+    reply: FastifyReply,
+  ): Promise<ApiKeyRow | null> => {
+    const targetId = Number.parseInt(req.params.id, 10);
+    const keyId = Number.parseInt(req.params.keyId, 10);
+    if (!Number.isInteger(targetId) || !Number.isInteger(keyId)) {
+      await reply.status(400).send({ error: 'Invalid id' });
+      return null;
+    }
+    if (!(await keyPrincipal(req, reply, targetId))) return null;
+    const row = await store.findApiKey(keyId);
+    if (!row || row.userId !== targetId) {
+      await reply.status(404).send({ error: 'No such key' });
+      return null;
+    }
+    return row;
+  };
+
+  /** Kills the key, keeps the record. */
+  app.post<{ Params: { id: string; keyId: string } }>(
+    '/api/auth/users/:id/keys/:keyId/revoke',
+    async (req, reply) => {
+      const row = await keyInPath(req, reply);
+      if (!row) return;
+      return { revoked: await store.revokeApiKey(row.id) };
+    },
+  );
+
+  /** Removes the record too. The row itself is the only history there was. */
+  app.delete<{ Params: { id: string; keyId: string } }>(
+    '/api/auth/users/:id/keys/:keyId',
+    async (req, reply) => {
+      const row = await keyInPath(req, reply);
+      if (!row) return;
+      return { deleted: await store.deleteApiKey(row.id) };
     },
   );
 };

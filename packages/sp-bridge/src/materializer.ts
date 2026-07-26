@@ -6,12 +6,12 @@
  *    (full-state replacement, per-op entity spread, batch DEL via entityIds,
  *    prototype-pollution guards)
  *  - client-side: modern ops wrap payloads in a MultiEntityPayload envelope
- *    ({ actionPayload, entityChanges }) — entityChanges are the authoritative
+ *    ({ actionPayload, entityChanges }) - entityChanges are the authoritative
  *    state diff and MUST be applied instead of spreading the envelope itself
  *    (which would corrupt entities with actionPayload/entityChanges keys).
  *
  * Unlike the server (which cannot decrypt), the bridge holds the E2E
- * passphrase and decrypts payloads before applying — same crypto path as any
+ * passphrase and decrypts payloads before applying - same crypto path as any
  * client (@sp/sync-core decrypt: Argon2id + AES-256-GCM incl. @noble fallback).
  */
 import {
@@ -93,7 +93,7 @@ const asRecord = (v: unknown): Record<string, unknown> =>
 export class Materializer {
   private _state: EntityMap = {};
   private _lastServerSeq = 0;
-  /** Component-wise max of every vector clock seen — basis for write clocks. */
+  /** Component-wise max of every vector clock seen - basis for write clocks. */
   private _mergedClock: Record<string, number> = {};
 
   constructor(private readonly encryptionPassword: string) {}
@@ -134,7 +134,7 @@ export class Materializer {
   }
 
   /**
-   * Applies server rows in order. Each row is { serverSeq, op, receivedAt } —
+   * Applies server rows in order. Each row is { serverSeq, op, receivedAt } -
    * the operation itself nests under `.op` (SuperSyncServerOperationSchema).
    */
   async applyOps(rows: SuperSyncServerOperation[]): Promise<void> {
@@ -187,7 +187,7 @@ export class Materializer {
 
     // 2) Envelope with populated entityChanges: authoritative diff.
     //    NOTE: real client ops routinely ship entityChanges as an EMPTY array
-    //    (verified against live v18.15.1 data) — the action payload is then
+    //    (verified against live v18.15.1 data) - the action payload is then
     //    the source of truth and must be interpreted per action family.
     if (isMultiEntityPayload(payload) && payload.entityChanges.length > 0) {
       for (const change of payload.entityChanges) {
@@ -229,7 +229,7 @@ export class Materializer {
   /**
    * Boards are not an entity map. The whole feature is a single
    * `{ boardCfgs: BoardCfg[] }` record, so the generic id-keyed path below
-   * would write a sibling key *beside* the array rather than touch a board —
+   * would write a sibling key *beside* the array rather than touch a board -
    * which is why board ops were silently dropped and the bridge only ever saw
    * boards via a full-state SYNC_IMPORT.
    *
@@ -351,7 +351,7 @@ export class Materializer {
         const isBottom = action.isAddToBottom === true;
         // Membership cascades only ever UPDATE entities that already exist.
         // On a virgin deployment (API used before any client has initialized
-        // the default data) the referenced project/tag may not exist yet —
+        // the default data) the referenced project/tag may not exist yet -
         // inventing a stub here would serve a malformed entity with no id/title
         // from the read surface. The uploaded op is unaffected either way, and
         // the real entity arrives once a client initializes it.
@@ -390,7 +390,7 @@ export class Materializer {
       const id = (task.id as string) ?? op.entityId;
       if (id && !isUnsafeKey(id)) {
         (this._state.TASK ??= {})[id] = task;
-        // Only attach to a parent that exists (never invent one — see addTask).
+        // Only attach to a parent that exists (never invent one - see addTask).
         if (parentId && !isUnsafeKey(parentId) && this._state.TASK[parentId]) {
           const parent = asRecord(this._state.TASK[parentId]);
           const sub = Array.isArray(parent.subTaskIds)
@@ -475,7 +475,7 @@ export class Materializer {
     ) {
       const action = asRecord(extractActionPayload(payload));
       const taskIds = Array.isArray(action.taskIds) ? (action.taskIds as string[]) : [];
-      // Only update an existing TODAY tag — never invent one (see addTask).
+      // Only update an existing TODAY tag - never invent one (see addTask).
       const existingToday = this._state.TAG?.TODAY;
       if (!existingToday) return;
       const today = asRecord(existingToday);

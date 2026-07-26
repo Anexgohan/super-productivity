@@ -3,7 +3,7 @@
  *
  * Deliberately plain `fetch` against same-origin paths rather than anything
  * routed through `GlobalConfig`. Accounts and roles are access control, and
- * `GlobalConfig` is synced op-log data — encrypted, per-user, and unreadable by
+ * `GlobalConfig` is synced op-log data - encrypted, per-user, and unreadable by
  * the server, so it is the one place access control cannot live. The session
  * cookie rides along with a same-origin request automatically.
  */
@@ -28,9 +28,23 @@ export interface UserChanges {
 }
 
 export interface CurrentUser {
+  id: number;
   username: string;
   role: Role;
   email?: string | null;
+}
+
+/**
+ * An API key as the server describes it. `key` is re-derived per request rather than stored, so it can be shown again whenever its owner asks.
+ * Null once revoked, because a revoked key no longer authenticates anything.
+ */
+export interface ApiKeyRow {
+  id: number;
+  label: string;
+  createdAt: number;
+  lastUsedAt: number | null;
+  revokedAt: number | null;
+  key: string | null;
 }
 
 const json = async <T>(res: Response): Promise<T> => {
@@ -91,7 +105,7 @@ export class UserAccountsService {
     return send<UserRow>(`/api/auth/users/${id}`, 'PUT', changes);
   }
 
-  /** Full id list, in display order — the server rejects a partial one. */
+  /** Full id list, in display order - the server rejects a partial one. */
   setOrder(ids: number[]): Promise<void> {
     return send('/api/auth/users/order', 'PUT', { ids });
   }
@@ -99,6 +113,31 @@ export class UserAccountsService {
   /** Irreversible: removes the login AND the account's synced data. */
   deleteUser(id: number): Promise<void> {
     return send(`/api/auth/users/${id}`, 'DELETE');
+  }
+
+  // ── API keys: own, or anyone's when the caller is an admin ────────────────
+  listApiKeys(userId: number): Promise<{ keys: ApiKeyRow[] }> {
+    return send<{ keys: ApiKeyRow[] }>(`/api/auth/users/${userId}/keys`, 'GET');
+  }
+
+  createApiKey(userId: number, label: string): Promise<ApiKeyRow> {
+    return send<ApiKeyRow>(`/api/auth/users/${userId}/keys`, 'POST', { label });
+  }
+
+  /** Kills the key but keeps the row, so the list still shows it existed. */
+  revokeApiKey(userId: number, keyId: number): Promise<{ revoked: boolean }> {
+    return send<{ revoked: boolean }>(
+      `/api/auth/users/${userId}/keys/${keyId}/revoke`,
+      'POST',
+    );
+  }
+
+  /** Removes the record as well. Only offered for keys already revoked. */
+  deleteApiKey(userId: number, keyId: number): Promise<{ deleted: boolean }> {
+    return send<{ deleted: boolean }>(
+      `/api/auth/users/${userId}/keys/${keyId}`,
+      'DELETE',
+    );
   }
 
   getRegistration(): Promise<{ isEnabled: boolean }> {

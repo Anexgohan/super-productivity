@@ -4,8 +4,8 @@
  * Served by the bridge rather than built into the Angular app on purpose: the
  * app would have to be forked to add a login screen, and this page must be
  * reachable *before* the app (and its sync token) is served at all. Styled to
- * match Super Productivity — same font stack, same #6495ED accent, same
- * light/dark surfaces — so it reads as part of the product.
+ * match Super Productivity - same font stack, same #6495ED accent, same
+ * light/dark surfaces - so it reads as part of the product.
  */
 
 const SP_FONT_STACK = `-apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', Roboto, 'Inter', 'Open Sans', 'Helvetica Neue', Arial, 'Noto Sans', sans-serif`;
@@ -20,7 +20,7 @@ export interface LoginPageOptions {
 export const renderLoginPage = ({ isSetup, redirectTo }: LoginPageOptions): string => {
   const title = isSetup ? 'Create your account' : 'Sign in';
   const subtitle = isSetup
-    ? 'This is the first account for this server — it will be the admin.'
+    ? 'This is the first account for this server - it will be the admin.'
     : 'Super Productivity';
   const action = isSetup ? '/api/auth/setup' : '/api/auth/login';
   const button = isSetup ? 'Create account' : 'Sign in';

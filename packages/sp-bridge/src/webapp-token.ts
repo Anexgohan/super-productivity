@@ -4,13 +4,13 @@
  * ## Why this exists
  * SuperSync derives the localStorage key it tracks `lastServerSeq` under from
  * `hash(baseUrl | accessToken)` (see `_getServerSeqKey` in the sync-providers
- * package). That is correct upstream — it separates two users sharing one
- * server — but it assumes the token is a stable identity.
+ * package). That is correct upstream - it separates two users sharing one
+ * server - but it assumes the token is a stable identity.
  *
  * The container's entrypoint used to mint a fresh JWT on every start, so the
  * hash changed on every restart, `getLastServerSeq()` fell back to 0, and each
  * browser concluded it had never met this server. With data on both sides that
- * lands on ServerMigrationService's "Server Already Contains Data" prompt — a
+ * lands on ServerMigrationService's "Server Already Contains Data" prompt - a
  * one-click path to overwriting the server, shown for no real reason.
  *
  * So the token is minted ONCE and persisted here. Restarts hand back the same
@@ -19,7 +19,7 @@
  * ## Why in the bridge rather than the entrypoint
  * The entrypoint is a shell script in a stateless container; the bridge already
  * owns durable state in Postgres and the internal-secret channel to the sync
- * server. Fixing it here also keeps `packages/sync-providers/` untouched —
+ * server. Fixing it here also keeps `packages/sync-providers/` untouched -
  * keying the cursor on a `userId` claim would work too, but that is upstream
  * code we would re-merge forever, and the rotation is our container's doing.
  */
@@ -39,7 +39,7 @@ interface TokenClaims {
   exp?: unknown;
 }
 
-/** Reads a JWT's claims without verifying it — we minted it, we only need `exp`. */
+/** Reads a JWT's claims without verifying it - we minted it, we only need `exp`. */
 const decodeClaims = (token: string): TokenClaims | null => {
   const segment = token.split('.')[1];
   if (!segment) return null;

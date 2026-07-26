@@ -1,18 +1,20 @@
 /**
  * The Accounts settings section (anex/container-parity).
  *
- * Layout follows pankha's AccountsTab: "Your account" for every rank, with user
- * management and the self-registration toggle rendering for admins only.
+ * One table for every rank: an admin sees every account, everyone else sees the single row they own.
+ * Editing any account, your own included, goes through the row's dialog, so an account has one place to change it rather than two.
  */
 import {
   ChangeDetectionStrategy,
   ChangeDetectorRef,
   Component,
+  computed,
   inject,
   Input,
   OnInit,
   signal,
 } from '@angular/core';
+import { NgTemplateOutlet } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatButton, MatIconButton } from '@angular/material/button';
 import { MatIcon } from '@angular/material/icon';
@@ -30,13 +32,17 @@ import { SnackService } from '../../../core/snack/snack.service';
 import { Log } from '../../../core/log';
 import {
   UserAccountsService,
+  type ApiKeyRow,
   type CurrentUser,
   type Role,
   type UserChanges,
   type UserRow,
 } from '../user-accounts.service';
 import { DialogConfirmDeleteAccountComponent } from '../dialog-confirm-delete-account/dialog-confirm-delete-account.component';
-import { DialogEditAccountComponent } from '../dialog-edit-account/dialog-edit-account.component';
+import {
+  DialogEditAccountComponent,
+  type EditAccountResult,
+} from '../dialog-edit-account/dialog-edit-account.component';
 
 const MIN_PASSWORD_LENGTH = 8;
 
@@ -46,6 +52,7 @@ const MIN_PASSWORD_LENGTH = 8;
   styleUrls: ['./user-accounts-cfg.component.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
+    NgTemplateOutlet,
     FormsModule,
     MatButton,
     MatIconButton,
@@ -83,10 +90,12 @@ export class UserAccountsCfgComponent implements OnInit {
   readonly isBusy = signal(false);
   readonly isAddFormOpen = signal(false);
 
-  email = '';
-  currentPassword = '';
-  newPassword = '';
-  confirmPassword = '';
+  /** Keys render as sub-rows under their owner, so several lists can be open at once and each user's rows are held against their own id. */
+  readonly openKeyUserIds = signal<ReadonlySet<number>>(new Set());
+  readonly keysByUser = signal<ReadonlyMap<number, ApiKeyRow[]>>(new Map());
+  readonly revealedKeyIds = signal<ReadonlySet<number>>(new Set());
+  /** Per user: the add-key field belongs to whichever list is expanded. */
+  newKeyLabels: Record<number, string> = {};
 
   newUsername = '';
   newUserPassword = '';
@@ -97,6 +106,16 @@ export class UserAccountsCfgComponent implements OnInit {
     return this.me()?.role === 'admin';
   }
 
+  /**
+   * What the table lists. Admins get every account, everyone else gets the one row the server would let them act on.
+   * The table is therefore the same table with a shorter list, not a second layout.
+   */
+  readonly rows = computed<UserRow[]>(() => {
+    if (this.isAdmin) return this.users();
+    const me = this.me();
+    return me ? [{ ...me, email: me.email ?? null, isPublic: false }] : [];
+  });
+
   /** Guards the UI against actions the server would refuse anyway. */
   get adminCount(): number {
     return this.users().filter((u) => u.role === 'admin').length;
@@ -104,9 +123,7 @@ export class UserAccountsCfgComponent implements OnInit {
 
   async ngOnInit(): Promise<void> {
     try {
-      const me = await this._api.me();
-      this.me.set(me);
-      this.email = me.email ?? '';
+      this.me.set(await this._api.me());
     } catch (err) {
       Log.err('UserAccountsCfg: failed to load current user', err);
       return;
@@ -142,45 +159,6 @@ export class UserAccountsCfgComponent implements OnInit {
     this._snack.open({ type: 'SUCCESS', msg: this._translate.instant(key, params) });
   }
 
-  // ── Your account ──────────────────────────────────────────────────────────
-  async saveEmail(): Promise<void> {
-    this.isBusy.set(true);
-    try {
-      const trimmed = this.email.trim();
-      await this._api.updateOwnEmail(trimmed || null);
-      this.me.update((m) => (m ? { ...m, email: trimmed || null } : m));
-      this._ok(T.GCF.ACCOUNTS.EMAIL_SAVED);
-    } catch (err) {
-      this._fail(err);
-    } finally {
-      this.isBusy.set(false);
-      this._cd.markForCheck();
-    }
-  }
-
-  async changePassword(): Promise<void> {
-    if (this.newPassword !== this.confirmPassword) {
-      this._snack.open({
-        type: 'ERROR',
-        msg: this._translate.instant(T.GCF.ACCOUNTS.PASSWORDS_DO_NOT_MATCH),
-      });
-      return;
-    }
-    this.isBusy.set(true);
-    try {
-      await this._api.changeOwnPassword(this.currentPassword, this.newPassword);
-      this.currentPassword = '';
-      this.newPassword = '';
-      this.confirmPassword = '';
-      this._ok(T.GCF.ACCOUNTS.PASSWORD_CHANGED);
-    } catch (err) {
-      this._fail(err);
-    } finally {
-      this.isBusy.set(false);
-      this._cd.markForCheck();
-    }
-  }
-
   // ── Manage users (admin) ──────────────────────────────────────────────────
   async createUser(): Promise<void> {
     this.isBusy.set(true);
@@ -206,23 +184,51 @@ export class UserAccountsCfgComponent implements OnInit {
     }
   }
 
-  /** Username, email, role and password in one dialog — see the dialog's docs. */
+  /** The one place an account is edited, own or someone else's. See the dialog's own docs for what each rank may change. */
   editUser(user: UserRow): void {
+    const isSelf = this.isSelf(user);
     this._matDialog
       .open(DialogEditAccountComponent, {
-        data: { user, isLastAdmin: this.isLastAdmin(user) },
+        data: {
+          user,
+          isLastAdmin: this.isLastAdmin(user),
+          isSelf,
+          canEditIdentity: this.isAdmin,
+        },
       })
       .afterClosed()
-      .subscribe(async (changes?: UserChanges) => {
+      .subscribe(async (changes?: EditAccountResult) => {
         if (!changes) return;
         try {
-          await this._api.updateUser(user.id, changes);
+          await (isSelf ? this._saveOwn(changes) : this._saveOther(user.id, changes));
           this._ok(T.GCF.ACCOUNTS.USER_UPDATED);
-          await this._reloadUsers();
+          if (this.isAdmin) await this._reloadUsers();
+          this.me.set(await this._api.me());
         } catch (err) {
           this._fail(err);
         }
+        this._cd.markForCheck();
       });
+  }
+
+  /** Your own account goes through the self routes, never the admin one: only they take the current password. */
+  private async _saveOwn(changes: EditAccountResult): Promise<void> {
+    if (changes.password) {
+      await this._api.changeOwnPassword(changes.currentPassword ?? '', changes.password);
+    }
+    if (changes.email !== undefined) await this._api.updateOwnEmail(changes.email);
+    // Renaming and role stay the admin route's, and the dialog only offers them to an admin.
+    const { username, role } = changes;
+    if (username !== undefined || role !== undefined) {
+      await this._api.updateUser(this.me()!.id, { username, role });
+    }
+  }
+
+  private async _saveOther(id: number, changes: EditAccountResult): Promise<void> {
+    // The admin route has no currentPassword: an admin resets a password by authority, not by proving the target's identity.
+    const adminChanges: UserChanges = { ...changes };
+    delete (adminChanges as EditAccountResult).currentPassword;
+    await this._api.updateUser(id, adminChanges);
   }
 
   /**
@@ -275,7 +281,7 @@ export class UserAccountsCfgComponent implements OnInit {
     this._cd.markForCheck();
   }
 
-  /** The last admin cannot be demoted or deleted — the server refuses too. */
+  /** The last admin cannot be demoted or deleted - the server refuses too. */
   isLastAdmin(user: UserRow): boolean {
     return user.role === 'admin' && this.adminCount <= 1;
   }
@@ -286,5 +292,133 @@ export class UserAccountsCfgComponent implements OnInit {
 
   trackById(_i: number, user: UserRow): number {
     return user.id;
+  }
+
+  // ── API keys ──────────────────────────────────────────────────────────────
+
+  isKeysOpen(userId: number): boolean {
+    return this.openKeyUserIds().has(userId);
+  }
+
+  keysOf(userId: number): ApiKeyRow[] {
+    return this.keysByUser().get(userId) ?? [];
+  }
+
+  /** Only live keys are counted: the badge answers "how many work right now". */
+  liveKeyCount(userId: number): number {
+    return this.keysOf(userId).filter((k) => !k.revokedAt).length;
+  }
+
+  /**
+   * Opens a user's key list, or closes it if it is already open.
+   *
+   * Keys are fetched on demand rather than with the user list: most visits never look at them, and the response carries live credentials.
+   */
+  async toggleKeys(userId: number): Promise<void> {
+    const isClosing = this.isKeysOpen(userId);
+    this.openKeyUserIds.update((ids) => {
+      const next = new Set(ids);
+      if (isClosing) next.delete(userId);
+      else next.add(userId);
+      return next;
+    });
+    if (isClosing) {
+      this._cd.markForCheck();
+      return;
+    }
+    // Revealing is per-visit: reopening a list shows everything masked again.
+    this.revealedKeyIds.set(new Set());
+    this.newKeyLabels[userId] = '';
+    await this._reloadKeys(userId);
+  }
+
+  private async _reloadKeys(userId: number): Promise<void> {
+    try {
+      const { keys } = await this._api.listApiKeys(userId);
+      this.keysByUser.update((byUser) => new Map(byUser).set(userId, keys));
+    } catch (err) {
+      this._fail(err);
+    }
+    this._cd.markForCheck();
+  }
+
+  async createKey(userId: number): Promise<void> {
+    this.isBusy.set(true);
+    try {
+      const label = (this.newKeyLabels[userId] ?? '').trim();
+      const created = await this._api.createApiKey(userId, label);
+      this.newKeyLabels[userId] = '';
+      // Show a key the moment it is made; nothing was learned by hiding it.
+      this.revealedKeyIds.update((ids) => new Set(ids).add(created.id));
+      await this._reloadKeys(userId);
+      this._ok(T.GCF.ACCOUNTS.API_KEY_CREATED);
+    } catch (err) {
+      this._fail(err);
+    }
+    this.isBusy.set(false);
+    this._cd.markForCheck();
+  }
+
+  async revokeKey(userId: number, key: ApiKeyRow): Promise<void> {
+    this.isBusy.set(true);
+    try {
+      await this._api.revokeApiKey(userId, key.id);
+      await this._reloadKeys(userId);
+      this._ok(T.GCF.ACCOUNTS.API_KEY_REVOKED);
+    } catch (err) {
+      this._fail(err);
+    }
+    this.isBusy.set(false);
+    this._cd.markForCheck();
+  }
+
+  /** Offered only once a key is dead, so this drops a record and nothing live. */
+  async deleteKey(userId: number, key: ApiKeyRow): Promise<void> {
+    this.isBusy.set(true);
+    try {
+      await this._api.deleteApiKey(userId, key.id);
+      await this._reloadKeys(userId);
+      this._ok(T.GCF.ACCOUNTS.API_KEY_DELETED);
+    } catch (err) {
+      this._fail(err);
+    }
+    this.isBusy.set(false);
+    this._cd.markForCheck();
+  }
+
+  /** Masked but not anonymous: the `spk_<id>_` prefix carries no secret and lets someone match a row against a key already pasted into a script. */
+  maskedKey(key: ApiKeyRow): string {
+    if (!key.key) return '';
+    return key.key.slice(0, key.key.indexOf('_', 4) + 1) + '•'.repeat(16);
+  }
+
+  lastUsedAt(key: ApiKeyRow): string {
+    return key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : '';
+  }
+
+  isKeyRevealed(key: ApiKeyRow): boolean {
+    return this.revealedKeyIds().has(key.id);
+  }
+
+  toggleReveal(key: ApiKeyRow): void {
+    this.revealedKeyIds.update((ids) => {
+      const next = new Set(ids);
+      if (!next.delete(key.id)) next.add(key.id);
+      return next;
+    });
+  }
+
+  async copyKey(key: ApiKeyRow): Promise<void> {
+    if (!key.key) return;
+    try {
+      await navigator.clipboard.writeText(key.key);
+      this._ok(T.GCF.ACCOUNTS.API_KEY_COPIED);
+    } catch (err) {
+      this._fail(err);
+    }
+  }
+
+  trackKeyById(_i: number, key: ApiKeyRow): number {
+    return key.id;
   }
 }

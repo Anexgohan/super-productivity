@@ -1,5 +1,5 @@
 /**
- * Deleting an account purges its board too — every task, project and op it ever
+ * Deleting an account purges its board too - every task, project and op it ever
  * synced, with no undo. So this asks for the username to be typed rather than
  * offering a button that a mis-click can reach.
  */

@@ -2,29 +2,28 @@
  * The canonical REST API of sp-bridge (v1, read surface).
  *
  * Design rules:
- *  - This API is the single external interface — full-featured by definition.
+ *  - This API is the single external interface - full-featured by definition.
  *  - Self-describing: GET /api/docs returns a machine-readable route map so
  *    agents (Claude, scripts) can discover capabilities without external docs.
- *  - Auth: every /api/* route except /api/health and /api/docs requires the
- *    key from SP_BRIDGE_API_KEY via `Authorization: Bearer <key>` or
- *    `X-Api-Key: <key>`.
+ *  - Auth: every /api/* route except /api/health and /api/docs requires a per-user API key or a browser session cookie.
+ *    Both resolve to a user, and that user's role and board apply either way.
  */
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import { timingSafeEqual } from 'node:crypto';
 import type { BridgeCore, TaskFilter } from './core';
 import type { StateStore } from './state-store';
-import type { AuthStore } from './auth/store';
+import type { AuthStore, UserRow } from './auth/store';
 import { isRole, ROLE_LEVELS } from './auth/store';
 import type { SessionManager } from './auth/session';
 import type { SyncIdentityProvider } from './auth/sync-identity';
 import { registerAuthRoutes, sessionFromRequest } from './auth/routes';
-import { verifyApiKey } from './auth/api-key';
+import { materialFor, parseKeyId, verifyApiKey } from './auth/api-key';
 import type { UserBoards } from './user-boards';
 
 const DOCS = {
   name: 'sp-bridge API',
   version: 1,
-  auth: 'Authorization: Bearer <key> or X-Api-Key: <key> (env SP_BRIDGE_API_KEY)',
+  auth: 'Authorization: Bearer <key> or X-Api-Key: <key>; keys are per-user, created at /api/auth/users/:id/keys',
   routes: {
     'GET /api/health': 'liveness (no auth)',
     'GET /api/docs': 'this document (no auth)',
@@ -33,7 +32,7 @@ const DOCS = {
       'list tasks; filters: isDone, projectId, tagId, dueDay (YYYY-MM-DD), parentId ("null" for top-level), search, overdue, unscheduled, plannedForToday, parentsOnly, recurringOnly (booleans), today (YYYY-MM-DD anchor for date filters), fields (comma-separated projection)',
     'GET /api/tasks/:id': 'single task by id',
     'GET /api/current-task':
-      'active task (always null on the headless bridge — non-synced UI state)',
+      'active task (always null on the headless bridge - non-synced UI state)',
     'GET /api/task-repeat-cfgs': 'list recurring-task configurations',
     'GET /api/planner': 'future-day scheduling board { YYYY-MM-DD: taskId[] }',
     'GET /api/projects': 'list projects',
@@ -90,11 +89,8 @@ const DOCS = {
   },
 } as const;
 
-/**
- * Machine auth. Both header forms stay supported; each candidate is checked
- * against the stored DIGEST rather than the key itself (see auth/api-key.ts).
- */
-const isAuthorized = (req: FastifyRequest, apiKeyHash: string): boolean => {
+/** Both header forms stay supported: `Authorization: Bearer <key>` and `X-API-Key: <key>`. */
+const presentedKeys = (req: FastifyRequest): string[] => {
   const candidates: string[] = [];
   const header = req.headers.authorization;
   if (typeof header === 'string' && header.startsWith('Bearer ')) {
@@ -104,7 +100,49 @@ const isAuthorized = (req: FastifyRequest, apiKeyHash: string): boolean => {
   if (typeof xApiKey === 'string') {
     candidates.push(xApiKey);
   }
-  return candidates.some((candidate) => verifyApiKey(candidate, apiKeyHash));
+  return candidates;
+};
+
+/**
+ * Failure throttle for key auth: a delay once an address starts missing, never a lockout.
+ *
+ * Deliberately unlike the login limiter, which locks an address out entirely. That is right for passwords, where the guessable space is small.
+ * A key is 96 random bits, so online guessing is hopeless anyway, and a lockout would mainly deny service to whoever shares the address behind a NAT.
+ * So a correct key ALWAYS succeeds and a wrong one just gets slower, which is enough to stop the endpoint being used as a fast oracle.
+ *
+ * In-memory on purpose: the bridge is one process, and a restart clearing the counters costs an attacker more than it costs us.
+ */
+const KEY_FAIL_GRACE = 10;
+const KEY_FAIL_WINDOW_MS = 60_000;
+const KEY_FAIL_DELAY_MS = 250;
+const keyFailures = new Map<string, { count: number; resetAt: number }>();
+
+const throttleKey = (req: FastifyRequest): string => req.ip ?? 'unknown';
+
+/** How long to stall this attempt. Zero until an address has been missing repeatedly. */
+const throttleDelayMs = (req: FastifyRequest): number => {
+  const entry = keyFailures.get(throttleKey(req));
+  if (!entry) return 0;
+  if (Date.now() > entry.resetAt) {
+    keyFailures.delete(throttleKey(req));
+    return 0;
+  }
+  return entry.count >= KEY_FAIL_GRACE ? KEY_FAIL_DELAY_MS : 0;
+};
+
+const recordKeyFailure = (req: FastifyRequest): void => {
+  const id = throttleKey(req);
+  const entry = keyFailures.get(id);
+  if (!entry || Date.now() > entry.resetAt) {
+    keyFailures.set(id, { count: 1, resetAt: Date.now() + KEY_FAIL_WINDOW_MS });
+    return;
+  }
+  entry.count += 1;
+};
+
+/** A key that verifies clears the address: one bad client must not slow a good one indefinitely. */
+const clearKeyFailures = (req: FastifyRequest): void => {
+  keyFailures.delete(throttleKey(req));
 };
 
 /** Methods that cannot change anything, so a viewer may use them. */
@@ -120,6 +158,8 @@ const canWrite = (role: string): boolean =>
 export interface AuthWiring {
   store: AuthStore;
   sessions: SessionManager;
+  /** JWT_SECRET. API keys are derived from it rather than stored, see auth/api-key.ts. */
+  jwtSecret: string;
   /** Public URL of the web app, for the post-login redirect. */
   webUrl?: string;
   /** Removes a SuperSync account and its data when an admin deletes a user. */
@@ -137,17 +177,17 @@ export interface AuthWiring {
  * session cookie rides along and it never learns the file became dynamic.
  */
 export interface SessionOverrideWiring {
-  /** Where the app should reach sync — "/sync" under the single-port layout. */
+  /** Where the app should reach sync - "/sync" under the single-port layout. */
   baseUrl: string;
-  /** Container-wide E2E passphrase. One key for everyone, by design — see the explainer, "Encryption is container-wide, deliberately". */
+  /** Container-wide E2E passphrase. One key for everyone, by design - see the explainer, "Encryption is container-wide, deliberately". */
   encryptKey: string;
   identities: SyncIdentityProvider;
-  /** Whether that user's own board holds any ops — see boardHasData. */
+  /** Whether that user's own board holds any ops - see boardHasData. */
   boardHasData: (supersyncUserId: number | null) => Promise<boolean>;
   /**
    * Identity of this stack's data, so a browser can tell whose replica it is
    * holding. Wiping the database mints a new one, which is what makes a wipe
-   * actually reach the browsers — see the explainer, "The browser is a cache".
+   * actually reach the browsers - see the explainer, "The browser is a cache".
    */
   instanceId: () => Promise<string>;
 }
@@ -160,7 +200,7 @@ export const OVERRIDE_PATH = '/assets/sync-config-default-override.json';
  * sibling services at boot, before any user exists to hold a credential.
  */
 export interface InternalWiring {
-  /** JWT_SECRET, which sibling containers already hold — no new secret in .env. */
+  /** JWT_SECRET, which sibling containers already hold - no new secret in .env. */
   secret: string;
   /** The durable SuperSync token the web entrypoint embeds. */
   webappToken: () => Promise<string>;
@@ -196,14 +236,13 @@ const PUBLIC_PATHS = new Set([
   '/api/auth/register',
   // Carries its own X-Internal-Secret guard (see below). Listed here because
   // its caller is the web container's entrypoint, which holds JWT_SECRET but
-  // deliberately not SP_BRIDGE_API_KEY.
+  // no user account to authenticate as.
   '/api/internal/webapp-token',
 ]);
 
 export const createRestServer = (
   core: BridgeCore,
   store: StateStore,
-  apiKeyHash: string,
   auth?: AuthWiring,
   internal?: InternalWiring,
   boards?: UserBoards,
@@ -211,24 +250,49 @@ export const createRestServer = (
   const app = Fastify({ logger: false, trustProxy: true });
 
   /**
-   * The board this request acts on.
+   * Who this request is, established once by the auth hook so the handlers and boardFor() agree.
+   * A key and a session both resolve to a user, which is what makes "a key is its owner acting through a machine" true rather than aspirational.
+   */
+  const principals = new WeakMap<FastifyRequest, UserRow>();
+
+  /** The user a presented API key belongs to, or null. Revoked and unknown keys are indistinguishable to the caller. */
+  const userForApiKey = async (req: FastifyRequest): Promise<UserRow | null> => {
+    if (!auth) return null;
+    const candidates = presentedKeys(req);
+    if (!candidates.length) return null;
+
+    const delay = throttleDelayMs(req);
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+
+    for (const candidate of candidates) {
+      const keyId = parseKeyId(candidate);
+      if (!keyId) continue;
+      const row = await auth.store.findLiveApiKey(keyId);
+      if (!row) continue;
+      if (!verifyApiKey(candidate, auth.jwtSecret, materialFor(row))) continue;
+      const user = await auth.store.findUserById(row.userId);
+      if (!user) continue;
+      clearKeyFailures(req);
+      // Usage stamp is bookkeeping: never let it fail the request it describes.
+      void auth.store.touchApiKey(row.id).catch(() => undefined);
+      return user;
+    }
+    recordKeyFailure(req);
+    return null;
+  };
+
+  /**
+   * The board this request acts on: the principal's own, whether they arrived by session or by API key.
+   * Automation therefore addresses the same board its owner sees, rather than the container account everything used to land on.
    *
-   * A browser session names a user, so it gets that user's own board. The API
-   * key names nobody — it is a deployment secret — so it stays on the container
-   * account, which is where every caller landed before boards were per-user.
-   * Per-user keys are what will let automation address any board.
-   *
-   * Falls back to the container board whenever the caller cannot be resolved,
-   * so a deployment without auth behaves exactly as it did.
+   * Falls back to the container board when no principal could be resolved, so a deployment without auth behaves exactly as it did.
    */
   const boardFor = async (
     req: FastifyRequest,
   ): Promise<{ core: BridgeCore; store: StateStore }> => {
     const container = { core, store };
     if (!boards || !auth?.override) return container;
-    const session = sessionFromRequest(req, auth.sessions);
-    if (!session) return container;
-    const user = await auth.store.findUserById(session.user.userId);
+    const user = principals.get(req);
     if (!user) return container;
     return boards.forUser(user, await auth.override.identities.isContainerAccount(user));
   };
@@ -247,7 +311,7 @@ export const createRestServer = (
       if (!session) return reply.status(401).send({ error: 'Not signed in' });
 
       const user = await auth.store.findUserById(session.user.userId);
-      // Session outlives the account it names — the row was deleted while a
+      // Session outlives the account it names - the row was deleted while a
       // cookie was still valid. 403 rather than 404: nginx falls back to the
       // baked single-account file on 404, which would hand this stale session
       // the container account's board.
@@ -269,7 +333,7 @@ export const createRestServer = (
           // against the stamp on its local replica and purges on a mismatch, so
           // a wiped stack or a different user cannot inherit the last one's
           // board. Absent from the baked fallback file, and absence means
-          // "ungated" — never a mismatch.
+          // "ungated" - never a mismatch.
           //
           // `serverHasData` is what lets an UNSTAMPED replica be judged: with
           // nothing to compare against, an empty stack means this browser is
@@ -278,7 +342,7 @@ export const createRestServer = (
           //
           // Asked per user. The bridge's own sequence describes the container
           // account only, so using it told every other account their empty
-          // board was populated — the gate then adopted where it should purge.
+          // board was populated - the gate then adopted where it should purge.
           identity: {
             instanceId: await instanceId(),
             userId: user.id,
@@ -316,29 +380,31 @@ export const createRestServer = (
   app.addHook('onRequest', async (req, reply) => {
     const url = req.url.split('?')[0];
     if (PUBLIC_PATHS.has(url)) return;
-    // Machine clients present the API key; browsers present a session cookie.
-    // Either is sufficient — they authenticate different kinds of caller.
-    // The key is a deployment secret with no role attached, so it stays
-    // unrestricted: it IS the admin credential for automation.
-    if (isAuthorized(req, apiKeyHash)) return;
 
-    const session = auth && sessionFromRequest(req, auth.sessions);
-    if (!session) {
+    // A key and a session are two ways of naming the same thing, so both resolve to a user and both are held to that user's role.
+    // A key no longer bypasses the ACL: an admin's key can manage accounts, a viewer's key can only read.
+    let principal = await userForApiKey(req);
+    if (!principal) {
+      const session = auth && sessionFromRequest(req, auth.sessions);
+      principal = session
+        ? await auth?.store.findUserById(session.user.userId).catch(() => null)
+        : null;
+    }
+    if (!principal) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
+    principals.set(req, principal);
 
     // Account routes carry their own per-route checks (requireAdmin), and a
-    // viewer legitimately POSTs to some of them — logout, own password, own
+    // viewer legitimately POSTs to some of them - logout, own password, own
     // email. Gating them by method here would lock people out of their own
     // account.
     if (url.startsWith('/api/auth/')) return;
 
     // Roles were assignable in the UI but enforced nowhere: a viewer could
     // create tasks or delete boards. Writes now require operator or above.
-    if (!isReadOnlyRequest(req.method) && !canWrite(session.user.role)) {
-      return reply
-        .status(403)
-        .send({ error: 'Read-only account', role: session.user.role });
+    if (!isReadOnlyRequest(req.method) && !canWrite(principal.role)) {
+      return reply.status(403).send({ error: 'Read-only account', role: principal.role });
     }
   });
 

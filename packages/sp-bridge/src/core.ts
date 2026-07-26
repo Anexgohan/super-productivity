@@ -1,5 +1,5 @@
 /**
- * BridgeCore — the single service layer every external surface consumes.
+ * BridgeCore - the single service layer every external surface consumes.
  * The REST API is the canonical, full-featured interface (by design there is
  * no MCP layer; agents consume the API directly).
  */
@@ -41,7 +41,7 @@ const ALLOWED_PANEL_FIELDS = new Set([
   'sortBy',
   'sortDir',
 ]);
-/** Virtual tag — membership is derived, never created/deleted as an entity. */
+/** Virtual tag - membership is derived, never created/deleted as an entity. */
 const TODAY_TAG_ID = 'TODAY';
 
 const err = (message: string, statusCode: number): Error =>
@@ -234,7 +234,7 @@ export class BridgeCore {
     return byDay;
   }
 
-  /** Raw access to any materialized entity bucket — API-only superset feature. */
+  /** Raw access to any materialized entity bucket - API-only superset feature. */
   listEntityTypes(): string[] {
     return Object.keys(this.store.state);
   }
@@ -245,7 +245,7 @@ export class BridgeCore {
 
   // ── Writes ────────────────────────────────────────────────────────────────
   // Every write is a real sync op (cloned from live client op shapes), uploaded
-  // to the server and round-tripped back through refresh() — the bridge state
+  // to the server and round-tripped back through refresh() - the bridge state
   // you read after a write is what every other client will materialize.
 
   async createTask(input: NewTaskInput): Promise<Record<string, unknown>> {
@@ -293,7 +293,7 @@ export class BridgeCore {
 
   /**
    * Applies per-task updates as N ops in a single upload+refresh. Every id is
-   * validated up front — if any is unknown or has an illegal field, nothing is
+   * validated up front - if any is unknown or has an illegal field, nothing is
    * submitted (all-or-nothing), so a bad item never partially applies.
    */
   async bulkUpdate(
@@ -334,7 +334,7 @@ export class BridgeCore {
     if (!existing) {
       throw Object.assign(new Error('Task not found'), { statusCode: 404 });
     }
-    // Count only subtasks that still exist — stale ids (children already
+    // Count only subtasks that still exist - stale ids (children already
     // deleted) must not block deleting the parent.
     const liveSubtasks = (
       Array.isArray(existing.subTaskIds) ? (existing.subTaskIds as string[]) : []
@@ -495,7 +495,7 @@ export class BridgeCore {
    *  - { parentId }  → a parent's subtask list
    *  - { today: true } → the TODAY list
    * `taskIds` must be a permutation of that list's current members (reorder
-   * only — no adds or drops).
+   * only - no adds or drops).
    */
   async reorderTasks(
     container: { projectId?: string; parentId?: string; today?: boolean },
@@ -827,7 +827,7 @@ export class BridgeCore {
     if (!project) throw err('Project not found', 404);
 
     // Authoritative task set: every task whose projectId is this project
-    // (subtasks inherit the parent's projectId, so this captures them too) —
+    // (subtasks inherit the parent's projectId, so this captures them too) -
     // robust even if the project's ordering lists are stale.
     const allTaskIds = Object.values(this._bucket('TASK'))
       .filter((t) => t.projectId === id)
@@ -846,7 +846,7 @@ export class BridgeCore {
   // ── Boards ──────────────────────────────────────────────────────────────────
   // Boards are one `{ boardCfgs: [] }` record rather than an id-keyed map, so
   // these read and write the array directly instead of going through _bucket().
-  // Panels have no create/update actions of their own — the app edits a panel by
+  // Panels have no create/update actions of their own - the app edits a panel by
   // replacing the parent board's whole `panels` array, and so do we.
 
   private _boardCfgs(): Record<string, unknown>[] {

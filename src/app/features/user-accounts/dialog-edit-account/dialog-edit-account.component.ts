@@ -1,11 +1,10 @@
 /**
- * Admin edit for one account: username, email, role and a password reset in a
- * single dialog.
+ * Edit for one account: username, email, role and a password change. The only place any account is edited, own or someone else's.
  *
- * One dialog rather than an icon per action, because the row would otherwise
- * need four controls beside the reorder arrows. Renaming is safe here — the
- * user's board is keyed to their account id, never their name or email (see
- * packages/sp-bridge/src/auth/sync-identity.ts), so nothing they own moves.
+ * Renaming is safe: the board is keyed to the account id, never the name or email (see packages/sp-bridge/src/auth/sync-identity.ts).
+ *
+ * Editing yourself asks for the current password first. A session proves the browser holds a cookie, not that the owner is at the keyboard.
+ * An admin resetting someone else's password is exercising authority rather than proving identity, so it does not apply there.
  */
 import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
@@ -31,6 +30,15 @@ export interface EditAccountData {
   user: UserRow;
   /** Blocks demotion when this is the only admin, matching the server's rule. */
   isLastAdmin: boolean;
+  /** The caller is editing their own account. */
+  isSelf: boolean;
+  /** Username and role are the admin's to change; a non-admin edits neither. */
+  canEditIdentity: boolean;
+}
+
+/** Everything the dialog collected. currentPassword only when editing yourself. */
+export interface EditAccountResult extends UserChanges {
+  currentPassword?: string;
 }
 
 @Component({
@@ -66,11 +74,15 @@ export class DialogEditAccountComponent {
   readonly email = signal(this.data.user.email ?? '');
   readonly role = signal<Role>(this.data.user.role);
   readonly password = signal('');
+  readonly currentPassword = signal('');
 
   get isValid(): boolean {
     const name = this.username().trim();
     const pw = this.password();
-    return name.length >= 3 && (!pw || pw.length >= MIN_PASSWORD_LENGTH);
+    if (name.length < 3) return false;
+    if (!pw) return true;
+    if (pw.length < MIN_PASSWORD_LENGTH) return false;
+    return !this.data.isSelf || !!this.currentPassword();
   }
 
   close(): void {
@@ -81,16 +93,23 @@ export class DialogEditAccountComponent {
   save(): void {
     if (!this.isValid) return;
     const user = this.data.user;
-    const changes: UserChanges = {};
+    const changes: EditAccountResult = {};
 
-    const name = this.username().trim();
-    if (name !== user.username) changes.username = name;
+    if (this.data.canEditIdentity) {
+      const name = this.username().trim();
+      if (name !== user.username) changes.username = name;
+      if (!this.data.isLastAdmin && this.role() !== user.role) {
+        changes.role = this.role();
+      }
+    }
 
     const mail = this.email().trim() || null;
     if (mail !== (user.email ?? null)) changes.email = mail;
 
-    if (!this.data.isLastAdmin && this.role() !== user.role) changes.role = this.role();
-    if (this.password()) changes.password = this.password();
+    if (this.password()) {
+      changes.password = this.password();
+      if (this.data.isSelf) changes.currentPassword = this.currentPassword();
+    }
 
     this._dialogRef.close(Object.keys(changes).length ? changes : undefined);
   }

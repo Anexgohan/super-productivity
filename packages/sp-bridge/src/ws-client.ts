@@ -13,7 +13,7 @@
 
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 60_000;
-/** Server closes with 4001/4003 on missing/invalid token — reconnecting won't help. */
+/** Server closes with 4001/4003 on missing/invalid token - reconnecting won't help. */
 const AUTH_CLOSE_CODES = new Set([4001, 4003]);
 
 export interface WsClientOptions {
@@ -67,7 +67,7 @@ export class SyncWebSocket {
     if (this._stopped) return;
     const url = this._url();
     if (!url) {
-      // Not authenticated yet — retry on the normal backoff schedule.
+      // Not authenticated yet - retry on the normal backoff schedule.
       this._scheduleReconnect();
       return;
     }
