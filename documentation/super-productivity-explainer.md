@@ -305,23 +305,32 @@ writing to `globalConfig` would be a sync operation - changing user data to
 enforce a UI decision. Profiles stay fully available in desktop and standalone
 builds, where they make sense.
 
-### The account routes are session-only, for now
+### The account routes took API keys late
 
-Every `/api/auth/*` route reads the session cookie directly and refuses an API key. That is unfinished wiring rather than a decision: the goal for this fork is that anything the browser UI can do, the API can do, held to the same roles.
+Every `/api/auth/*` route once read the session cookie directly and refused an API key. That was unfinished wiring rather than a decision, and it is now closed: both credentials resolve to a user, and that user's role applies either way.
 
-It reads as deliberate because it once was. When those handlers were written a key was a single container-wide secret with no user attached, so "your own account" had no meaning for it and a session was the only thing that could answer. Keys became per-user later, the request hook was rewritten so both credentials resolve to a user, and these handlers were not revisited.
+It read as deliberate because it once was. When those handlers were written a key was a single container-wide secret with no user attached, so "your own account" had no meaning for it and a session was the only thing that could answer. Keys became per-user later, the request hook was rewritten so both credentials resolve to a user, and these handlers were not revisited until this change.
 
-What has to be settled before they are wired is containment. A key that can reach them can mint further keys, read every account's key string, and reset passwords - so revoking the leaked key would no longer end the incident. Minted keys at least show up as rows in the accounts table, where they can be spotted and revoked; a password reset renders nowhere at all. The intended answer is to require the caller's account password in the body when a **key** performs a credential-granting call: creating a key, revoking or deleting one, changing a role, or publishing a board. Browser sessions are unaffected, and ordinary read and write traffic never carries a password.
+The containment question had to be settled first. A key that reaches these routes can mint further keys, read every account's key string, and reset passwords, so revoking the leaked key would no longer end the incident. Minted keys at least show up as rows in the accounts table, where they can be spotted and revoked; a password reset renders nowhere at all. The answer shipped is that a **key** performing a credential-granting call must also send the caller's account password: creating a key, revoking or deleting one, changing a role, or publishing a board. Browser sessions are unaffected, and ordinary read and write traffic never carries a password. Renaming an account or fixing its email is not gated, because neither widens access, and reading keys is deliberately left open because an admin holding a subordinate's key is how delegated management works here.
 
 Two things follow from keys having no role of their own. A key inherits its owner's role, read per request, so demoting an account instantly weakens every key it holds. And "create an admin key" is not expressible: you create a key _for an account_, so a non-admin can only ever create keys for itself.
+
+### Reading somebody else's board over the API
+
+The browser switches boards by storing a choice in the login session (`POST /api/auth/viewing`), which is no use to a script. `?boardOf=<accountId>` is the per-request equivalent, honoured on every data route, and an explicit parameter beats whatever the cookie says.
+
+The permission rule is deliberately narrow and lives in one function, `mayReadBoard` in `rest.ts`: a board is readable if its owner shared it, full stop. No role logic, because sharing is all-or-nothing and applies to everyone signed in. If per-account grants ever replace whole-board publishing, that one function learns about them and the other 49 route handlers do not, since all of them resolve their board through the single `boardFor` seam.
+
+Shared boards are read-only for everyone, enforced in the request hook rather than per route. Rank buys nothing here: an admin reading an operator's board is a reader there, and the sync token minted for that board is read-scoped for the same reason. An admin cannot read a board that was never shared.
 
 ### Known gaps
 
 - Sync tokens are stored in plaintext in `bridge.settings`, one row per user under `supersync.user_token.<id>`. Anyone with database access holds every user's sync credential. They are not derived like API keys are, because the sync server issues them and we only keep what it hands back.
-- Role is re-read from the database on every REST request, so a demotion bites immediately there. The `/api/auth/*` routes still read the role out of the session JWT via `requireAdmin`, so a demoted admin keeps account-management powers until their session is reissued.
 - `DELETE /api/sync/data` on the sync server is scoped to the calling user (`getAuthUser(req).userId`), so it wipes only that account. It is still unguarded by role, meaning a viewer can erase their own board despite being read-only everywhere else.
+- `PUT /api/auth/users/:id` has no self-check, so an admin can reset their own password through the admin route without proving the current one. The self route asks; the admin route does not, and an admin is allowed to target themselves with it.
+- The Web Locks API needs a secure context, and this stack is normally reached over plain HTTP on a bare address (`http://<host>:18230`), which is not one. The app logs `[LockService] Web Locks API not available. Using multiple tabs may cause DATA LOSS.` and its multi-tab guard is off. HTTPS or `localhost` restores it. For a fork whose whole model is reaching a server over the network, this is the common case rather than an edge one.
 
-Closed since the first draft: the role ACL is enforcing (`canWrite` gates every non-read method in the bridge's `onRequest` hook), API keys are per-user rather than one container-wide key, and the bridge no longer reports zero boards for an account whose browser is showing the built-in defaults.
+Closed since the first draft: the role ACL is enforcing (`canWrite` gates every non-read method in the bridge's `onRequest` hook), API keys are per-user rather than one container-wide key, the account routes accept API keys and read role from the database rather than the session JWT, `?boardOf=` gives scripts the board switching the browser had, and the bridge no longer reports zero boards for an account whose browser is showing the built-in defaults.
 
 ---
 

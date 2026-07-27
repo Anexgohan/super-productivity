@@ -23,11 +23,11 @@ X-Api-Key: spk_1_yourkeyhere
 Authorization: Bearer spk_1_yourkeyhere
 ```
 
-Keys are created from the web UI while you are signed in. That is currently the only way: the `/auth/*` routes take a browser session and refuse an API key, so a key cannot yet mint another key. Treat that as a limitation rather than a guarantee - it is unfinished wiring, and the intent is that key management becomes reachable over the API like everything else.
+Keys are created from the web UI, or over the API with `POST /api/auth/users/:id/keys`. Minting a key with a key also needs your account password in the body as `currentPassword`, so that a stolen key cannot quietly produce more of itself. The same goes for revoking or deleting a key, changing a role, and sharing a board.
 
-The number in the middle of a key is the **key** id, not your user id, so do not parse it to work out which account you are. There is no route that will tell you either, which is worth knowing before you point a script at the wrong deployment.
+The number in the middle of a key is the **key** id, not your user id, so do not parse it to work out which account you are. Ask `GET /api/auth/me` instead, which works with a key and tells you who you are.
 
-Keys carry one of three roles. **Admin** can do anything, including deleting projects. **Operator** can read and write tasks. **Viewer** can only read, and any write returns `403 Read-only token`. If you get that error, nothing is wrong with your request; the key simply is not allowed to make changes.
+Keys carry one of three roles. **Admin** can do anything, including deleting projects. **Operator** can read and write tasks. **Viewer** can only read, and any write returns `403 Your account is read-only. An admin can change your role.` If you get that error, nothing is wrong with your request; the account simply is not allowed to make changes.
 
 Two routes need no key at all, which makes them useful for checking whether you are pointed at a live deployment: `/api/health` and `/api/docs`.
 
@@ -240,7 +240,9 @@ The provider id identifies which configured integration the issue belongs to. Th
 
 **Deleting a project deletes its tasks, permanently.** There is no undo and no archive to recover from. The Inbox project and the `TODAY` tag are protected and cannot be deleted at all.
 
-**Key and account management are not reachable over the API yet.** The `/auth/*` routes want a browser session; an API key gets `{"error":"Not signed in"}` on `/auth/me` and `{"error":"Unauthorized"}` on the `/keys` routes. Not a policy - unfinished wiring, tracked in `api-reference.md`.
+**Somebody else's board is read-only.** Add `?boardOf=<accountId>` to any data route to read a board its owner shared, and `GET /api/auth/public-boards` lists the ones open to you. Writes there are refused whatever your role, so an admin reading an operator's board is a reader like anyone else.
+
+**Switching boards in the browser does not carry over to a key.** `POST /api/auth/viewing` stores a choice in your login session; a script has no session, so it uses `?boardOf=` per request instead.
 
 ## Working conventions
 

@@ -16,6 +16,41 @@ export interface Principal {
 }
 
 /**
+ * Which board a request is addressing.
+ *
+ * `explicit` records that the caller asked by name rather than inheriting a browser's stored choice. The two want different answers when the board
+ * turns out to be unreadable: a stale cookie should quietly fall back to your own board, an instruction should be told it failed.
+ */
+export type BoardTarget =
+  | { kind: 'own' }
+  | { kind: 'other'; id: number; explicit: boolean }
+  | { kind: 'invalid'; raw: string };
+
+/**
+ * The board a request means, from the `boardOf` query parameter or, failing that, the board a browser session is currently viewing.
+ *
+ * An explicit parameter beats the session: a request that names a board means it. Naming your own id is not "somebody else's board", so a script can
+ * pass `boardOf` unconditionally without tripping the permission check.
+ */
+export const boardTargetFor = (
+  boardOf: readonly string[],
+  sessionViewingUserId: number | null | undefined,
+  callerId: number,
+): BoardTarget => {
+  if (boardOf.length > 1) return { kind: 'invalid', raw: boardOf.join(',') };
+  const raw = boardOf[0];
+  if (raw !== undefined && raw !== '') {
+    if (!/^\d+$/.test(raw)) return { kind: 'invalid', raw };
+    const id = Number(raw);
+    return id === callerId ? { kind: 'own' } : { kind: 'other', id, explicit: true };
+  }
+  if (sessionViewingUserId && sessionViewingUserId !== callerId) {
+    return { kind: 'other', id: sessionViewingUserId, explicit: false };
+  }
+  return { kind: 'own' };
+};
+
+/**
  * Calls that hand out or widen access, and so need the caller's password when driven by an API key.
  *
  * Reading someone's keys is deliberately absent: an admin holding a subordinate's key is how delegated management works in this fork,

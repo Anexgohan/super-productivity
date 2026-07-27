@@ -57,17 +57,22 @@ Two credentials reach this API, and both resolve to the same thing - a **user**.
 | **API key**        | `Authorization: Bearer <key>` or `X-Api-Key: <key>` | scripts, agents |
 | **Session cookie** | set by `POST /api/auth/login`, `httpOnly`           | the web app     |
 
-If a request carries both, the key is tried first and wins. Missing, wrong or revoked → `401 {"error":"Unauthorized"}`.
+If a request carries both, the key is tried first and wins. Two different `401`s, because the causes differ:
 
-### What each credential reaches today
+| You sent          | Response                                                                               |
+| ----------------- | -------------------------------------------------------------------------------------- |
+| nothing           | `No API key or session. Send your key as X-Api-Key, or sign in.`                       |
+| a key that failed | `That API key is not valid or has been revoked. Check Settings > Accounts > API keys.` |
+
+### What each credential reaches
 
 | Surface                                                                                          | API key              | Session |
 | ------------------------------------------------------------------------------------------------ | -------------------- | ------- |
 | Data routes - `/api/tasks`, `/projects`, `/tags`, `/boards`, `/today`, `/status`, …              | ✅                   | ✅      |
-| Account routes - `/api/auth/*` (the 17 credentialed ones)                                        | ❌ see below         | ✅      |
+| Account routes - `/api/auth/*` (the 17 credentialed ones)                                        | ✅                   | ✅      |
 | `/api/health`, `/api/docs`, `/login`, `/api/auth/login｜setup｜logout｜status｜verify｜register` | no credential needed |         |
 
-> **Not true yet.** A key on `/api/auth/*` gets `401` - `{"error":"Not signed in"}` on `/auth/me`, `{"error":"Unauthorized"}` on the rest. Unfinished wiring, not policy: the goal is that anything the UI can do, the API can do. [Why, and what will gate it](./super-productivity-explainer.md#the-account-routes-are-session-only-for-now).
+One exception: `POST /api/auth/viewing` is session-only, because it stores a choice in your login session. Use [`?boardOf=`](#reading-someone-elses-board) instead, which does the same job per request.
 
 ### Roles
 
@@ -79,9 +84,23 @@ Three roles, applied identically to both credentials:
 | `operator` | full                  | none                             |
 | `viewer`   | read-only             | read-only, published boards only |
 
-A `viewer` gets `403 {"error":"Read-only account"}` on any write, whichever credential it used. Role is read fresh from the database on every data request, so a demotion bites immediately.
+A `viewer` gets `403 {"error":"Your account is read-only. An admin can change your role.","role":"viewer"}` on any write, whichever credential it used. Role is read fresh from the database on every request, so a demotion bites immediately.
 
-> **Not true yet.** `/api/auth/*` reads the role from the session JWT instead, so a demoted admin keeps account powers until their session is reissued.
+### Calls that also want your password
+
+Handing out or widening access needs your account password as well, but only when you are using an API key. A session already proved who you are; a stolen key must not be able to mint another one. Add `currentPassword` to the body:
+
+| Call                                          | Why                         |
+| --------------------------------------------- | --------------------------- |
+| `POST /api/auth/users/:id/keys`               | mints a credential          |
+| `DELETE /api/auth/users/:id/keys/:keyId`      | removes one                 |
+| `POST /api/auth/users/:id/keys/:keyId/revoke` | removes one                 |
+| `PUT /api/auth/users/:id/public`              | exposes a board             |
+| `PUT /api/auth/users/:id` **with `role`**     | changes what someone may do |
+
+Without it: `403 {"error":"This also needs your account password when using an API key. Add currentPassword to the body."}`. Wrong password: `403 {"error":"That password is not correct."}`.
+
+Renaming somebody or fixing their email on that last route needs nothing extra, because neither widens access. Reading keys is deliberately ungated: an admin holding a subordinate's key is how delegated management works here.
 
 ### Key format
 
@@ -92,6 +111,27 @@ A `viewer` gets `403 {"error":"Read-only account"}` on any write, whichever cred
 A key has **no role of its own**: it inherits its owner's, read per request. So a non-admin can only create keys for itself, and only an admin can create one for somebody else.
 
 Wrong keys from one address get a small added delay; a correct key is never refused by it.
+
+### Reading someone else's board
+
+Every route acts on your own board. Add `?boardOf=<accountId>` to read a board its owner has shared. [`GET /api/auth/public-boards`](#get-apiauthpublic-boards) lists the ones available to you.
+
+```bash
+curl -H "X-Api-Key: $KEY" "$BASE/tasks?boardOf=2"
+```
+
+It works on every data route, and passing your own id is the same as omitting it.
+
+**Shared boards are read-only, for everyone.** Sharing grants a look, never a hand, and rank does not change that: an admin on an operator's board is a reader there like anybody else.
+
+| Situation                 | Response                                                                         |
+| ------------------------- | -------------------------------------------------------------------------------- |
+| writing to a shared board | `403 That board belongs to someone else. Sharing grants a read, not a write.`    |
+| the board is not shared   | `403 That board is not shared. Its owner can share it from Settings > Accounts.` |
+| no such account           | `404 No account with id 99.`                                                     |
+| not a number              | `400 boardOf must be an account id, like ?boardOf=2.`                            |
+
+Sharing is all-or-nothing and applies to everyone signed in, not only to viewers. It is re-checked on every request, so unsharing takes effect on the next call.
 
 ---
 
@@ -167,8 +207,6 @@ curl -H "X-Api-Key: $KEY" http://host:18230/api/status
 }
 ```
 
-_Replaces MCP `check_connection` / `debug_directories`._
-
 ### `POST /api/sync/refresh`
 
 Forces an immediate op-log pull instead of waiting for the next poll. Returns the
@@ -208,8 +246,6 @@ curl -H "X-Api-Key: $KEY" \
   "http://host:18230/api/tasks?tagId=KANBAN_IN_PROGRESS"
 ```
 
-_Replaces MCP `get_tasks` (including its advanced filters)._
-
 ### `GET /api/tasks/:id`
 
 One task by id. `404` if unknown.
@@ -225,11 +261,9 @@ Always `null`: the active task is device-local UI state that never syncs, so a h
 }
 ```
 
-_Replaces MCP `get_current_task`._
-
 ### `GET /api/task-repeat-cfgs`
 
-Lists recurring-task configurations. _Replaces MCP `get_task_repeat_cfgs`._
+Lists recurring-task configurations.task*repeat_cfgs`.*
 
 ### `GET /api/planner`
 
@@ -253,19 +287,17 @@ Time spent per day, aggregated from `timeSpentOnDay` across tasks.
 }
 ```
 
-_Replaces MCP `get_worklog`._
-
 ---
 
 ## Reading other entities
 
 ### `GET /api/projects`
 
-All projects. _Replaces MCP `get_projects`._
+All projects.projects`.\_
 
 ### `GET /api/tags`
 
-All tags, including `color` and `icon`. _Replaces MCP `get_tags`._
+All tags, including `color` and `icon`.tags`.\_
 
 ### `GET /api/config`
 
@@ -309,8 +341,6 @@ curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
 > **Note:** a task created through the API lands in its **project**, not on the
 > Today list. Put it on Today explicitly with `POST /api/today/plan`.
 
-_Replaces MCP `create_task`._
-
 ### `POST /api/tasks/from-syntax`
 
 Creates a task from a single short-syntax string. → `201`.
@@ -336,18 +366,14 @@ curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
 Updates a task. Body is a partial of the writable fields (see Conventions).
 Unknown/unwritable fields → `400` listing them; empty body → `400`.
 
-_Replaces MCP `update_task`._
-
 ### `POST /api/tasks/:id/complete`
 
 Marks done, setting `doneOn` to now. No body.
-_Replaces MCP `complete_task`._
 
 ### `POST /api/tasks/:id/complete-on`
 
 Marks done with an explicit completion date, so the card sorts on the intended
 day. Body: `{"doneOn": "YYYY-MM-DD"}` (other formats → `400`).
-_Replaces MCP `complete_task_on`._
 
 ### `DELETE /api/tasks/:id`
 
@@ -361,8 +387,6 @@ the task from its parent, project lists, tag lists, and the Planner.
 curl -H "X-Api-Key: $KEY" -X DELETE http://host:18230/api/tasks/<id>
 ```
 
-_Replaces MCP `delete_task`._
-
 ---
 
 ## Bulk operations
@@ -373,7 +397,6 @@ more consistent than looping single calls.
 ### `POST /api/tasks/bulk/complete`
 
 Body: `{"taskIds": ["id1","id2"]}` → `{"completed":[...]}`.
-_Replaces MCP `bulk_complete_tasks`._
 
 ### `POST /api/tasks/bulk/update`
 
@@ -388,8 +411,6 @@ curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
   -X POST http://host:18230/api/tasks/bulk/update \
   -d '{"updates":[{"id":"a1","timeEstimate":3600000},{"id":"b2","notes":"revised"}]}'
 ```
-
-_Replaces MCP `bulk_update_tasks`._
 
 ---
 
@@ -406,8 +427,6 @@ curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
   -X POST http://host:18230/api/tasks/with-subtasks \
   -d '{"title":"Release v2","projectId":"N_rey...","subTasks":["Cut branch","Write notes","Tag"]}'
 ```
-
-_Replaces MCP `create_task_with_subtasks`._
 
 ### `POST /api/tasks/:id/subtasks`
 
@@ -428,8 +447,6 @@ Refused with `400`/`409` if: the task is already top-level (on promote), the
 target is itself a subtask, a task would become its own parent, or the task has
 its own subtasks.
 
-_Replaces MCP `reparent_task`._
-
 ### `POST /api/tasks/reorder`
 
 Reorders one list. Body: `taskIds` plus **exactly one** container:
@@ -448,8 +465,6 @@ curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
   -X POST http://host:18230/api/tasks/reorder \
   -d '{"parentId":"<parent>","taskIds":["c","b","a"]}'
 ```
-
-_Replaces MCP `reorder_tasks`._
 
 ---
 
@@ -470,20 +485,15 @@ curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
   -d '{"tagId":"KANBAN_IN_PROGRESS"}'
 ```
 
-_Replaces MCP `add_tag_to_task`._
-
 ### `DELETE /api/tasks/:id/tags/:tagId`
 
 Removes one tag, preserving the rest. Idempotent.
-_Replaces MCP `remove_tag_from_task`._
 
 ### `POST /api/tasks/:id/move`
 
 Moves a top-level task to another project, updating both projects' lists. Body:
 `{"projectId": "..."}`. Subtasks cannot be moved directly (`400`) - they follow
 their parent.
-
-_Replaces MCP `move_task_to_project`._
 
 ---
 
@@ -499,8 +509,6 @@ server's current date). Unknown id → `404`.
 curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
   -X POST http://host:18230/api/today/plan -d '{"taskIds":["a1","b2"]}'
 ```
-
-_Replaces MCP `plan_tasks_for_today`._
 
 ### `POST /api/today/remove`
 
@@ -524,8 +532,6 @@ curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
   -d '{"url":"https://github.com/org/repo/pull/42","title":"PR #42"}'
 ```
 
-_Replaces MCP `add_link_to_task`._
-
 ### `POST /api/tasks/:id/issue-link`
 
 Links a task to an external issue so the issue panel recognizes it.
@@ -537,23 +543,18 @@ Links a task to an external issue so the issue panel recognizes it.
 | `issueProviderId` | ✅ - must be a configured provider (else `400`) |
 | `issuePoints`     |                                                 |
 
-Find provider ids via `GET /api/entities/ISSUE_PROVIDER`.
-_Replaces MCP `link_task_to_issue`._
-
----
+## Find provider ids via `GET /api/entities/ISSUE_PROVIDER`.
 
 ## Tags
 
 ### `POST /api/tags`
 
 Creates a tag. → `201`. Body: `{"title": "...", "icon": "...", "color": "#rrggbb"}`.
-_Replaces MCP `create_tag`._
 
 ### `PATCH /api/tags/:id`
 
 Updates a tag. Writable: `title`, `color`, `icon`. Changing `color` also syncs the
 tag's theme so the UI recolors.
-_Replaces MCP `update_tag`._
 
 ### `DELETE /api/tags/:id`
 
@@ -568,12 +569,10 @@ The virtual `TODAY` tag is protected (`400`).
 
 Creates a project. → `201`. Body:
 `{"title": "...", "color": "#rrggbb", "isEnableBacklog": false}`.
-_Replaces MCP `create_project`._
 
 ### `PATCH /api/projects/:id`
 
 Updates a project. Writable: `title`, `isEnableBacklog`, `isArchived`.
-_Replaces MCP `update_project`._
 
 ### `DELETE /api/projects/:id`
 
@@ -799,3 +798,4 @@ desktop-only behaviour. The API reports their absence rather than simulating it.
 | `show_notification`                     | desktop UI action                            | -                                               |
 | `get_current_task`                      | never syncs                                  | `GET /api/current-task` (returns `null` + note) |
 | `check_connection`, `debug_directories` | MCP transport diagnostics; transport is gone | `GET /api/health`, `GET /api/status`            |
+| `POST /api/auth/viewing`                | stores a choice in a login session           | [`?boardOf=`](#reading-someone-elses-board)     |

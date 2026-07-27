@@ -18,13 +18,15 @@ import type { SessionManager } from './auth/session';
 import type { SyncIdentityProvider } from './auth/sync-identity';
 import { registerAuthRoutes, sessionFromRequest } from './auth/routes';
 import { materialFor, parseKeyId, verifyApiKey } from './auth/api-key';
-import type { Principal } from './auth/principal';
+import { boardTargetFor, type Principal } from './auth/principal';
 import type { UserBoards } from './user-boards';
 
 const DOCS = {
   name: 'sp-bridge API',
   version: 1,
   auth: 'Authorization: Bearer <key> or X-Api-Key: <key>; keys are per-user, created at /api/auth/users/:id/keys',
+  boards:
+    "every route acts on the caller's own board; add ?boardOf=<accountId> to read a board its owner has shared (read-only, see GET /api/auth/public-boards)",
   routes: {
     'GET /api/health': 'liveness (no auth)',
     'GET /api/docs': 'this document (no auth)',
@@ -314,6 +316,12 @@ export const createRestServer = (
   };
 
   /**
+   * Somebody else's board, once the request has been allowed to read it. Absent means "the principal's own", which is nearly all traffic.
+   * Resolved once in the auth hook rather than per handler, so the permission answer and the board the handlers act on cannot drift apart.
+   */
+  const boardOwners = new WeakMap<FastifyRequest, UserRow>();
+
+  /**
    * The board this request acts on: the principal's own, whether they arrived by session or by API key.
    * Automation therefore addresses the same board its owner sees, rather than the container account everything used to land on.
    *
@@ -326,9 +334,8 @@ export const createRestServer = (
     if (!boards || !auth?.override) return container;
     const user = principals.get(req)?.user;
     if (!user) return container;
-    // A session reading somebody else's published board reads THAT board here too, so the API and the browser never disagree about what is on screen.
-    const owner = await viewedOwner(req);
-    const target = owner ?? user;
+    // Reading somebody else's shared board reads THAT board here too, so the API and the browser never disagree about what is on screen.
+    const target = boardOwners.get(req) ?? user;
     return boards.forUser(
       target,
       await auth.override.identities.isContainerAccount(target),
@@ -336,20 +343,13 @@ export const createRestServer = (
   };
 
   /**
-   * The published board this request is reading, or undefined for the caller's own.
+   * Who may read whose board: sharing is all-or-nothing and applies to everyone signed in, so roles govern writing rather than looking.
    *
-   * Only a session can name one: an API key has no session and so always addresses its owner's board. Publication is re-checked on every request rather than
-   * trusted from the cookie, so unpublishing takes effect immediately instead of when the session expires.
+   * Deliberately the only place that decides this. If per-account grants ever replace whole-board publishing, only this function has to learn
+   * has to. Publication is re-read per request rather than trusted from a cookie or a cached decision, so unsharing takes effect on the next call.
    */
-  const viewedOwner = async (req: FastifyRequest): Promise<UserRow | undefined> => {
-    if (!auth) return undefined;
-    const session = sessionFromRequest(req, auth.sessions);
-    const viewingId = session?.user.viewingUserId;
-    if (!viewingId) return undefined;
-    // A key presented alongside a browser's cookie must not inherit that browser's delegated board.
-    if (principals.get(req)?.user.id !== session?.user.userId) return undefined;
-    return (await auth.store.listPublicUsers()).find((u) => u.id === viewingId);
-  };
+  const mayReadBoard = async (targetId: number): Promise<UserRow | undefined> =>
+    (await auth?.store.listPublicUsers())?.find((u) => u.id === targetId);
 
   const coreFor = async (req: FastifyRequest): Promise<BridgeCore> =>
     (await boardFor(req)).core;
@@ -496,10 +496,49 @@ export const createRestServer = (
       });
     }
 
-    // Somebody else's board is read-only regardless of rank. Publishing grants a look, never a hand: an admin browsing an operator's board is a reader there,
-    // and the sync token served for it is read-scoped for the same reason.
-    if (!isReadOnlyRequest(req.method) && (await viewedOwner(req))) {
-      return reply.status(403).send({ error: 'Read-only: viewing another board' });
+    // Which board this request means. After the role check, so a read-only account hears about its role first - that is the fact it has to act on,
+    // whichever board it was aiming at.
+    const asked = new URLSearchParams(req.url.split('?')[1] ?? '').getAll('boardOf');
+    let viewing: number | null = null;
+    // The cookie is consulted only when nothing was named explicitly, and never for a key: a key sent alongside a browser's cookie would otherwise
+    // inherit that browser's chosen board.
+    if (!asked.length && auth && !principal.viaKey) {
+      viewing = sessionFromRequest(req, auth.sessions)?.user.viewingUserId ?? null;
+    }
+    const target = boardTargetFor(asked, viewing, principal.user.id);
+
+    if (target.kind === 'invalid') {
+      return reply.status(400).send({
+        error: `boardOf must be an account id, like ?boardOf=2. Got "${target.raw}".`,
+      });
+    }
+    if (target.kind === 'other') {
+      if (!boards || !auth?.override) {
+        return reply.status(400).send({
+          error: 'This server keeps one board for everyone, so boardOf selects nothing.',
+        });
+      }
+      const owner = await mayReadBoard(target.id);
+      if (!owner) {
+        // A stale cookie is not a request: the browser chose this board earlier and the answer changed under it, so fall back to their own rather
+        // than failing every route until they notice. An explicit boardOf is an instruction, and gets told that it did not work.
+        if (!target.explicit) return;
+        const exists = await auth.store.findUserById(target.id);
+        return reply.status(exists ? 403 : 404).send({
+          error: exists
+            ? 'That board is not shared. Its owner can share it from Settings > Accounts.'
+            : `No account with id ${target.id}.`,
+        });
+      }
+      // Somebody else's board is read-only whatever your rank. Sharing grants a look, not a hand: an admin on an operator's board is a reader there,
+      // and the sync token served for it is read-scoped for the same reason.
+      if (!isReadOnlyRequest(req.method)) {
+        return reply.status(403).send({
+          error:
+            'That board belongs to someone else. Sharing grants a read, not a write.',
+        });
+      }
+      boardOwners.set(req, owner);
     }
   });
 
