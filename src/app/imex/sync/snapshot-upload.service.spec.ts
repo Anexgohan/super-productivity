@@ -12,7 +12,6 @@ import {
 import { OperationEncryptionService } from '../../op-log/sync/operation-encryption.service';
 import { OperationLogStoreService } from '../../op-log/persistence/operation-log-store.service';
 import type { SuperSyncPrivateCfg } from '@sp/sync-providers/super-sync';
-import { WebCryptoNotAvailableError } from '../../op-log/core/errors/sync-errors';
 import { DEFAULT_GLOBAL_CONFIG } from '../../features/config/default-global-config.const';
 import { LockService } from '../../op-log/sync/lock.service';
 
@@ -649,23 +648,31 @@ describe('SnapshotUploadService', () => {
       ]);
     });
 
-    it('should throw before destructive actions when enabling encryption without WebCrypto', async () => {
+    it('enables encryption without WebCrypto, because a LAN deployment has no crypto.subtle', async () => {
+      // Deliberate fork rule: the old isCryptoSubtleAvailable() guard refused to enable encryption
+      // in insecure contexts. This stack is served over plain HTTP on a LAN by design
+      // (ALLOW_INSECURE_HTTP), so that guard rejected the normal case, not an edge case.
+      // It is safe to drop because the modern path needs no crypto.subtle: Argon2id runs on
+      // hash-wasm, and aesEncrypt falls back to @noble/ciphers (packages/sync-core/src/encryption/web-crypto.ts).
+      // Only LEGACY PBKDF2 DEcryption still requires it, and that path raises its own error where it is hit.
       mockCryptoSubtleUnavailable();
+      mockStateSnapshotService.getStateSnapshotForOperationLogAsync.and.resolveTo({
+        task: [],
+      } as any);
+      mockVectorClockService.getCurrentVectorClock.and.resolveTo({ c1: 1 });
 
-      await expectAsync(
-        service.deleteAndReuploadWithNewEncryption({
-          encryptKey: 'key',
-          isEncryptionEnabled: true,
-          logPrefix: 'TestPrefix',
-        }),
-      ).toBeRejectedWithError(WebCryptoNotAvailableError);
+      const result = await service.deleteAndReuploadWithNewEncryption({
+        encryptKey: 'key',
+        isEncryptionEnabled: true,
+        logPrefix: 'TestPrefix',
+      });
 
-      expect(
-        mockStateSnapshotService.getStateSnapshotForOperationLogAsync,
-      ).not.toHaveBeenCalled();
-      expect(mockSyncProvider.deleteAllData).not.toHaveBeenCalled();
-      expect(mockProviderManager.setProviderConfig).not.toHaveBeenCalled();
-      expect(mockSyncProvider.uploadSnapshot).not.toHaveBeenCalled();
+      expect(result.accepted).toBeTrue();
+      expect(mockProviderManager.setProviderConfig).toHaveBeenCalledWith(
+        SyncProviderId.SuperSync,
+        jasmine.objectContaining({ isEncryptionEnabled: true, encryptKey: 'key' }),
+      );
+      expect(mockSyncProvider.uploadSnapshot).toHaveBeenCalled();
     });
   });
 });

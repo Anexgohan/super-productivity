@@ -18,6 +18,7 @@ import type { SessionManager } from './auth/session';
 import type { SyncIdentityProvider } from './auth/sync-identity';
 import { registerAuthRoutes, sessionFromRequest } from './auth/routes';
 import { materialFor, parseKeyId, verifyApiKey } from './auth/api-key';
+import type { Principal } from './auth/principal';
 import type { UserBoards } from './user-boards';
 
 const DOCS = {
@@ -279,8 +280,12 @@ export const createRestServer = (
   /**
    * Who this request is, established once by the auth hook so the handlers and boardFor() agree.
    * A key and a session both resolve to a user, which is what makes "a key is its owner acting through a machine" true rather than aspirational.
+   *
+   * `viaKey` is what the account routes gate on: a key must prove the caller's password before it can hand out or widen access.
    */
-  const principals = new WeakMap<FastifyRequest, UserRow>();
+  const principals = new WeakMap<FastifyRequest, Principal>();
+
+  const principalOf = (req: FastifyRequest): Principal | undefined => principals.get(req);
 
   /** The user a presented API key belongs to, or null. Revoked and unknown keys are indistinguishable to the caller. */
   const userForApiKey = async (req: FastifyRequest): Promise<UserRow | null> => {
@@ -319,7 +324,7 @@ export const createRestServer = (
   ): Promise<{ core: BridgeCore; store: StateStore }> => {
     const container = { core, store };
     if (!boards || !auth?.override) return container;
-    const user = principals.get(req);
+    const user = principals.get(req)?.user;
     if (!user) return container;
     // A session reading somebody else's published board reads THAT board here too, so the API and the browser never disagree about what is on screen.
     const owner = await viewedOwner(req);
@@ -342,7 +347,7 @@ export const createRestServer = (
     const viewingId = session?.user.viewingUserId;
     if (!viewingId) return undefined;
     // A key presented alongside a browser's cookie must not inherit that browser's delegated board.
-    if (principals.get(req)?.id !== session?.user.userId) return undefined;
+    if (principals.get(req)?.user.id !== session?.user.userId) return undefined;
     return (await auth.store.listPublicUsers()).find((u) => u.id === viewingId);
   };
 
@@ -350,7 +355,7 @@ export const createRestServer = (
     (await boardFor(req)).core;
 
   if (auth) {
-    registerAuthRoutes(app, auth);
+    registerAuthRoutes(app, { ...auth, principalOf });
   }
 
   if (auth?.override) {
@@ -458,29 +463,37 @@ export const createRestServer = (
     if (PUBLIC_PATHS.has(url)) return;
 
     // A key and a session are two ways of naming the same thing, so both resolve to a user and both are held to that user's role.
-    // A key no longer bypasses the ACL: an admin's key can manage accounts, a viewer's key can only read.
-    let principal = await userForApiKey(req);
+    const presented = presentedKeys(req).length > 0;
+    const keyUser = await userForApiKey(req);
+    let principal: Principal | null = keyUser ? { user: keyUser, viaKey: true } : null;
     if (!principal) {
       const session = auth && sessionFromRequest(req, auth.sessions);
-      principal = session
+      const user = session
         ? await auth?.store.findUserById(session.user.userId).catch(() => null)
         : null;
+      principal = user ? { user, viaKey: false } : null;
     }
     if (!principal) {
-      return reply.status(401).send({ error: 'Unauthorized' });
+      // Two different problems, two different answers: a key that did not verify is worth naming, since the usual cause is revocation.
+      return reply.status(401).send({
+        error: presented
+          ? 'That API key is not valid or has been revoked. Check Settings > Accounts > API keys.'
+          : 'No API key or session. Send your key as X-Api-Key, or sign in.',
+      });
     }
     principals.set(req, principal);
 
-    // Account routes carry their own per-route checks (requireAdmin), and a
-    // viewer legitimately POSTs to some of them - logout, own password, own
-    // email. Gating them by method here would lock people out of their own
-    // account.
+    // Account routes carry their own per-route checks, and a viewer legitimately POSTs to some of them - logout, own password, own email.
+    // Gating them by method here would lock people out of their own account.
     if (url.startsWith('/api/auth/')) return;
 
     // Roles were assignable in the UI but enforced nowhere: a viewer could
     // create tasks or delete boards. Writes now require operator or above.
-    if (!isReadOnlyRequest(req.method) && !canWrite(principal.role)) {
-      return reply.status(403).send({ error: 'Read-only account', role: principal.role });
+    if (!isReadOnlyRequest(req.method) && !canWrite(principal.user.role)) {
+      return reply.status(403).send({
+        error: 'Your account is read-only. An admin can change your role.',
+        role: principal.user.role,
+      });
     }
 
     // Somebody else's board is read-only regardless of rank. Publishing grants a look, never a hand: an admin browsing an operator's board is a reader there,

@@ -12,6 +12,7 @@ import { hashPassword, verifyPassword } from './passwords';
 import { AuthStore, ROLES, isRole, type ApiKeyRow, type Role } from './store';
 import { formatApiKey, materialFor, mintSalt } from './api-key';
 import { SessionManager, SESSION_COOKIE, parseCookies } from './session';
+import { needsCallerPassword, type Principal } from './principal';
 import { renderLoginPage } from './login-page';
 
 const USERNAME_PATTERN = /^[a-zA-Z0-9_.-]{3,32}$/;
@@ -112,6 +113,13 @@ export interface AuthDeps {
    * appearing in the published list and the override refusing to serve it.
    */
   forgetBoardReadToken?: (ownerId: number) => void;
+  /**
+   * Who the request is, resolved once by the REST auth hook from either an API key or a session cookie.
+   *
+   * These routes used to read the cookie themselves, which silently made them session-only once keys became per-user.
+   * Going through the hook's answer also means the role comes from the database rather than a login-time snapshot.
+   */
+  principalOf: (req: FastifyRequest) => Principal | undefined;
 }
 
 /** Reads and validates the session cookie on a request. */
@@ -133,10 +141,44 @@ export const registerAuthRoutes = (
     webUrl,
     purgeSyncAccount,
     forgetBoardReadToken,
+    principalOf,
   }: AuthDeps,
 ): void => {
   const limiter = new LoginRateLimiter();
   const appHome = webUrl || '/';
+
+  /** The caller, by key or by cookie, resolved once by the REST auth hook with the role read from the database. */
+  const callerOf = (req: FastifyRequest): Principal | undefined => principalOf(req);
+
+  /**
+   * Refuses a credential-widening call made with a key unless the caller also proves the password.
+   *
+   * A key that can mint another key survives its own revocation, so this is what keeps "revoke the leaked key" a complete answer.
+   * Browser sessions skip it: the UI asks for the password where it matters, and a cookie is already scoped to one browser.
+   */
+  const provedPassword = async (
+    req: FastifyRequest,
+    reply: FastifyReply,
+    caller: Principal,
+  ): Promise<boolean> => {
+    if (!caller.viaKey) return true;
+    if (!needsCallerPassword(req.method, req.url, req.body)) return true;
+    const given = (req.body as { currentPassword?: unknown } | undefined)
+      ?.currentPassword;
+    if (typeof given !== 'string' || !given) {
+      await reply.status(403).send({
+        error:
+          'This also needs your account password when using an API key. Add currentPassword to the body.',
+      });
+      return false;
+    }
+    if (!(await verifyPassword(given, caller.user.passwordHash))) {
+      await sleep(FAIL_DELAY_MS);
+      await reply.status(403).send({ error: 'That password is not correct.' });
+      return false;
+    }
+    return true;
+  };
 
   // The bridge is an API server, so "/" would otherwise 404. Send humans to the
   // app (or the login page if they have no session yet) rather than JSON.
@@ -234,15 +276,22 @@ export const registerAuthRoutes = (
 
   // ── Who am I ──────────────────────────────────────────────────────────────
   app.get('/api/auth/me', async (req, reply) => {
+    const caller = callerOf(req);
+    if (!caller) {
+      return reply.status(401).send({
+        error: 'No API key or session. Send your key as X-Api-Key, or sign in.',
+      });
+    }
+    // Cookie renewal and "which board am I viewing" are browser concepts: a key has neither, so both are simply absent for one.
     const session = sessionFromRequest(req, sessions);
-    if (!session) return reply.status(401).send({ error: 'Not signed in' });
-    // Sliding expiry: refresh the cookie once it's used a fraction of its life.
-    if (session.ageSeconds > sessions.renewAfterSeconds) {
+    if (session && session.ageSeconds > sessions.renewAfterSeconds) {
       reply.header('Set-Cookie', sessions.cookie(sessions.sign(session.user)));
     }
     // Read back rather than trust the cookie: the session is a login-time snapshot, so an email or role changed since then would come back stale.
-    const user = await store.findUserById(session.user.userId);
-    if (!user) return reply.status(401).send({ error: 'Not signed in' });
+    const user = await store.findUserById(caller.user.id);
+    if (!user) {
+      return reply.status(401).send({ error: 'That account no longer exists.' });
+    }
     return {
       // The client needs its own id to address /api/auth/users/:id/keys.
       id: user.id,
@@ -251,8 +300,8 @@ export const registerAuthRoutes = (
       email: user.email,
       // Own publish state, so a non-admin's row can show and change it. Admins read everyone's from /api/auth/users instead.
       isPublic: user.isPublic,
-      // Whose board this browser is reading, when it is not their own.
-      viewingUserId: session.user.viewingUserId ?? null,
+      // Whose board this browser is reading, when it is not their own. Always null for a key: there is no browser to hold the choice.
+      viewingUserId: session?.user.viewingUserId ?? null,
       setupRequired: false,
     };
   });
@@ -285,12 +334,21 @@ export const registerAuthRoutes = (
     req: FastifyRequest,
     reply: FastifyReply,
   ): Promise<boolean> => {
-    const session = sessionFromRequest(req, sessions);
-    if (session?.user.role !== 'admin') {
-      await reply.status(403).send({ error: 'Admin only' });
+    const caller = callerOf(req);
+    // Previously one 403 for both cases, which told an admin using a key that their account was not an admin. It is; it just had no cookie.
+    if (!caller) {
+      await reply.status(401).send({
+        error: 'No API key or session. Send your key as X-Api-Key, or sign in.',
+      });
       return false;
     }
-    return true;
+    if (caller.user.role !== 'admin') {
+      await reply
+        .status(403)
+        .send({ error: `This needs an admin account. Yours is ${caller.user.role}.` });
+      return false;
+    }
+    return provedPassword(req, reply, caller);
   };
 
   const publicUser = (u: {
@@ -484,8 +542,12 @@ export const registerAuthRoutes = (
   app.put<{ Body: { currentPassword?: string; newPassword?: string } }>(
     '/api/auth/password',
     async (req, reply) => {
-      const session = sessionFromRequest(req, sessions);
-      if (!session) return reply.status(401).send({ error: 'Not signed in' });
+      const caller = callerOf(req);
+      if (!caller) {
+        return reply.status(401).send({
+          error: 'No API key or session. Send your key as X-Api-Key, or sign in.',
+        });
+      }
 
       const { currentPassword, newPassword } = req.body ?? {};
       if (typeof newPassword !== 'string' || newPassword.length < MIN_PASSWORD_LENGTH) {
@@ -493,8 +555,10 @@ export const registerAuthRoutes = (
           .status(400)
           .send({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` });
       }
-      const user = await store.findUserById(session.user.userId);
-      if (!user) return reply.status(401).send({ error: 'Not signed in' });
+      const user = await store.findUserById(caller.user.id);
+      if (!user) {
+        return reply.status(401).send({ error: 'That account no longer exists.' });
+      }
 
       // Required even though the session already proves identity: it stops an
       // unattended browser being turned into a permanent takeover.
@@ -514,15 +578,19 @@ export const registerAuthRoutes = (
 
   /** Profile data. Changing it moves nothing - see sync-identity.ts. */
   app.put<{ Body: { email?: string } }>('/api/auth/me', async (req, reply) => {
-    const session = sessionFromRequest(req, sessions);
-    if (!session) return reply.status(401).send({ error: 'Not signed in' });
+    const caller = callerOf(req);
+    if (!caller) {
+      return reply.status(401).send({
+        error: 'No API key or session. Send your key as X-Api-Key, or sign in.',
+      });
+    }
 
     const cleanEmail = normalizeEmail(req.body?.email);
     if (cleanEmail === INVALID_EMAIL) {
       return reply.status(400).send({ error: 'Email must be a valid address' });
     }
-    await store.setEmail(session.user.userId, cleanEmail);
-    const user = await store.findUserById(session.user.userId);
+    await store.setEmail(caller.user.id, cleanEmail);
+    const user = await store.findUserById(caller.user.id);
     return reply.send(publicUser(user as never));
   });
 
@@ -575,16 +643,18 @@ export const registerAuthRoutes = (
     reply: FastifyReply,
     targetId: number,
   ): Promise<boolean> => {
-    const session = sessionFromRequest(req, sessions);
-    if (!session) {
-      await reply.status(401).send({ error: 'Unauthorized' });
+    const caller = callerOf(req);
+    if (!caller) {
+      await reply.status(401).send({
+        error: 'No API key or session. Send your key as X-Api-Key, or sign in.',
+      });
       return false;
     }
-    if (session.user.role !== 'admin' && session.user.userId !== targetId) {
-      await reply.status(403).send({ error: 'Not your account' });
+    if (caller.user.role !== 'admin' && caller.user.id !== targetId) {
+      await reply.status(403).send({ error: 'You can only manage your own account.' });
       return false;
     }
-    return true;
+    return provedPassword(req, reply, caller);
   };
 
   /**
@@ -625,13 +695,18 @@ export const registerAuthRoutes = (
    * deliberately been shared with them. Their own row is filtered out, since their own board is what they already get by default.
    */
   app.get('/api/auth/public-boards', async (req, reply) => {
+    const caller = callerOf(req);
+    if (!caller) {
+      return reply.status(401).send({
+        error: 'No API key or session. Send your key as X-Api-Key, or sign in.',
+      });
+    }
     const session = sessionFromRequest(req, sessions);
-    if (!session) return reply.status(401).send({ error: 'Unauthorized' });
     const rows = await store.listPublicUsers();
     return {
-      viewing: session.user.viewingUserId ?? null,
+      viewing: session?.user.viewingUserId ?? null,
       boards: rows
-        .filter((u) => u.id !== session.user.userId)
+        .filter((u) => u.id !== caller.user.id)
         .map((u) => ({ id: u.id, username: u.username })),
     };
   });
@@ -643,8 +718,14 @@ export const registerAuthRoutes = (
    * stops being served rather than running until the cookie expires.
    */
   app.post<{ Body: { userId?: unknown } }>('/api/auth/viewing', async (req, reply) => {
+    // Browser-only, and not an oversight: the choice is stored by reissuing the session cookie, and a key has no cookie to store it in.
     const session = sessionFromRequest(req, sessions);
-    if (!session) return reply.status(401).send({ error: 'Unauthorized' });
+    if (!session) {
+      return reply.status(401).send({
+        error:
+          'Switching boards is a browser action: the choice is kept in your login session. Sign in to use it.',
+      });
+    }
 
     const raw = req.body?.userId;
     if (raw === null || raw === undefined) {

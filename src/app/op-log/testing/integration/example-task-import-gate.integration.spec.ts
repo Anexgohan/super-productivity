@@ -116,15 +116,18 @@ describe('Example-task SYNC_IMPORT gate (integration)', () => {
     expect(remaining).not.toContain(example.id);
   });
 
-  it('keeps another config section meaningful on a never-synced client', async () => {
+  it('discards another config section as scaffolding on a never-synced client', async () => {
+    // Fork rule (df0bf8b2f): before a first sync every config section is furniture the app wrote
+    // for itself. Upstream protected all but `sync` here, so a fresh container browser met a
+    // conflict dialog over writes it never made.
     const config = configOp('productivityHacks');
     await storeService.append(config, 'local');
 
     const result = await gate.checkIncomingFullStateConflict([incomingSyncImport()]);
 
-    expect(result.hasMeaningfulPending).toBeTrue();
-    expect(result.dialogData).toBeDefined();
-    expect(result.discardablePendingOpIds).toEqual([]);
+    expect(result.hasMeaningfulPending).toBeFalse();
+    expect(result.dialogData).toBeUndefined();
+    expect(result.discardablePendingOpIds).toEqual([config.id]);
   });
 
   it('shows the dialog (and still lists the example id) when real user work is also pending', async () => {

@@ -85,13 +85,50 @@ describe('SyncImportConflictGateService', () => {
     expect(result.fullStateOp).toBe(incomingSyncImport);
     expect(result.pendingOps).toEqual([pendingTaskEntry]);
     expect(result.hasMeaningfulPending).toBeTrue();
-    expect(result.dialogData).toEqual({
-      filteredOpCount: 1,
-      localImportTimestamp: 123,
-      syncImportReason: 'SERVER_MIGRATION',
-      scenario: 'INCOMING_IMPORT',
-      isNeverSynced: true,
+    // Asserted field by field rather than with toEqual: the dialog gained remoteSummary/localSummary,
+    // and an exact match turns every future addition into a spurious failure here.
+    expect(result.dialogData).toEqual(
+      jasmine.objectContaining({
+        filteredOpCount: 1,
+        localImportTimestamp: 123,
+        syncImportReason: 'SERVER_MIGRATION',
+        scenario: 'INCOMING_IMPORT',
+        isNeverSynced: true,
+      }),
+    );
+  });
+
+  it('should tell the person what is on BOTH sides, not just how much is at risk locally', async () => {
+    // "Use Server Data" was a leap of faith while the dialog described only the local side.
+    const incomingSyncImport = createOperation({
+      payload: {
+        task: { ids: ['t1', 't2', 't3'] },
+        project: { ids: ['p1'] },
+        tag: { ids: [] },
+      },
     });
+    opLogStoreSpy.getUnsynced.and.resolveTo([
+      createEntry(
+        createOperation({
+          id: 'local-task-update',
+          actionType: 'test' as ActionType,
+          opType: OpType.Update,
+          entityType: 'TASK',
+          entityId: 'task-1',
+          clientId: 'client-A',
+          vectorClock: { clientA: 1 },
+        }),
+      ),
+    ]);
+
+    const result = await service.checkIncomingFullStateConflict([incomingSyncImport]);
+
+    // Empty sections are omitted, so an absent tag count means "none", not "unknown".
+    expect(result.dialogData?.remoteSummary).toEqual([
+      { label: 'tasks', count: 3 },
+      { label: 'projects', count: 1 },
+    ]);
+    expect(result.dialogData?.localSummary?.length).toBeGreaterThan(0);
   });
 
   const createPendingConfigEntry = (sectionKey = 'sync'): OperationLogEntry =>
@@ -129,17 +166,45 @@ describe('SyncImportConflictGateService', () => {
     expect(result.dialogData).toBeUndefined();
   });
 
-  it('should protect non-update operations targeting the sync config coordinates', async () => {
+  it('treats every config section as first-launch scaffolding on a never-synced client', async () => {
+    // Deliberate fork rule (df0bf8b2f): before a first sync, config is furniture the app wrote
+    // for itself, not something a person chose. Upstream protected every section here, which made
+    // a fresh container browser meet a conflict dialog it could not have caused.
+    opLogStoreSpy.hasSyncedOps.and.resolveTo(false);
+    opLogStoreSpy.getUnsynced.and.resolveTo([
+      createPendingConfigEntry('productivityHacks'),
+    ]);
+
+    const result = await service.checkIncomingFullStateConflict([createOperation()]);
+
+    expect(result.hasMeaningfulPending).toBeFalse();
+    expect(result.dialogData).toBeUndefined();
+  });
+
+  it('protects the same config section once the client HAS synced', async () => {
+    // The asymmetry is the point: after a first sync a config edit is a deliberate choice.
+    opLogStoreSpy.hasSyncedOps.and.resolveTo(true);
+    opLogStoreSpy.getUnsynced.and.resolveTo([
+      createPendingConfigEntry('productivityHacks'),
+    ]);
+
+    const result = await service.checkIncomingFullStateConflict([createOperation()]);
+
+    expect(result.hasMeaningfulPending).toBeTrue();
+    expect(result.dialogData).toBeDefined();
+  });
+
+  it('never treats real content as scaffolding, even on a never-synced client', async () => {
+    // The scaffolding list may only ever fail by asking too often, never by discarding work.
     opLogStoreSpy.hasSyncedOps.and.resolveTo(false);
     opLogStoreSpy.getUnsynced.and.resolveTo([
       createEntry(
         createOperation({
-          id: 'local-config-delete',
-          actionType: ActionType.GLOBAL_CONFIG_UPDATE_SECTION,
-          opType: OpType.Delete,
-          entityType: 'GLOBAL_CONFIG',
-          entityId: 'sync',
-          payload: { sectionKey: 'sync' },
+          id: 'local-task-update',
+          actionType: 'test' as ActionType,
+          opType: OpType.Update,
+          entityType: 'TASK',
+          entityId: 'task-1',
           clientId: 'client-A',
           vectorClock: { clientA: 1 },
         }),
@@ -149,14 +214,55 @@ describe('SyncImportConflictGateService', () => {
     const result = await service.checkIncomingFullStateConflict([createOperation()]);
 
     expect(result.hasMeaningfulPending).toBeTrue();
-    expect(result.discardablePendingOpIds).toEqual([]);
     expect(result.dialogData).toBeDefined();
   });
 
-  it('should flag a user config change on a never-synced client', async () => {
-    opLogStoreSpy.hasSyncedOps.and.resolveTo(false);
+  it('does not block an import over SyncedUiPrefs housekeeping', async () => {
+    // Deliberate fork rule (bee88c39f): a misc update whose ONLY change is uiPrefs is this browser
+    // pushing its own preferences up. seedMissingFromLocal() re-adopts them, so losing them costs
+    // nothing, and blocking on them meant a fresh sign-in raised a dialog over the app's own write.
+    // Asserted on a SYNCED client so the first-launch scaffolding rule cannot be what passes it.
+    opLogStoreSpy.hasSyncedOps.and.resolveTo(true);
     opLogStoreSpy.getUnsynced.and.resolveTo([
-      createPendingConfigEntry('productivityHacks'),
+      createEntry(
+        createOperation({
+          id: 'local-ui-prefs',
+          actionType: ActionType.GLOBAL_CONFIG_UPDATE_SECTION,
+          opType: OpType.Update,
+          entityType: 'GLOBAL_CONFIG',
+          entityId: 'misc',
+          payload: { sectionKey: 'misc', sectionCfg: { uiPrefs: { foo: 1 } } },
+          clientId: 'client-A',
+          vectorClock: { clientA: 1 },
+        }),
+      ),
+    ]);
+
+    const result = await service.checkIncomingFullStateConflict([createOperation()]);
+
+    expect(result.hasMeaningfulPending).toBeFalse();
+    expect(result.dialogData).toBeUndefined();
+  });
+
+  it('still blocks when a misc update changes more than uiPrefs', async () => {
+    // The exemption is scoped to a lone uiPrefs key; anything alongside it is a real edit.
+    opLogStoreSpy.hasSyncedOps.and.resolveTo(true);
+    opLogStoreSpy.getUnsynced.and.resolveTo([
+      createEntry(
+        createOperation({
+          id: 'local-misc-update',
+          actionType: ActionType.GLOBAL_CONFIG_UPDATE_SECTION,
+          opType: OpType.Update,
+          entityType: 'GLOBAL_CONFIG',
+          entityId: 'misc',
+          payload: {
+            sectionKey: 'misc',
+            sectionCfg: { uiPrefs: { foo: 1 }, isDarkMode: true },
+          },
+          clientId: 'client-A',
+          vectorClock: { clientA: 1 },
+        }),
+      ),
     ]);
 
     const result = await service.checkIncomingFullStateConflict([createOperation()]);
@@ -262,13 +368,15 @@ describe('SyncImportConflictGateService', () => {
     const result = await service.checkIncomingFullStateConflict([incomingSyncImport]);
 
     expect(result.hasMeaningfulPending).toBeTrue();
-    expect(result.dialogData).toEqual({
-      filteredOpCount: 1,
-      localImportTimestamp: 123,
-      syncImportReason: undefined,
-      scenario: 'INCOMING_IMPORT',
-      isNeverSynced: true,
-    });
+    expect(result.dialogData).toEqual(
+      jasmine.objectContaining({
+        filteredOpCount: 1,
+        localImportTimestamp: 123,
+        syncImportReason: undefined,
+        scenario: 'INCOMING_IMPORT',
+        isNeverSynced: true,
+      }),
+    );
   });
 
   it('should mark dialogData.isNeverSynced=false for an already-synced client', async () => {

@@ -315,8 +315,9 @@ export class UserAccountsCfgComponent implements OnInit {
     return user.role === 'admin' && this.adminCount <= 1;
   }
 
+  /** By id, never by name: this decides whether an edit takes the self routes, which are the only ones that ask for the current password. */
   isSelf(user: UserRow): boolean {
-    return user.username === this.me()?.username;
+    return user.id === this.me()?.id;
   }
 
   trackById(_i: number, user: UserRow): number {
