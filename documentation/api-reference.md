@@ -765,7 +765,9 @@ Body `{"isPublic": true}` → `{id, isPublic}`. Whole-board only. `409` if the a
 
 #### `POST /api/auth/viewing`
 
-Switches which board you read. Body `{"userId": 2}`, or `{"userId": null}` for your own. `404` if unpublished or unknown - deliberately indistinguishable · `400` for your own id. Writes while viewing → `403 {"error":"Read-only: viewing another board"}`.
+Switches which board you read, for the rest of your login session. Body `{"userId": 2}`, or `{"userId": null}` for your own. `404` if unpublished or unknown - deliberately indistinguishable · `400` for your own id. Writes while viewing → `403 {"error":"That board belongs to someone else. Sharing grants a read, not a write."}`.
+
+**Session-only**, and the one route a key cannot reach: the choice is stored by reissuing the session cookie, and a key has no cookie to store it in. A key gets `401 {"error":"Switching boards is a browser action: the choice is kept in your login session. Sign in to use it."}`. Scripts use [`?boardOf=`](#reading-someone-elses-board), which needs no stored state.
 
 ### API keys
 

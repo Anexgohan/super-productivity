@@ -105,7 +105,9 @@ interface KarmaClient {
 const karmaClient = (window as unknown as Record<string, KarmaClient | undefined>)[
   '__karma__'
 ];
-let runningSpecName = '(none)';
+/** Null except while a spec is actually executing, which is the only window worth reporting in. */
+let runningSpecName: string | null = null;
+let isSuiteFinished = false;
 
 jasmine.getEnv().addReporter({
   specStarted: (result) => {
@@ -119,11 +121,21 @@ jasmine.getEnv().addReporter({
     });
   },
   specDone: () => {
-    runningSpecName = '(between specs)';
+    runningSpecName = null;
+  },
+  jasmineDone: () => {
+    isSuiteFinished = true;
   },
 });
 
 window.addEventListener('beforeunload', () => {
+  // Karma disposes the browser after a normal run, so beforeunload fires on every clean finish
+  // too. Both guards are needed: jasmineDone covers ordinary teardown, and the null name covers a
+  // teardown that races ahead of it. Reporting either would put a red ERROR line on a green run,
+  // which trains everyone to ignore the one case this exists for.
+  if (isSuiteFinished || runningSpecName === null) {
+    return;
+  }
   // Reported here rather than left to the disconnect timeout: this fires while the spec name is
   // still known, and turns a silent 30s truncation into one line naming the culprit.
   const message =
