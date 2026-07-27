@@ -44,9 +44,9 @@ jobs:
   # Lint gates the whole release rather than living inside the web Dockerfile.
   # There it cost 76s of every local image build and failed AFTER the expensive
   # Angular layer; here it runs once, on GitHub's runners, and stops all six
-  # builds before any of them start. ci.yml also lints, but only on PRs to
-  # master — which this fork's tag-driven flow never opens, so without this job
-  # nothing would lint at all.
+  # builds before any of them start.
+  # ci.yml lints too, but only on pushes and PRs involving main. A tag can point
+  # at any commit, so this stays the gate that a release cannot skip.
   lint:
     name: lint
     runs-on: ubuntu-24.04
@@ -59,6 +59,32 @@ jobs:
       - run: npm ci --ignore-scripts || npm i --ignore-scripts
       - run: npm run prepare
       - run: npm run lint
+
+  # Runs alongside `build`, not before it. The builds take ~6 minutes, so the
+  # suite finishes inside that window and costs the release almost nothing.
+  # `merge` is what creates the public tag, so gating that (below) is what
+  # actually stops a failing commit from reaching GHCR.
+  test:
+    name: test
+    needs: lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Upstream installs a dependency from git+ssh; force HTTPS so npm works without a key.
+      - name: Use HTTPS for git deps
+        run: >
+          git config --global url."https://github.com/".insteadOf
+          ssh://git@github.com/
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci || npm i
+      - run: npm run env # Generate env.generated.ts
+      - run: npm run int:test # Validate i18n JSON files
+      - run: npm run test
 
   build:
     name: build ${{ matrix.image.name }} (${{ matrix.platform.arch }})
@@ -135,10 +161,93 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # Proves the images we are about to tag actually come up and serve.
+  # Unit tests cannot catch a broken Dockerfile, entrypoint, nginx route or
+  # compose wiring, and those are exactly what reaches the deployment.
+  # amd64 only: this checks the wiring, not the architecture, and the arm64
+  # image is built from the same Dockerfile.
+  smoke:
+    name: smoke
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download the amd64 digests
+        uses: actions/download-artifact@v4
+        with:
+          # No merge-multiple: every artifact holds a file called `amd64`, so
+          # flattening them would overwrite all but one.
+          pattern: digest-*-amd64
+          path: /tmp/digests
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Write .env and pin the images to the digests just built
+        working-directory: docker/deployment
+        run: |
+          set -euo pipefail
+          sed -e "s|JWT_SECRET='CHANGE_ME'|JWT_SECRET='$(openssl rand -hex 32)'|" \
+              -e "s|POSTGRES_PASSWORD='CHANGE_ME'|POSTGRES_PASSWORD='$(openssl rand -hex 16)'|" \
+              -e "s|SP_SYNC_ENCRYPTION_PASSWORD='CHANGE_ME'|SP_SYNC_ENCRYPTION_PASSWORD='$(openssl rand -hex 16)'|" \
+              -e "s|SP_SYNC_ACCOUNT_EMAIL='you@example.com'|SP_SYNC_ACCOUNT_EMAIL='smoke@example.com'|" \
+              -e "s|SP_SYNC_ACCOUNT_PASSWORD='CHANGE_ME'|SP_SYNC_ACCOUNT_PASSWORD='$(openssl rand -hex 12)'|" \
+              .env.example > .env
+          {
+            echo 'services:'
+            for image in sp-web sp-bridge sp-supersync; do
+              service="sp_${image#sp-}"
+              digest="$(cat "/tmp/digests/digest-${image}-amd64/amd64")"
+              echo "  ${service}:"
+              echo "    image: ${{ env.REGISTRY_NS }}/${image}@${digest}"
+            done
+          } > compose.override.yml
+          cat compose.override.yml
+
+      - name: Bring the stack up
+        working-directory: docker/deployment
+        # --wait blocks on the healthchecks the compose file already declares.
+        # Postgres runs initdb on a cold boot, hence the generous timeout.
+        run: docker compose up -d --wait --wait-timeout 300
+
+      - name: The API answers through the web container
+        working-directory: docker/deployment
+        run: |
+          set -euo pipefail
+          base="http://localhost:18230"
+          # /api/health and /api/docs are the only unauthenticated routes, which
+          # is precisely what a smoke test should be limited to.
+          curl -fsS --retry 10 --retry-delay 3 --retry-all-errors "$base/api/health" | tee /dev/stderr | grep -q '"status":"ok"'
+          routes=$(curl -fsS "$base/api/docs" | jq '.routes | length')
+          echo "documented routes: $routes"
+          # A route map that collapsed to nothing means the server booted without its API.
+          test "$routes" -gt 40
+
+      - name: Container logs on failure
+        if: ${{ failure() }}
+        working-directory: docker/deployment
+        run: docker compose logs --no-color --tail 200
+
+      - name: Tear down
+        if: ${{ always() }}
+        working-directory: docker/deployment
+        run: docker compose down -v --remove-orphans
+
   merge:
     name: merge ${{ matrix.image }}
     runs-on: ubuntu-24.04
-    needs: build
+    # Both gates: the code passed its tests, and the images it produced come up.
+    needs: [build, test, smoke]
     permissions:
       contents: read
       packages: write
