@@ -1,5 +1,15 @@
+# Scoped to what this fork actually ships: a web app and three containers.
+# Upstream's desktop, mobile and store-release jobs were dropped in 62741f7d1;
+# what this file kept from them is trimmed here for the same reason.
+# The tag-driven publish gates on its own copy of these tests, so `release:
+# published` is deliberately not a trigger; it would only re-run them.
 name: CI
 on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'docs/wiki/**'
   pull_request:
     branches:
       - master
@@ -8,8 +18,6 @@ on:
       - 'docs/wiki/**'
   workflow_dispatch:
     inputs: {}
-  release:
-    types: [published]
 permissions:
   contents: read
 
@@ -103,76 +111,16 @@ jobs:
             ${{ runner.os }}-node22-
       - name: Install npm Packages
         run: npm i
-      - name: Install Playwright Browsers
-        run: |
-          npx playwright install --with-deps chromium
-          npx playwright install-deps chromium
       - run: npm run env # Generate env.generated.ts from environment variables
       - run: npm run int:test # Validate i18n JSON files
-      - run: npm run test:electron # Node-side unit tests for electron/*.cjs
+      # packages:test covers sync-core, sync-providers and sp-bridge; then the Angular suite, then the timezone pass.
       - run: npm run test
-      - name: Build Frontend for E2E
+      # Not for E2E any more, but the build still has to succeed: a frontend that
+      # does not compile breaks the sp-web image at publish time, and finding
+      # that out on a tag push is far too late.
+      - name: Build Frontend
         run: npm run buildFrontend:e2e
       - name: Verify Build Output
         run: |
           test -f .tmp/angular-dist/browser/index.html || (echo "Build output missing" && exit 1)
           test -f .tmp/angular-dist/browser/assets/bundled-plugins/api-test-plugin/manifest.json || (echo "Plugin assets missing from build" && exit 1)
-      - name: Test E2E
-        run: npm run e2e:ci
-      - name: 'Upload E2E results on failure'
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: e2eResults
-          path: .tmp/e2e-test-results/**/*.*
-          retention-days: 14
-
-  # Lighthouse is designed to audit the performance, accessibility, SEO, and other metrics of a web application.
-  lighthouse:
-    name: Lighthouse
-    runs-on: ubuntu-latest
-    env:
-      UNSPLASH_KEY: ${{ secrets.UNSPLASH_KEY }}
-      UNSPLASH_CLIENT_ID: ${{ secrets.UNSPLASH_CLIENT_ID }}
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
-
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
-        with:
-          node-version: 22
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm i
-
-      - run: npm run env # Generate env.generated.ts
-
-      - name: Build production web app
-        run: npm run buildFrontend:prodWeb
-
-      - name: Add swap space for Lighthouse
-        run: |
-          # Ensure Lighthouse/Chrome have enough memory on GitHub-hosted runners
-          # Remove existing swapfile if present
-          sudo swapoff /swapfile 2>/dev/null || true
-          sudo rm -f /swapfile
-          sudo fallocate -l 4G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-
-      - name: Strip service worker artifacts for Lighthouse
-        run: rm -f dist/browser/ngsw.json dist/browser/ngsw-worker.js dist/browser/safety-worker.js dist/browser/worker-basic.min.js
-
-      - name: Run Lighthouse CI
-        uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12
-        with:
-          # Configure Lighthouse CI
-          configPath: './tools/lighthouse/.lighthouserc.json'
-          # Upload results to temporary storage
-          uploadArtifacts: true
-          temporaryPublicStorage: true
-          # Run once to avoid long Chrome sessions on CI
-          runs: 1
-          # Configure budgets
-          budgetPath: './tools/lighthouse/budget.json'

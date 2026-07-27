@@ -4,6 +4,14 @@
 # this off PRs that don't touch the server or its workspace deps.
 name: SuperSync Server Tests
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'packages/super-sync-server/**'
+      - 'packages/shared-schema/**' # @sp/shared-schema is a direct dep
+      - 'packages/sync-core/**' # transitive dep via @sp/shared-schema
+      - '.github/workflows/supersync-server-tests.yml'
   pull_request:
     branches:
       - master
