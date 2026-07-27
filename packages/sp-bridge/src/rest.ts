@@ -166,11 +166,11 @@ const clearKeyFailures = (req: FastifyRequest): void => {
 /** Methods that cannot change anything, so a viewer may use them. */
 const READ_ONLY_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
-const isReadOnlyRequest = (method: string): boolean =>
+export const isReadOnlyRequest = (method: string): boolean =>
   READ_ONLY_METHODS.has(method.toUpperCase());
 
 /** operator and admin may write data; admin's extra powers are account management, gated per-route in auth/routes.ts. */
-const canWrite = (role: string): boolean =>
+export const canWrite = (role: string): boolean =>
   isRole(role) && ROLE_LEVELS[role] >= ROLE_LEVELS.operator;
 
 export interface AuthWiring {
