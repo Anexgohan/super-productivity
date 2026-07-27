@@ -241,12 +241,9 @@ them, so it cannot filter a board down to "just the public projects" without
 decrypting — which defeats the encryption. A client-side filter is not an access
 control. So a board is published or it isn't.
 
-Viewers read a published board through token delegation: the bridge mints a
-token for the board's _owner_ and serves it in that viewer's override, and nginx
-denies the write routes for `role=viewer`. Proxy-level gating is sufficient
-because the write surface is exactly three routes — `POST /sync/api/sync/ops`,
-`POST /sync/api/sync/snapshot`, `DELETE /sync/api/sync/data` — with everything
-else being reads plus a notification-only websocket.
+Viewers read a published board through token delegation: the bridge mints a token for the board's _owner_ and serves it in that viewer's override. What stops that token being used to write is its **scope** — it is provisioned with `scope: 'read'` (`sync-identity.ts`, `provision(..., 'read')`), which the sync server refuses on every route that changes data.
+
+> **Not true yet.** This section used to say nginx denies the write routes for `role=viewer`. It does not: `location /sync/` carries no `auth_request` and no role check at all. Proxy-level gating _would_ be sufficient, because the write surface is exactly three routes — `POST /sync/api/sync/ops`, `POST /sync/api/sync/snapshot`, `DELETE /sync/api/sync/data` — with everything else being reads plus a notification-only websocket. It is planned, not built. Until it is, the read-scoped token is the only thing holding that boundary, so a regression in scoping has no second layer behind it.
 
 ### Deleting a user removes their data
 
@@ -277,6 +274,8 @@ Editing any account, including your own, goes through the row's edit dialog. Tha
 | yourself, as anyone else | no       | no                     | yes   | yes      | required         |
 | someone else, as admin   | yes      | yes, unless last admin | yes   | yes      | not asked        |
 
+That table describes **the dialog**, not the routes underneath it. The API is looser: `PUT /api/auth/users/:id` is admin-gated but has no self-check, so an admin naming their own id can set a password without supplying the current one. The UI never does that — a self-edit goes to the self routes — but nothing on the server enforces the split.
+
 Changing your own password asks for the current one first. A session proves the browser holds a valid cookie, not that the owner is at the keyboard, so without that check an unattended machine or a copied cookie converts temporary access into permanent credential control. An admin resetting someone else's password is exercising authority rather than proving identity, so it does not apply there. Mechanically this is why a self-edit goes to `PUT /api/auth/me` and `PUT /api/auth/password` while an admin editing someone else goes to `PUT /api/auth/users/:id`.
 
 API keys render as indented sub-rows under the account that owns them, revealed by the key toggle in the actions column, which also shows how many live keys that account has. Each key row carries reveal, copy and revoke; once revoked the row stays, struck through, and offers delete instead. The two are different operations on purpose, see "Revoking and deleting are separate" below.
@@ -305,6 +304,16 @@ stored setting is not forced off: hiding the surfaces closes the path, and
 writing to `globalConfig` would be a sync operation — changing user data to
 enforce a UI decision. Profiles stay fully available in desktop and standalone
 builds, where they make sense.
+
+### The account routes are session-only, for now
+
+Every `/api/auth/*` route reads the session cookie directly and refuses an API key. That is unfinished wiring rather than a decision: the goal for this fork is that anything the browser UI can do, the API can do, held to the same roles.
+
+It reads as deliberate because it once was. When those handlers were written a key was a single container-wide secret with no user attached, so "your own account" had no meaning for it and a session was the only thing that could answer. Keys became per-user later, the request hook was rewritten so both credentials resolve to a user, and these handlers were not revisited.
+
+What has to be settled before they are wired is containment. A key that can reach them can mint further keys, read every account's key string, and reset passwords — so revoking the leaked key would no longer end the incident. Minted keys at least show up as rows in the accounts table, where they can be spotted and revoked; a password reset renders nowhere at all. The intended answer is to require the caller's account password in the body when a **key** performs a credential-granting call: creating a key, revoking or deleting one, changing a role, or publishing a board. Browser sessions are unaffected, and ordinary read and write traffic never carries a password.
+
+Two things follow from keys having no role of their own. A key inherits its owner's role, read per request, so demoting an account instantly weakens every key it holds. And "create an admin key" is not expressible: you create a key _for an account_, so a non-admin can only ever create keys for itself.
 
 ### Known gaps
 
@@ -521,16 +530,29 @@ file via `env_file:`, so a value is written once and no service has an
 
 **Optional** — sensible defaults otherwise:
 
-| Variable                      | Purpose                                                       |
-| ----------------------------- | ------------------------------------------------------------- |
-| `SP_WEB_PORT`                 | the only published port (default `18230`)                     |
-| `SP_IMAGE_TAG`                | published image tag to run (default `latest`)                 |
-| `ALLOW_INSECURE_HTTP`         | `true` for plain HTTP on a LAN; `false` behind a TLS proxy    |
-| `SP_BRIDGE_POLL_INTERVAL_SEC` | websocket-fallback poll interval (default 15)                 |
-| `SP_AUTH_ENABLED`             | browser login gate; must stay on, accounts issue the API keys |
-| `SP_AUTH_SESSION_TTL_H`       | session lifetime in hours, sliding (default 720)              |
-| `POSTGRES_USER` / `_DB`       | database name and role                                        |
-| `POSTGRES_HOST` / `_PORT`     | point these at an external server to drop the bundled one     |
+| Variable                      | Purpose                                                     |
+| ----------------------------- | ----------------------------------------------------------- |
+| `TZ`                          | container timezone, used for logs and logical-day rollover  |
+| `SP_WEB_PORT`                 | the only published port (default `18230`)                   |
+| `SP_IMAGE_TAG`                | published image tag to run (default `latest`)               |
+| `STACK_PREFIX`                | container name prefix (default `sp`: `sp-web`, `sp-bridge`) |
+| `ALLOW_INSECURE_HTTP`         | `true` for plain HTTP on a LAN; `false` behind a TLS proxy  |
+| `SP_BRIDGE_POLL_INTERVAL_SEC` | websocket-fallback poll interval (default 15)               |
+| `SP_AUTH_SESSION_TTL_H`       | session lifetime in hours, sliding (default 720)            |
+| `POSTGRES_USER` / `_DB`       | database name and role                                      |
+| `POSTGRES_HOST` / `_PORT`     | point these at an external server to drop the bundled one   |
+
+**Resource caps**, all with working defaults — raise them on a busy stack rather than tuning by default:
+
+| Variable                                                             | Default                                    |
+| -------------------------------------------------------------------- | ------------------------------------------ |
+| `SUPERSYNC_MEM_LIMIT` / `SP_BRIDGE_MEM_LIMIT` / `POSTGRES_MEM_LIMIT` | `512m` / `256m` / `256m`                   |
+| `PG_SHARED_BUFFERS`                                                  | `64MB`, keep well under the postgres cap   |
+| `PG_MAX_CONNECTIONS`                                                 | `20`, ample for this stack's three clients |
+
+`SP_BRIDGE_MEM_LIMIT` is the one that grows with real use: the bridge holds the materialized board in memory, so it scales with task count.
+
+**Deliberately not in `.env.example`:** `SP_AUTH_ENABLED`. It disables the browser login gate entirely, which also unpublishes the per-session sync override and hands every browser the container account's token. It exists for local development only, and putting it in the file people copy would invite turning it off in a deployment where accounts are what issue the API keys.
 
 A sync account password under 8 characters **fails quietly**: provisioning
 logs an error and stops, so the stack boots but serves no sync token.

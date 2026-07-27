@@ -16,14 +16,16 @@ If you are following older notes that mention an MCP server, a bridge plugin, or
 
 ## Getting a key
 
-Almost every route needs authentication. Keys look like `spk_<userId>_<secret>` and go in one of two headers, whichever suits your client:
+Almost every route needs authentication. Keys look like `spk_<keyId>_<secret>` and go in one of two headers, whichever suits your client:
 
 ```
 X-Api-Key: spk_1_yourkeyhere
 Authorization: Bearer spk_1_yourkeyhere
 ```
 
-Keys are created from the web UI while you are signed in. Key management deliberately runs on browser sessions rather than API keys, so a key cannot mint more keys. It is worth saving yours somewhere durable when you create it.
+Keys are created from the web UI while you are signed in. That is currently the only way: the `/auth/*` routes take a browser session and refuse an API key, so a key cannot yet mint another key. Treat that as a limitation rather than a guarantee — it is unfinished wiring, and the intent is that key management becomes reachable over the API like everything else.
+
+The number in the middle of a key is the **key** id, not your user id, so do not parse it to work out which account you are. There is no route that will tell you either, which is worth knowing before you point a script at the wrong deployment.
 
 Keys carry one of three roles. **Admin** can do anything, including deleting projects. **Operator** can read and write tasks. **Viewer** can only read, and any write returns `403 Read-only token`. If you get that error, nothing is wrong with your request; the key simply is not allowed to make changes.
 
@@ -238,7 +240,7 @@ The provider id identifies which configured integration the issue belongs to. Th
 
 **Deleting a project deletes its tasks, permanently.** There is no undo and no archive to recover from. The Inbox project and the `TODAY` tag are protected and cannot be deleted at all.
 
-**Key management is not available over the API.** The `/auth/*` routes want a browser session; an API key gets `{"error":"Not signed in"}` there.
+**Key and account management are not reachable over the API yet.** The `/auth/*` routes want a browser session; an API key gets `{"error":"Not signed in"}` on `/auth/me` and `{"error":"Unauthorized"}` on the `/keys` routes. Not a policy — unfinished wiring, tracked in `api-reference.md`.
 
 ## Working conventions
 

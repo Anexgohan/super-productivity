@@ -8,10 +8,10 @@ Docs for the containerized, API-driven Super Productivity setup.
   signing in, accounts and per-user boards, working on the app without a
   7-minute image rebuild, the operational gotchas, and what this fork removed
   from upstream and why.
-- **[api-reference.md](./api-reference.md)** — the complete REST contract: all 40
-  endpoints with parameters, examples, and the MCP tool each one replaces.
+- **[basic-usage-guide.md](./basic-usage-guide.md)** — driving the API in practice: getting a key, reading and changing tasks, moving cards between board columns, the mistakes that quietly damage a board, and the conventions that keep one readable when part of it is maintained by automation.
+- **[api-reference.md](./api-reference.md)** — the complete REST contract: all 50 data routes with parameters, examples, and the MCP tool each one replaces, plus authentication, roles and the account routes.
 
-New here? Read the explainer first, then keep the reference open.
+New here? Read the explainer first, then the usage guide, and keep the reference open.
 
 ## A convention these docs follow
 
