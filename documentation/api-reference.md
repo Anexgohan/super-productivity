@@ -1,15 +1,10 @@
 <!--
-EDITING THIS FILE — read before adding anything.
-
-Audience: admins and users who are starting to USE the API. A working contract, not a design doc. Keep it lean enough to scan.
-
-- One or two lines per route: body/params, response shape, status codes, and any guard that makes a call fail or quietly damage a board.
-- Rationale, history, threat models and internal names (services, functions, columns) do NOT belong here. Put them in super-productivity-explainer.md and link to the anchor.
-- Short inline notes at most. No multi-paragraph block under a route heading.
-- ⚠️ warnings that stop a caller damaging data earn their space. Keep those.
-- Never hard-wrap prose at a column — one line per paragraph, the editor soft-wraps. Repo-wide rule, not just this file.
-- Behaviour that is intended but not built is a one-line "Not true yet." marker plus a link, never a paragraph. See README.md.
-- Routes live in packages/sp-bridge/src/{rest.ts,auth/routes.ts}; GET /api/docs is the live map. If this file disagrees with either, this file is wrong.
+EDITING THIS FILE: a working contract for admins and users, not a design doc. Keep it scannable.
+One or two lines per route: params, response, status codes, and guards that fail a call or damage a board. No multi-paragraph blocks.
+Rationale, history and internal names belong in super-productivity-explainer.md, linked by anchor. Unbuilt intent is a one-line "Not true yet." plus a link.
+Never use em-dashes or en-dashes, here or anywhere: a hyphen, comma or colon instead. Repo-wide.
+Never hard-wrap prose: one line per paragraph, the editor soft-wraps. Also repo-wide.
+Routes live in packages/sp-bridge/src/{rest.ts,auth/routes.ts}; GET /api/docs is the live map and wins over this file.
 -->
 
 # sp-bridge REST API Reference
@@ -22,40 +17,40 @@ For the concepts behind it, the op-log, why boards are tags, and what the Today 
 
 ## Conventions
 
-**Base URL** — `http://<host>:<SP_WEB_PORT>/api` (default port `18230`). The bridge is **not published on a port of its own**: nginx serves the app at `/`, the sync server at `/sync/` and the bridge at `/api/`, all on the one published port. Any older note describing a separate bridge port predates that unification and points at a closed port.
+**Base URL** - `http://<host>:<SP_WEB_PORT>/api` (default port `18230`). The bridge is **not published on a port of its own**: nginx serves the app at `/`, the sync server at `/sync/` and the bridge at `/api/`, all on the one published port. Any older note describing a separate bridge port predates that unification and points at a closed port.
 
-**Content type** — send `Content-Type: application/json` on requests **that have
+**Content type** - send `Content-Type: application/json` on requests **that have
 a body**. Do _not_ send it on bodyless `DELETE`s; the server rejects an empty
 body declared as JSON (`400 FST_ERR_CTP_EMPTY_JSON_BODY`).
 
-**Errors** — a uniform shape: `{"error": "<message>"}` with the status code.
+**Errors** - a uniform shape: `{"error": "<message>"}` with the status code.
 
 | Code  | Meaning                                                                    |
 | ----- | -------------------------------------------------------------------------- |
-| `400` | bad input — missing/invalid field, unwritable field, unknown reference     |
+| `400` | bad input - missing/invalid field, unwritable field, unknown reference     |
 | `401` | missing or invalid credential                                              |
-| `403` | authenticated but not allowed — read-only role, or somebody else's account |
+| `403` | authenticated but not allowed - read-only role, or somebody else's account |
 | `404` | entity not found                                                           |
 | `409` | refused by a safety guard (e.g. deleting a task that still has subtasks)   |
 
-**Freshness** — reads reflect the last op-log poll (default 15s). Call
+**Freshness** - reads reflect the last op-log poll (default 15s). Call
 `POST /api/sync/refresh` first if you need guaranteed-current data. Writes
 round-trip through the sync server before returning, so the returned entity is
 the settled result.
 
-**IDs** — task/tag/project ids are 21-character nanoids. Two are fixed and
+**IDs** - task/tag/project ids are 21-character nanoids. Two are fixed and
 well-known: project `INBOX_PROJECT` and tag `TODAY`.
 
-**Writable task fields** — `title`, `notes`, `isDone`, `doneOn`, `timeEstimate`,
+**Writable task fields** - `title`, `notes`, `isDone`, `doneOn`, `timeEstimate`,
 `timeSpent`, `projectId`, `tagIds`, `dueDay`, `dueWithTime`. Any other field in a
-`PATCH` body is rejected with `400`. (Structural changes — parent, subtasks,
-ordering, attachments — have their own endpoints.)
+`PATCH` body is rejected with `400`. (Structural changes - parent, subtasks,
+ordering, attachments - have their own endpoints.)
 
 ---
 
 ## Authentication
 
-Two credentials reach this API, and both resolve to the same thing — a **user**. Which one you present changes nothing about what you are allowed to do; your account's role decides that either way.
+Two credentials reach this API, and both resolve to the same thing - a **user**. Which one you present changes nothing about what you are allowed to do; your account's role decides that either way.
 
 | Credential         | How it is sent                                      | Who uses it     |
 | ------------------ | --------------------------------------------------- | --------------- |
@@ -68,11 +63,11 @@ If a request carries both, the key is tried first and wins. Missing, wrong or re
 
 | Surface                                                                                          | API key              | Session |
 | ------------------------------------------------------------------------------------------------ | -------------------- | ------- |
-| Data routes — `/api/tasks`, `/projects`, `/tags`, `/boards`, `/today`, `/status`, …              | ✅                   | ✅      |
-| Account routes — `/api/auth/*` (the 17 credentialed ones)                                        | ❌ see below         | ✅      |
+| Data routes - `/api/tasks`, `/projects`, `/tags`, `/boards`, `/today`, `/status`, …              | ✅                   | ✅      |
+| Account routes - `/api/auth/*` (the 17 credentialed ones)                                        | ❌ see below         | ✅      |
 | `/api/health`, `/api/docs`, `/login`, `/api/auth/login｜setup｜logout｜status｜verify｜register` | no credential needed |         |
 
-> **Not true yet.** A key on `/api/auth/*` gets `401` — `{"error":"Not signed in"}` on `/auth/me`, `{"error":"Unauthorized"}` on the rest. Unfinished wiring, not policy: the goal is that anything the UI can do, the API can do. [Why, and what will gate it](./super-productivity-explainer.md#the-account-routes-are-session-only-for-now).
+> **Not true yet.** A key on `/api/auth/*` gets `401` - `{"error":"Not signed in"}` on `/auth/me`, `{"error":"Unauthorized"}` on the rest. Unfinished wiring, not policy: the goal is that anything the UI can do, the API can do. [Why, and what will gate it](./super-productivity-explainer.md#the-account-routes-are-session-only-for-now).
 
 ### Roles
 
@@ -80,7 +75,7 @@ Three roles, applied identically to both credentials:
 
 | Role       | Own board and account | Other accounts                   |
 | ---------- | --------------------- | -------------------------------- |
-| `admin`    | full                  | full — user and key management   |
+| `admin`    | full                  | full - user and key management   |
 | `operator` | full                  | none                             |
 | `viewer`   | read-only             | read-only, published boards only |
 
@@ -92,7 +87,7 @@ A `viewer` gets `403 {"error":"Read-only account"}` on any write, whichever cred
 
 `spk_<keyId>_<digest>`, **derived not stored**: `HMAC(JWT_SECRET, "api-key:v1:<userId>:<keyId>:<salt>:<version>")`. Re-readable at any time, so there is no "copy it now" moment. [Why derived](./super-productivity-explainer.md#talking-to-the-api).
 
-⚠️ The middle number is the **key** id in base36, not the user id — do not parse a key to learn whose it is. Key id `42` renders as `spk_16_`.
+⚠️ The middle number is the **key** id in base36, not the user id - do not parse a key to learn whose it is. Key id `42` renders as `spk_16_`.
 
 A key has **no role of its own**: it inherits its owner's, read per request. So a non-admin can only create keys for itself, and only an admin can create one for somebody else.
 
@@ -191,7 +186,7 @@ Lists tasks. All filters are query parameters and combine with AND.
 | ----------------- | ---------------- | ----------------------------------------------------------- |
 | `isDone`          | `true`/`false`   | completion state                                            |
 | `projectId`       | string           | tasks in one project                                        |
-| `tagId`           | string           | tasks carrying a tag — **use this to read a Kanban column** |
+| `tagId`           | string           | tasks carrying a tag - **use this to read a Kanban column** |
 | `dueDay`          | `YYYY-MM-DD`     | exact due date                                              |
 | `parentId`        | string \| `null` | `null` (literal string) = top-level only                    |
 | `search`          | string           | case-insensitive match on title _and_ notes                 |
@@ -284,7 +279,7 @@ Lists every materialized entity type available for raw access.
 
 Raw entity map for one type (`TASK`, `TAG`, `PROJECT`, `BOARD`, `PLANNER`,
 `ISSUE_PROVIDER`, …). This is the escape hatch for anything the typed endpoints
-don't expose — e.g. reading a board's `includedTagIds`. `404` on unknown type.
+don't expose - e.g. reading a board's `includedTagIds`. `404` on unknown type.
 
 ```bash
 # which tag drives each Kanban column
@@ -322,7 +317,7 @@ Creates a task from a single short-syntax string. → `201`.
 
 | Token                                    | Effect                                                              |
 | ---------------------------------------- | ------------------------------------------------------------------- |
-| `#tag`                                   | adds the tag — **created automatically if it doesn't exist**        |
+| `#tag`                                   | adds the tag - **created automatically if it doesn't exist**        |
 | `+Project`                               | moves to that project **by title**; must already exist (else `400`) |
 | `@today` \| `@tomorrow` \| `@YYYY-MM-DD` | sets `dueDay`                                                       |
 | `1h` / `30m` / `1h30m`                   | sets `timeEstimate` (bare token)                                    |
@@ -358,7 +353,7 @@ _Replaces MCP `complete_task_on`._
 
 Deletes a task. Returns `{"deleted": "<id>"}`.
 
-**Guard:** `409` if the task still has live subtasks — delete them first. (Stale
+**Guard:** `409` if the task still has live subtasks - delete them first. (Stale
 ids for already-deleted children do not block the parent.) Deletion also detaches
 the task from its parent, project lists, tag lists, and the Planner.
 
@@ -372,7 +367,7 @@ _Replaces MCP `delete_task`._
 
 ## Bulk operations
 
-Both routes build one operation per task and upload them together — cheaper and
+Both routes build one operation per task and upload them together - cheaper and
 more consistent than looping single calls.
 
 ### `POST /api/tasks/bulk/complete`
@@ -382,7 +377,7 @@ _Replaces MCP `bulk_complete_tasks`._
 
 ### `POST /api/tasks/bulk/update`
 
-Body: `{"updates":[{"id":"id1","title":"New","isDone":true}, ...]}` — each entry
+Body: `{"updates":[{"id":"id1","title":"New","isDone":true}, ...]}` - each entry
 is an id plus the writable fields to change. Returns the updated tasks.
 
 **All-or-nothing:** every entry is validated up front; if any id is unknown or
@@ -426,8 +421,8 @@ Nesting under a task that is itself a subtask → `400` (one level only).
 
 Moves a task in the hierarchy. Body: `{"parentId": "<id>" | null}`.
 
-- `parentId: "<id>"` — nest under that task.
-- `parentId: null` — promote to a top-level task.
+- `parentId: "<id>"` - nest under that task.
+- `parentId: null` - promote to a top-level task.
 
 Refused with `400`/`409` if: the task is already top-level (on promote), the
 target is itself a subtask, a task would become its own parent, or the task has
@@ -445,7 +440,7 @@ Reorders one list. Body: `taskIds` plus **exactly one** container:
 | `{"parentId": "..."}`  | that parent's subtasks  |
 | `{"today": true}`      | the Today list          |
 
-`taskIds` must be a **permutation of the list's current members** — reorder only,
+`taskIds` must be a **permutation of the list's current members** - reorder only,
 no adds or removals (otherwise `400`). Zero or multiple containers → `400`.
 
 ```bash
@@ -458,7 +453,7 @@ _Replaces MCP `reorder_tasks`._
 
 ---
 
-## Tags on tasks — including Kanban moves
+## Tags on tasks - including Kanban moves
 
 Board columns are tag-driven: a task is in a column because it carries that
 column's tag. These endpoints are therefore how you move cards.
@@ -485,7 +480,7 @@ _Replaces MCP `remove_tag_from_task`._
 ### `POST /api/tasks/:id/move`
 
 Moves a top-level task to another project, updating both projects' lists. Body:
-`{"projectId": "..."}`. Subtasks cannot be moved directly (`400`) — they follow
+`{"projectId": "..."}`. Subtasks cannot be moved directly (`400`) - they follow
 their parent.
 
 _Replaces MCP `move_task_to_project`._
@@ -520,7 +515,7 @@ Read the list back with `GET /api/tasks?plannedForToday=true`.
 ### `POST /api/tasks/:id/links`
 
 Attaches a link to a task (appended to `attachments`).
-Body: `{"url": "https://...", "title": "optional label"}` — `title` defaults to
+Body: `{"url": "https://...", "title": "optional label"}` - `title` defaults to
 the URL.
 
 ```bash
@@ -539,7 +534,7 @@ Links a task to an external issue so the issue panel recognizes it.
 | ----------------- | ----------------------------------------------- |
 | `issueId`         | ✅                                              |
 | `issueType`       | ✅ (e.g. `GITHUB`)                              |
-| `issueProviderId` | ✅ — must be a configured provider (else `400`) |
+| `issueProviderId` | ✅ - must be a configured provider (else `400`) |
 | `issuePoints`     |                                                 |
 
 Find provider ids via `GET /api/entities/ISSUE_PROVIDER`.
@@ -592,7 +587,7 @@ Deletes a project **and all of its tasks** (including subtasks) and notes. Retur
 
 A board is a Kanban view over tasks you already have. It stores no tasks of its own: each panel is a filter, and a card appears in a column because the task matches that column's filter. See [Boards (Kanban) are tag-driven](./super-productivity-explainer.md#boards-kanban-are-tag-driven) before writing one.
 
-A fresh account reads back the two starter boards (Eisenhower Matrix, Kanban) even though nothing has been stored yet, so the API and the browser agree. **`[]` means the owner deleted every board** — it does not mean "none exist, create one". Creating one with a starter board's id → `409`. [Why](./super-productivity-explainer.md#starter-boards-exist-before-they-are-stored).
+A fresh account reads back the two starter boards (Eisenhower Matrix, Kanban) even though nothing has been stored yet, so the API and the browser agree. **`[]` means the owner deleted every board** - it does not mean "none exist, create one". Creating one with a starter board's id → `409`. [Why](./super-productivity-explainer.md#starter-boards-exist-before-they-are-stored).
 
 ### `GET /api/boards`
 
@@ -610,7 +605,7 @@ Creates a board. → `201`. Body: `{"title": "...", "id": "OPTIONAL_ID", "cols":
 
 ### `PATCH /api/boards/:id`
 
-Updates a board. Writable: `title`, `cols`, `panels`. `panels` is a **full replacement array** — the panel routes below are conveniences over exactly that.
+Updates a board. Writable: `title`, `cols`, `panels`. `panels` is a **full replacement array** - the panel routes below are conveniences over exactly that.
 
 ### `DELETE /api/boards/:id`
 
@@ -618,7 +613,7 @@ Deletes a board. Returns `{"deleted": "<id>"}`. Deleting every board is allowed 
 
 ### `PUT /api/boards/order`
 
-Reorders boards. Body: `{"ids": ["...", "..."]}`. Must name every board — a partial list is rejected rather than parking the rest at the tail.
+Reorders boards. Body: `{"ids": ["...", "..."]}`. Must name every board - a partial list is rejected rather than parking the rest at the tail.
 
 ### `POST /api/boards/:id/panels`
 
@@ -640,7 +635,7 @@ Adds a column. → `201`. Body is one panel:
 
 `taskDoneState`: 1 all, 2 done, 3 undone. `scheduledState`: 1 all, 2 scheduled, 3 not scheduled. `backlogState`: 1 all, 2 no backlog, 3 only backlog. `projectIds: [""]` means all projects, which is the app's own convention rather than a typo.
 
-`cols` grows with the panel count. The panel is **appended** — reorder with a `PATCH` on the board.
+`cols` grows with the panel count. The panel is **appended** - reorder with a `PATCH` on the board.
 
 ⚠️ Two things this route will not do for you: exclude the new tag from the columns to its left (without that, a card appears in both), and place a column anywhere but the end.
 
@@ -652,7 +647,7 @@ Updates one column's filters. Writable: everything except `id` and `taskIds`.
 
 Removes a column. Returns `{"deleted": "<panelId>"}`, and `cols` shrinks to match.
 
-⚠️ The tag it filtered on survives, as do any exclusions of that tag on other columns — and a stray exclusion hides matching tasks from every column. Clean those up in the same pass.
+⚠️ The tag it filtered on survives, as do any exclusions of that tag on other columns - and a stray exclusion hides matching tasks from every column. Clean those up in the same pass.
 
 ### `PUT /api/panels/:panelId/taskIds`
 
@@ -662,7 +657,7 @@ Sets the manual card order inside one column. Body: `{"taskIds": [...]}`. Panel 
 
 ## Accounts and keys
 
-Session-only today — an API key is refused with `401`. See [Authentication](#authentication).
+Session-only today - an API key is refused with `401`. See [Authentication](#authentication).
 
 **Access rule** for `/users/:id/*`: your own id, or any id if you are an admin. Someone else's → `403 {"error":"Not your account"}`. A key id belonging to a different user than the path names → `404 {"error":"No such key"}`. Admin-only routes answer `403 {"error":"Admin only"}`.
 
@@ -688,7 +683,7 @@ First admin account, fresh deployment only. **No auth.** Body `{username, passwo
 
 #### `GET /api/auth/verify`
 
-nginx `auth_request` target: `204` + `X-Auth-User`/`X-Auth-Role`, or bare `401`. Infrastructure — not a route to call.
+nginx `auth_request` target: `204` + `X-Auth-User`/`X-Auth-Role`, or bare `401`. Infrastructure - not a route to call.
 
 ### Your own account
 
@@ -712,13 +707,13 @@ Read from the database, not the cookie, so a role or email changed since sign-in
 
 #### `PUT /api/auth/me`
 
-Sets your email — profile data only, never the sync identity. Body `{"email": "..."}`; blank or `null` clears it, no `@` → `400`.
+Sets your email - profile data only, never the sync identity. Body `{"email": "..."}`; blank or `null` clears it, no `@` → `400`.
 
 #### `PUT /api/auth/password`
 
 Body `{currentPassword, newPassword}` → `{"ok": true}`. Wrong current → `403`; under 8 characters → `400`. Required even with a valid session.
 
-### Accounts — admin only
+### Accounts - admin only
 
 #### `GET /api/auth/users`
 
@@ -771,7 +766,7 @@ Body `{"isPublic": true}` → `{id, isPublic}`. Whole-board only. `409` if the a
 
 #### `POST /api/auth/viewing`
 
-Switches which board you read. Body `{"userId": 2}`, or `{"userId": null}` for your own. `404` if unpublished or unknown — deliberately indistinguishable · `400` for your own id. Writes while viewing → `403 {"error":"Read-only: viewing another board"}`.
+Switches which board you read. Body `{"userId": 2}`, or `{"userId": null}` for your own. `404` if unpublished or unknown - deliberately indistinguishable · `400` for your own id. Writes while viewing → `403 {"error":"Read-only: viewing another board"}`.
 
 ### API keys
 
@@ -801,6 +796,6 @@ desktop-only behaviour. The API reports their absence rather than simulating it.
 | MCP tool                                | Why not                                      | Use instead                                     |
 | --------------------------------------- | -------------------------------------------- | ----------------------------------------------- |
 | `start_task` / `stop_task`              | running timer is local UI state              | set `timeSpent` via `PATCH /api/tasks/:id`      |
-| `show_notification`                     | desktop UI action                            | —                                               |
+| `show_notification`                     | desktop UI action                            | -                                               |
 | `get_current_task`                      | never syncs                                  | `GET /api/current-task` (returns `null` + note) |
 | `check_connection`, `debug_directories` | MCP transport diagnostics; transport is gone | `GET /api/health`, `GET /api/status`            |

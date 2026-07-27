@@ -23,7 +23,7 @@ X-Api-Key: spk_1_yourkeyhere
 Authorization: Bearer spk_1_yourkeyhere
 ```
 
-Keys are created from the web UI while you are signed in. That is currently the only way: the `/auth/*` routes take a browser session and refuse an API key, so a key cannot yet mint another key. Treat that as a limitation rather than a guarantee — it is unfinished wiring, and the intent is that key management becomes reachable over the API like everything else.
+Keys are created from the web UI while you are signed in. That is currently the only way: the `/auth/*` routes take a browser session and refuse an API key, so a key cannot yet mint another key. Treat that as a limitation rather than a guarantee - it is unfinished wiring, and the intent is that key management becomes reachable over the API like everything else.
 
 The number in the middle of a key is the **key** id, not your user id, so do not parse it to work out which account you are. There is no route that will tell you either, which is worth knowing before you point a script at the wrong deployment.
 
@@ -240,7 +240,7 @@ The provider id identifies which configured integration the issue belongs to. Th
 
 **Deleting a project deletes its tasks, permanently.** There is no undo and no archive to recover from. The Inbox project and the `TODAY` tag are protected and cannot be deleted at all.
 
-**Key and account management are not reachable over the API yet.** The `/auth/*` routes want a browser session; an API key gets `{"error":"Not signed in"}` on `/auth/me` and `{"error":"Unauthorized"}` on the `/keys` routes. Not a policy — unfinished wiring, tracked in `api-reference.md`.
+**Key and account management are not reachable over the API yet.** The `/auth/*` routes want a browser session; an API key gets `{"error":"Not signed in"}` on `/auth/me` and `{"error":"Unauthorized"}` on the `/keys` routes. Not a policy - unfinished wiring, tracked in `api-reference.md`.
 
 ## Working conventions
 
