@@ -83,6 +83,57 @@ if (asyncActionProto && typeof asyncActionProto.execute === 'function') {
   };
 }
 
+// Names the spec that is running, and fails loudly if one navigates the runner away.
+//
+// Karma serves the suite from a page inside the browser it is testing, so any real navigation
+// (`location.href = ...`, `location.reload()`, a form submit) unloads the runner mid-run. Karma
+// then reports only "Disconnected, because no message in 30000 ms" 30 seconds later, naming
+// nothing. Jasmine randomizes spec order, so the suite truncates at a different point every run
+// and every spec scheduled after the culprit silently never executes. Two CI runs ended at 12970
+// and 9043 of 13206 for this reason, with no indication of the cause.
+//
+// `src/test-helpers/karma-running-spec-on-disconnect.js` exists to report this, but its client
+// half was never wired up, so its spec map is always empty and it can only ever say "no spec
+// information available". This is that missing half.
+interface KarmaClient {
+  info?: (payload: Record<string, unknown>) => void;
+  error?: (message: string) => void;
+}
+
+// Indexed rather than declared as a property: Karma's global is `__karma__`, which the
+// naming-convention rule rejects as a type property name.
+const karmaClient = (window as unknown as Record<string, KarmaClient | undefined>)[
+  '__karma__'
+];
+let runningSpecName = '(none)';
+
+jasmine.getEnv().addReporter({
+  specStarted: (result) => {
+    runningSpecName = result.fullName;
+    // Feeds the running-spec reporter, so a disconnect from any other cause still names a spec.
+    karmaClient?.info?.({
+      type: 'spec-start',
+      specName: result.fullName,
+      specId: result.id,
+      timestamp: Date.now(),
+    });
+  },
+  specDone: () => {
+    runningSpecName = '(between specs)';
+  },
+});
+
+window.addEventListener('beforeunload', () => {
+  // Reported here rather than left to the disconnect timeout: this fires while the spec name is
+  // still known, and turns a silent 30s truncation into one line naming the culprit.
+  const message =
+    `[test] A spec navigated the Karma runner away: "${runningSpecName}". ` +
+    'Every spec after it will not run. Stub the navigation (see ' +
+    'ReplicaIdentityGateService._redirectToLogin for the pattern).';
+  console.error(message);
+  karmaClient?.error?.(message);
+});
+
 beforeAll(() => {
   jasmine.DEFAULT_TIMEOUT_INTERVAL = 2000;
 });

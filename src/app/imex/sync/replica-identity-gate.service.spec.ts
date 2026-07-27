@@ -5,6 +5,7 @@ import { OperationLogStoreService } from '../../op-log/persistence/operation-log
 describe('ReplicaIdentityGateService', () => {
   let service: ReplicaIdentityGateService;
   let mockOpLogStore: jasmine.SpyObj<OperationLogStoreService>;
+  let redirectSpy: jasmine.Spy;
 
   const SERVED = { instanceId: 'inst-a', userId: 1, serverHasData: true };
 
@@ -33,6 +34,10 @@ describe('ReplicaIdentityGateService', () => {
       ],
     });
     service = TestBed.inject(ReplicaIdentityGateService);
+    // Stubbed for EVERY test, not just the two that expect a redirect. Letting the real one run
+    // navigates the Karma runner page away, and because Jasmine randomizes spec order that silently
+    // truncates the whole suite at a different point each run.
+    redirectSpy = spyOn(service as any, '_redirectToLogin');
   });
 
   describe('when the deployment serves no identity', () => {
@@ -70,6 +75,7 @@ describe('ReplicaIdentityGateService', () => {
         mockOpLogStore.getReplicaIdentity.and.resolveTo({ ...SERVED });
 
         expect(await service.enforce()).toBe('unauthenticated');
+        expect(redirectSpy).toHaveBeenCalled();
         expect(mockOpLogStore.purgeForIdentityMismatch).not.toHaveBeenCalled();
         expect(mockOpLogStore.setReplicaIdentity).not.toHaveBeenCalled();
       });

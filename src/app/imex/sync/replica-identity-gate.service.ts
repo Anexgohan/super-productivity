@@ -52,6 +52,19 @@ export class ReplicaIdentityGateService {
   private _writeFlush = inject(OperationWriteFlushService);
 
   /**
+   * Seam for tests, and the only reason this is a method rather than an inline assignment.
+   *
+   * Karma serves the suite from a page in the browser it is testing, so a real navigation here
+   * unloads the runner mid-run: Jasmine randomizes spec order, so every spec scheduled after this
+   * one silently never executes and the run ends in "Disconnected, because no message in 30000 ms".
+   * Specs spy on this instead, which also asserts the actual contract: that a redirect was
+   * requested, not that the browser moved.
+   */
+  protected _redirectToLogin(): void {
+    window.location.href = '/login';
+  }
+
+  /**
    * Flushes before wiping, so ops still in the capture pipeline land in the store and are cleared with everything else.
    * Without it they flush AFTER the purge still wearing the purged account's clientId, and upload into the next user's board.
    */
@@ -82,7 +95,7 @@ export class ReplicaIdentityGateService {
         // browser to sign in instead. Without this, a cleared cookie booted the
         // app straight past container authority into upstream's manual sync UI.
         SyncLog.log('ReplicaIdentityGate: no session for this container — to /login');
-        window.location.href = '/login';
+        this._redirectToLogin();
         return 'unauthenticated';
       }
       const served = probe;
