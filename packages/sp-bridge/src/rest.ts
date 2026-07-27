@@ -42,6 +42,21 @@ const DOCS = {
     'GET /api/tags': 'list tags',
     'GET /api/config': 'global config (by section)',
     'GET /api/worklog': 'time spent per day; filters: from, to (YYYY-MM-DD)',
+    'GET /api/archive/tasks':
+      'completed tasks from the archive (tasks are archived daily, so GET /api/tasks?isDone=true only shows the most recent); filters: from, to (YYYY-MM-DD on completion day), projectId, tagId, search, fields, limit (default 500); newest first',
+    'GET /api/archive/tasks/:id': 'single archived task by id',
+    'GET /api/notes': 'list notes; filter: projectId ("null" for notes in no project)',
+    'GET /api/notes/:id': 'single note by id',
+    'POST /api/notes':
+      'create a note; body: {content (required), projectId?, isPinnedToToday?, backgroundColor?, imgUrl?}',
+    'PATCH /api/notes/:id':
+      'update a note; writable: content, isPinnedToToday, backgroundColor, imgUrl, isLock, projectId',
+    'DELETE /api/notes/:id': 'delete a note',
+    'POST /api/tasks/:id/repeat-cfg':
+      'make an existing task recurring (the only way a repeat config is created, as in the UI); body: {repeatCycle: DAILY|WEEKLY|MONTHLY|YEARLY, repeatEvery?, startDate?, startTime?, weekday booleans, defaultEstimate?, notes?, tagIds?, isPaused?, repeatFromCompletionDate?, waitForCompletion?}; 409 if it already repeats',
+    'PATCH /api/task-repeat-cfgs/:id': 'update a recurring config (same writable fields)',
+    'DELETE /api/task-repeat-cfgs/:id':
+      'stop a recurring config; tasks already created from it are left alone',
     'GET /api/entities': 'list materialized entity types (raw superset access)',
     'GET /api/entities/:type': 'raw entity map for a type',
     'POST /api/sync/refresh': 'force an op-log pull now',
@@ -611,10 +626,76 @@ export const createRestServer = (
     (await coreFor(req)).getWorklog(req.query.from, req.query.to),
   );
 
+  // ── Archive (read-only) ───────────────────────────────────────────────────
+  app.get<{
+    Querystring: {
+      from?: string;
+      to?: string;
+      projectId?: string;
+      tagId?: string;
+      search?: string;
+      fields?: string;
+      limit?: string;
+    };
+  }>('/api/archive/tasks', async (req, reply) => {
+    const raw = req.query.limit;
+    if (raw !== undefined && !/^\d+$/.test(raw)) {
+      return reply
+        .status(400)
+        .send({ error: `limit must be a whole number. Got "${raw}".` });
+    }
+    return (await coreFor(req)).listArchiveTasks({
+      from: req.query.from,
+      to: req.query.to,
+      projectId: req.query.projectId,
+      tagId: req.query.tagId,
+      search: req.query.search,
+      limit: raw === undefined ? undefined : Number(raw),
+      ...(req.query.fields !== undefined
+        ? {
+            fields: req.query.fields
+              .split(',')
+              .map((f) => f.trim())
+              .filter(Boolean),
+          }
+        : {}),
+    });
+  });
+
+  app.get<{ Params: { id: string } }>('/api/archive/tasks/:id', async (req, reply) => {
+    const task = (await coreFor(req)).getArchiveTask(req.params.id);
+    if (!task) {
+      return reply
+        .status(404)
+        .send({ error: 'No archived task with that id. It may still be a live task.' });
+    }
+    return task;
+  });
+
+  // ── Notes (read) ──────────────────────────────────────────────────────────
+  app.get<{ Querystring: { projectId?: string } }>('/api/notes', async (req) => {
+    // `?projectId=null` is how you ask for the standalone notes that belong to no project.
+    const p = req.query.projectId;
+    return (await coreFor(req)).listNotes(
+      p === undefined ? {} : { projectId: p === 'null' ? null : p },
+    );
+  });
+
+  app.get<{ Params: { id: string } }>('/api/notes/:id', async (req, reply) => {
+    const note = (await coreFor(req)).getNote(req.params.id);
+    if (!note) return reply.status(404).send({ error: 'Note not found' });
+    return note;
+  });
+
   app.get('/api/entities', async (req) => (await coreFor(req)).listEntityTypes());
   app.get<{ Params: { type: string } }>('/api/entities/:type', async (req, reply) => {
     const entities = (await coreFor(req)).rawEntities(req.params.type);
-    if (!entities) return reply.status(404).send({ error: 'Unknown entity type' });
+    if (!entities) {
+      // A type only materializes once the board has data of that kind, so "unknown" would send people hunting a bug that is not there.
+      return reply.status(404).send({
+        error: `No ${req.params.type} data on this board yet. GET /api/entities lists what it does have.`,
+      });
+    }
     return entities;
   });
 
@@ -904,6 +985,81 @@ export const createRestServer = (
       return sendError(reply, err);
     }
   });
+
+  // ── Notes (write) ─────────────────────────────────────────────────────────
+  app.post<{ Body: Record<string, unknown> }>('/api/notes', async (req, reply) => {
+    try {
+      return reply
+        .status(201)
+        .send(await (await coreFor(req)).createNote(req.body as never));
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    '/api/notes/:id',
+    async (req, reply) => {
+      try {
+        return await (await coreFor(req)).updateNote(req.params.id, req.body ?? {});
+      } catch (err) {
+        return sendError(reply, err);
+      }
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>('/api/notes/:id', async (req, reply) => {
+    try {
+      return await (await coreFor(req)).deleteNote(req.params.id);
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  // ── Recurring tasks (write) ───────────────────────────────────────────────
+  // Created against a task, never standalone: that is the only shape the client
+  // itself produces, and inventing a second one would put an op on the log that
+  // no other client knows how to replay.
+  app.post<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    '/api/tasks/:id/repeat-cfg',
+    async (req, reply) => {
+      try {
+        return reply
+          .status(201)
+          .send(
+            await (
+              await coreFor(req)
+            ).createTaskRepeatCfg(req.params.id, (req.body ?? {}) as never),
+          );
+      } catch (err) {
+        return sendError(reply, err);
+      }
+    },
+  );
+
+  app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    '/api/task-repeat-cfgs/:id',
+    async (req, reply) => {
+      try {
+        return await (
+          await coreFor(req)
+        ).updateTaskRepeatCfg(req.params.id, req.body ?? {});
+      } catch (err) {
+        return sendError(reply, err);
+      }
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>(
+    '/api/task-repeat-cfgs/:id',
+    async (req, reply) => {
+      try {
+        return await (await coreFor(req)).deleteTaskRepeatCfg(req.params.id);
+      } catch (err) {
+        return sendError(reply, err);
+      }
+    },
+  );
 
   // ── Projects (write) ──────────────────────────────────────────────────────
   app.post<{ Body: Record<string, unknown> }>('/api/projects', async (req, reply) => {

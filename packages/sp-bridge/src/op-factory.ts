@@ -170,6 +170,91 @@ export const buildProjectEntity = (input: NewProjectInput): Record<string, unkno
   theme: buildTheme(input.color ?? DEFAULT_PROJECT_COLOR),
 });
 
+export interface NewNoteInput {
+  content: string;
+  projectId?: string | null;
+  isPinnedToToday?: boolean;
+  backgroundColor?: string;
+  imgUrl?: string;
+}
+
+/** Templated from Note in src/app/features/note/note.model.ts. `projectId: null` is a global note, which is what the UI's notes panel creates. */
+export const buildNoteEntity = (input: NewNoteInput): Record<string, unknown> => {
+  const now = Date.now();
+  return {
+    id: nanoid(),
+    projectId: input.projectId ?? null,
+    isPinnedToToday: input.isPinnedToToday ?? false,
+    content: input.content,
+    created: now,
+    modified: now,
+    ...(input.backgroundColor ? { backgroundColor: input.backgroundColor } : {}),
+    ...(input.imgUrl ? { imgUrl: input.imgUrl } : {}),
+  };
+};
+
+export interface NewTaskRepeatCfgInput {
+  repeatCycle?: string;
+  repeatEvery?: number;
+  startDate?: string;
+  startTime?: string;
+  isPaused?: boolean;
+  monday?: boolean;
+  tuesday?: boolean;
+  wednesday?: boolean;
+  thursday?: boolean;
+  friday?: boolean;
+  saturday?: boolean;
+  sunday?: boolean;
+  defaultEstimate?: number;
+  notes?: string;
+  tagIds?: string[];
+  order?: number;
+  repeatFromCompletionDate?: boolean;
+  waitForCompletion?: boolean;
+}
+
+/**
+ * Templated from DEFAULT_TASK_REPEAT_CFG in the client, field for field.
+ *
+ * Title and projectId come from the task being made recurring rather than from input, because that is what the UI does: the config describes
+ * how a task repeats, not a second place to name it.
+ *
+ * Deliberately narrow. The monthly Nth-weekday and last-day anchors, sub-task templates and reminders are omitted: they carry interdependent rules
+ * (the anchors are mutually exclusive, and a malformed pair silently changes the recurrence) that are better set in the UI than guessed at over HTTP.
+ */
+export const buildTaskRepeatCfgEntity = (
+  input: NewTaskRepeatCfgInput,
+  from: { title: unknown; projectId: unknown; tagIds?: unknown },
+): Record<string, unknown> => ({
+  id: nanoid(),
+  projectId: (from.projectId as string | null) ?? null,
+  title: (from.title as string | null) ?? null,
+  lastTaskCreation: Date.now(),
+  lastTaskCreationDay: new Date().toLocaleDateString('en-CA'),
+  tagIds: input.tagIds ?? (Array.isArray(from.tagIds) ? (from.tagIds as string[]) : []),
+  order: input.order ?? 0,
+  isPaused: input.isPaused ?? false,
+  quickSetting: 'CUSTOM',
+  repeatCycle: input.repeatCycle ?? 'WEEKLY',
+  repeatEvery: input.repeatEvery ?? 1,
+  monday: input.monday ?? true,
+  tuesday: input.tuesday ?? true,
+  wednesday: input.wednesday ?? true,
+  thursday: input.thursday ?? true,
+  friday: input.friday ?? true,
+  saturday: input.saturday ?? false,
+  sunday: input.sunday ?? false,
+  repeatFromCompletionDate: input.repeatFromCompletionDate ?? false,
+  waitForCompletion: input.waitForCompletion ?? false,
+  shouldInheritSubtasks: false,
+  disableAutoUpdateSubtasks: false,
+  notes: input.notes,
+  defaultEstimate: input.defaultEstimate,
+  startDate: input.startDate,
+  startTime: input.startTime,
+});
+
 /** Panel filter fields, defaulted to match a stock Kanban column. Enums come from `@sp/shared-schema`, so these are the app's values, not a copy. */
 export interface NewPanelInput {
   title: string;
@@ -625,6 +710,115 @@ export class OpFactory {
       entityType: 'BOARD',
       entityId: panelId,
       actionPayload: { panelId, taskIds },
+      vectorClock,
+    });
+  }
+
+  // ── Notes ───────────────────────────────────────────────────────────────────
+
+  /** [Note] Add Note - full Note entity in { note }. */
+  addNote(
+    note: Record<string, unknown>,
+    vectorClock: Record<string, number>,
+  ): Promise<SuperSyncOperation> {
+    return this._makeOp({
+      actionType: '[Note] Add Note',
+      opType: 'CRT',
+      entityType: 'NOTE',
+      entityId: note.id as string,
+      actionPayload: { note },
+      vectorClock,
+    });
+  }
+
+  /** [Note] Update Note - NgRx Update<Note> shape { note: { id, changes } }. */
+  updateNote(
+    id: string,
+    changes: Record<string, unknown>,
+    vectorClock: Record<string, number>,
+  ): Promise<SuperSyncOperation> {
+    return this._makeOp({
+      actionType: '[Note] Update Note',
+      opType: 'UPD',
+      entityType: 'NOTE',
+      entityId: id,
+      actionPayload: { note: { id, changes } },
+      vectorClock,
+    });
+  }
+
+  /**
+   * [Note] Delete Note - the client's reducer needs projectId and isPinnedToToday
+   * as well as the id, because it removes the note from the owning project's
+   * noteIds and from the today ordering. Sending id alone would orphan both.
+   */
+  deleteNote(
+    id: string,
+    projectId: string | null,
+    isPinnedToToday: boolean,
+    vectorClock: Record<string, number>,
+  ): Promise<SuperSyncOperation> {
+    return this._makeOp({
+      actionType: '[Note] Delete Note',
+      opType: 'DEL',
+      entityType: 'NOTE',
+      entityId: id,
+      actionPayload: { id, projectId, isPinnedToToday },
+      vectorClock,
+    });
+  }
+
+  // ── Recurring tasks ─────────────────────────────────────────────────────────
+
+  /**
+   * [TaskRepeatCfg][Task] Add TaskRepeatCfg to Task - the client's ONLY
+   * persistent create for a repeat config: you make an existing task recurring
+   * rather than conjuring a config from nothing. `Upsert TaskRepeatCfg` carries
+   * no op metadata at all, so it never reaches the log and is not an
+   * alternative. Mirrored exactly, taskId included.
+   */
+  addTaskRepeatCfgToTask(
+    taskId: string,
+    taskRepeatCfg: Record<string, unknown>,
+    vectorClock: Record<string, number>,
+  ): Promise<SuperSyncOperation> {
+    return this._makeOp({
+      actionType: '[TaskRepeatCfg][Task] Add TaskRepeatCfg to Task',
+      opType: 'CRT',
+      entityType: 'TASK_REPEAT_CFG',
+      entityId: taskRepeatCfg.id as string,
+      actionPayload: { taskId, taskRepeatCfg },
+      vectorClock,
+    });
+  }
+
+  /** [TaskRepeatCfg] Update TaskRepeatCfg - NgRx Update shape { taskRepeatCfg: { id, changes } }. */
+  updateTaskRepeatCfg(
+    id: string,
+    changes: Record<string, unknown>,
+    vectorClock: Record<string, number>,
+  ): Promise<SuperSyncOperation> {
+    return this._makeOp({
+      actionType: '[TaskRepeatCfg] Update TaskRepeatCfg',
+      opType: 'UPD',
+      entityType: 'TASK_REPEAT_CFG',
+      entityId: id,
+      actionPayload: { taskRepeatCfg: { id, changes } },
+      vectorClock,
+    });
+  }
+
+  /** [TaskRepeatCfg] Delete TaskRepeatCfg - payload is just { id }; already-created task instances are left alone, as in the UI. */
+  deleteTaskRepeatCfg(
+    id: string,
+    vectorClock: Record<string, number>,
+  ): Promise<SuperSyncOperation> {
+    return this._makeOp({
+      actionType: '[TaskRepeatCfg] Delete TaskRepeatCfg',
+      opType: 'DEL',
+      entityType: 'TASK_REPEAT_CFG',
+      entityId: id,
+      actionPayload: { id },
       vectorClock,
     });
   }

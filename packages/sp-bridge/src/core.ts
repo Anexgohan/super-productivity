@@ -12,6 +12,8 @@ import {
   buildProjectEntity,
   buildBoardEntity,
   buildPanelEntity,
+  buildNoteEntity,
+  buildTaskRepeatCfgEntity,
   nanoid,
   OpFactory,
   type NewTaskInput,
@@ -19,10 +21,43 @@ import {
   type NewProjectInput,
   type NewBoardInput,
   type NewPanelInput,
+  type NewNoteInput,
+  type NewTaskRepeatCfgInput,
 } from './op-factory';
+import { getArchiveTask, listArchiveTasks, type ArchiveTaskFilter } from './archive';
 
 const ALLOWED_TAG_FIELDS = new Set(['title', 'color', 'icon']);
 const ALLOWED_PROJECT_FIELDS = new Set(['title', 'isEnableBacklog', 'isArchived']);
+const ALLOWED_NOTE_FIELDS = new Set([
+  'content',
+  'isPinnedToToday',
+  'backgroundColor',
+  'imgUrl',
+  'isLock',
+  'projectId',
+]);
+/** Recurrence rules only. Title and projectId come from the task, as in the UI. */
+const ALLOWED_REPEAT_CFG_FIELDS = new Set([
+  'repeatCycle',
+  'repeatEvery',
+  'startDate',
+  'startTime',
+  'isPaused',
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+  'sunday',
+  'defaultEstimate',
+  'notes',
+  'tagIds',
+  'order',
+  'repeatFromCompletionDate',
+  'waitForCompletion',
+]);
+const REPEAT_CYCLES = new Set(['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY']);
 const ALLOWED_BOARD_FIELDS = new Set(['title', 'cols', 'panels']);
 /**
  * Everything on a panel except `id` (identity) and `taskIds` (manual card
@@ -1068,5 +1103,150 @@ export class BridgeCore {
       isLive: this.store.isLive,
       entityCounts: counts,
     };
+  }
+
+  // ── Archive (read-only) ─────────────────────────────────────────────────────
+
+  listArchiveTasks(filter: ArchiveTaskFilter = {}): Record<string, unknown>[] {
+    return listArchiveTasks(this.store.state as Record<string, unknown>, filter);
+  }
+
+  getArchiveTask(id: string): Record<string, unknown> | undefined {
+    return getArchiveTask(this.store.state as Record<string, unknown>, id);
+  }
+
+  // ── Notes ───────────────────────────────────────────────────────────────────
+
+  listNotes(filter: { projectId?: string | null } = {}): Record<string, unknown>[] {
+    const notes = Object.values(this._bucket('NOTE'));
+    if (filter.projectId === undefined) return notes;
+    return notes.filter((n) => (n.projectId ?? null) === filter.projectId);
+  }
+
+  getNote(id: string): Record<string, unknown> | undefined {
+    return this._bucket('NOTE')[id];
+  }
+
+  async createNote(input: NewNoteInput): Promise<Record<string, unknown>> {
+    if (!input.content || typeof input.content !== 'string') {
+      throw err('content (string) is required', 400);
+    }
+    if (input.projectId && !this._bucket('PROJECT')[input.projectId]) {
+      throw err(`Unknown projectId: ${input.projectId}`, 400);
+    }
+    const note = buildNoteEntity(input);
+    const op = await this.ops.addNote(note, this.store.nextWriteClock());
+    await this.store.submitOps([op]);
+    return this._bucket('NOTE')[note.id as string] ?? note;
+  }
+
+  async updateNote(
+    id: string,
+    changes: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const existing = this._bucket('NOTE')[id];
+    if (!existing) throw err('Note not found', 404);
+    const bad = Object.keys(changes).filter((k) => !ALLOWED_NOTE_FIELDS.has(k));
+    if (bad.length) throw err(`Field(s) not writable: ${bad.join(', ')}`, 400);
+    if (
+      changes.projectId !== undefined &&
+      changes.projectId !== null &&
+      !this._bucket('PROJECT')[changes.projectId as string]
+    ) {
+      throw err(`Unknown projectId: ${String(changes.projectId)}`, 400);
+    }
+    // The client stamps this on every edit; without it the note sorts as untouched.
+    const op = await this.ops.updateNote(
+      id,
+      { ...changes, modified: Date.now() },
+      this.store.nextWriteClock(),
+    );
+    await this.store.submitOps([op]);
+    return this._bucket('NOTE')[id] ?? existing;
+  }
+
+  async deleteNote(id: string): Promise<Record<string, unknown>> {
+    const existing = this._bucket('NOTE')[id];
+    if (!existing) throw err('Note not found', 404);
+    const op = await this.ops.deleteNote(
+      id,
+      (existing.projectId as string | null) ?? null,
+      Boolean(existing.isPinnedToToday),
+      this.store.nextWriteClock(),
+    );
+    await this.store.submitOps([op]);
+    return { deleted: id };
+  }
+
+  // ── Recurring tasks ─────────────────────────────────────────────────────────
+
+  private _validateRepeatCfg(input: Record<string, unknown>): void {
+    const bad = Object.keys(input).filter((k) => !ALLOWED_REPEAT_CFG_FIELDS.has(k));
+    if (bad.length) throw err(`Field(s) not writable: ${bad.join(', ')}`, 400);
+    if (
+      input.repeatCycle !== undefined &&
+      !REPEAT_CYCLES.has(String(input.repeatCycle))
+    ) {
+      throw err(`repeatCycle must be one of: ${[...REPEAT_CYCLES].join(', ')}`, 400);
+    }
+    if (
+      input.repeatEvery !== undefined &&
+      (!Number.isInteger(input.repeatEvery) || (input.repeatEvery as number) < 1)
+    ) {
+      throw err('repeatEvery must be a whole number of 1 or more', 400);
+    }
+  }
+
+  /**
+   * Makes an existing task recurring, which is the only way the client creates a repeat config.
+   * The task keeps its identity; future instances are generated from this config by whichever client is running.
+   */
+  async createTaskRepeatCfg(
+    taskId: string,
+    input: NewTaskRepeatCfgInput,
+  ): Promise<Record<string, unknown>> {
+    const task = this._bucket('TASK')[taskId];
+    if (!task) throw err('Task not found', 404);
+    if (task.repeatCfgId) {
+      throw err('That task already repeats. Update its config instead.', 409);
+    }
+    this._validateRepeatCfg(input as Record<string, unknown>);
+    const cfg = buildTaskRepeatCfgEntity(input, {
+      title: task.title,
+      projectId: task.projectId,
+      tagIds: task.tagIds,
+    });
+    const op = await this.ops.addTaskRepeatCfgToTask(
+      taskId,
+      cfg,
+      this.store.nextWriteClock(),
+    );
+    await this.store.submitOps([op]);
+    return this._bucket('TASK_REPEAT_CFG')[cfg.id as string] ?? cfg;
+  }
+
+  async updateTaskRepeatCfg(
+    id: string,
+    changes: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const existing = this._bucket('TASK_REPEAT_CFG')[id];
+    if (!existing) throw err('Recurring config not found', 404);
+    this._validateRepeatCfg(changes);
+    const op = await this.ops.updateTaskRepeatCfg(
+      id,
+      changes,
+      this.store.nextWriteClock(),
+    );
+    await this.store.submitOps([op]);
+    return this._bucket('TASK_REPEAT_CFG')[id] ?? existing;
+  }
+
+  /** Stops future instances. Tasks already created from it are left alone, exactly as in the UI. */
+  async deleteTaskRepeatCfg(id: string): Promise<Record<string, unknown>> {
+    const existing = this._bucket('TASK_REPEAT_CFG')[id];
+    if (!existing) throw err('Recurring config not found', 404);
+    const op = await this.ops.deleteTaskRepeatCfg(id, this.store.nextWriteClock());
+    await this.store.submitOps([op]);
+    return { deleted: id };
   }
 }

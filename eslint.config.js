@@ -211,6 +211,33 @@ module.exports = tseslint.config(
       ],
     },
   },
+  {
+    // sp-bridge speaks HTTP, so a lot of its object keys are wire strings rather than identifiers:
+    // header names (`Content-Type`, `X-Internal-Secret`) and the self-describing route map
+    // (`GET /api/health`). Those cannot be camelCase without changing what goes over the socket.
+    // `requiresQuotes` exempts exactly the keys that could never be written as bare identifiers,
+    // so ordinary property names in this package are still held to the normal formats.
+    files: ['packages/sp-bridge/**/*.ts'],
+    rules: {
+      '@typescript-eslint/naming-convention': [
+        'error',
+        {
+          selector: 'objectLiteralProperty',
+          format: null,
+          modifiers: ['requiresQuotes'],
+        },
+        {
+          selector: 'default',
+          format: ['camelCase', 'snake_case', 'UPPER_CASE', 'PascalCase'],
+          leadingUnderscore: 'allowSingleOrDouble',
+          trailingUnderscore: 'allow',
+          filter: { regex: '(should)|@tags', match: false },
+        },
+        { selector: 'enum', format: ['PascalCase', 'UPPER_CASE'] },
+        { selector: 'typeLike', format: ['PascalCase'] },
+      ],
+    },
+  },
   // NgRx effects files - require hydration guards on selector-based effects
   {
     files: ['**/*.effects.ts'],
