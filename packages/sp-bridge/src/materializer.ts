@@ -547,6 +547,20 @@ export class Materializer {
       return;
     }
 
+    // Creating a repeat config also links the task to it (task.reducer.ts, `on(addTaskRepeatCfgToTask)`). Replaying clients get that for free by
+    // re-dispatching the action; the bridge does not, so without this it calls the task non-recurring forever and lets it collect a second config.
+    // Deliberately no early return: the generic CRT below still has to create the config entity itself.
+    if (op.actionType === '[TaskRepeatCfg][Task] Add TaskRepeatCfg to Task') {
+      const action = asRecord(extractActionPayload(payload));
+      const taskId = action.taskId as string | undefined;
+      const cfgId = asRecord(action.taskRepeatCfg).id as string | undefined;
+      const tasks = (this._state.TASK ??= {});
+      // Only when the task is present, matching the client's updateOne - a missing id is a no-op there, never a phantom entity.
+      if (taskId && cfgId && !isUnsafeKey(taskId) && tasks[taskId]) {
+        tasks[taskId] = { ...asRecord(tasks[taskId]), repeatCfgId: cfgId };
+      }
+    }
+
     const bucket = (this._state[entityType] ??= {});
     const payloadKey = this._payloadKeyFor(entityType);
 

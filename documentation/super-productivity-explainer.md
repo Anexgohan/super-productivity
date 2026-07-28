@@ -665,6 +665,23 @@ local build nothing. Note that `ci.yml` only lints on pull requests to `master`,
 which this fork's tag-driven flow never opens - without that job nothing would
 lint at all. Run `npm run lint` locally before tagging.
 
+### Rebuilding the dev stack from scratch
+
+```bash
+cd docker/deployment
+docker compose down
+docker compose build --no-cache
+docker compose up -d --force-recreate
+```
+
+`docker compose build` with no arguments is already the whole stack. Only three services declare a `build:` (in `compose.override.yml`); `sp_postgres` is an upstream image with no build section, so Compose skips it silently. Naming the three services adds nothing.
+
+**Never run `docker compose pull` against this stack.** It looks like the way to refresh images and it quietly destroys a local build. The three built services are tagged `ghcr.io/anexgohan/sp-{web,supersync,bridge}:latest` - the same names the local build writes to - so `pull` fetches the published images from GHCR and overwrites whatever you just built. The stack then comes up green and healthy running code that is potentially weeks old. Health checks cannot catch this; the tell is behavioural, like a route count that is short of what the source says it should be. Only `sp_postgres` benefits from a pull, and `up -d` handles that on its own.
+
+If you genuinely want newer `FROM` bases - `node:24-alpine`, `node:22`, `nginx:1`, all moving tags that upstream repatches - use `docker compose build --pull`, which refreshes the bases _during_ the build instead of replacing the artifacts after it. Keep that as a deliberate occasional act rather than part of a routine rebuild: it changes the build environment underneath you, so a build that worked yesterday can fail today for reasons that have nothing to do with your code.
+
+**A full rebuild keeps your data, and keeps more than you might want.** Persistence is bind-mounted at `docker-data/{postgres,bridge,supersync}`, which `down` never touches (only `down -v` would, and that would take the accounts and API keys with it). The bridge's materialized state cache under `docker-data/bridge` also survives, and it is restored on boot rather than replayed from the op log. So a materializer fix applies to new ops only; entities materialized wrongly before the fix stay wrong across any number of rebuilds. Clear that directory to force a full re-materialization.
+
 ---
 
 ## Publishing images (GHCR) and deploying elsewhere

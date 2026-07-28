@@ -9,7 +9,7 @@ Routes live in packages/sp-bridge/src/{rest.ts,auth/routes.ts}; GET /api/docs is
 
 # sp-bridge REST API Reference
 
-The complete endpoint contract for the containerized Super Productivity API (`sp-bridge`, v1): **50 data routes** plus **23 account routes**, covering everything the web UI does.
+The complete endpoint contract for the containerized Super Productivity API (`sp-bridge`, v1): **60 data routes** plus **23 account routes**.
 
 For the concepts behind it, the op-log, why boards are tags, and what the Today list is, read [`super-productivity-explainer.md`](./super-productivity-explainer.md) first.
 
@@ -142,6 +142,12 @@ Sharing is all-or-nothing and applies to everyone signed in, not only to viewers
 **Reading tasks** · [list](#get-apitasks) · [single](#get-apitasksid) · [current-task](#get-apicurrent-task) · [repeat-cfgs](#get-apitask-repeat-cfgs) · [planner](#get-apiplanner) · [worklog](#get-apiworklog)
 
 **Reading other** · [projects](#get-apiprojects) · [tags](#get-apitags) · [config](#get-apiconfig) · [entities](#get-apientities) · [entities/:type](#get-apientitiestype)
+
+**Archive** · [list](#get-apiarchivetasks) · [single](#get-apiarchivetasksid)
+
+**Notes** · [list](#get-apinotes) · [single](#get-apinotesid) · [create](#post-apinotes) · [update](#patch-apinotesid) · [delete](#delete-apinotesid)
+
+**Recurring tasks** · [make recurring](#post-apitasksidrepeat-cfg) · [update](#patch-apitask-repeat-cfgsid) · [delete](#delete-apitask-repeat-cfgsid)
 
 **Task lifecycle** · [create](#post-apitasks) · [from-syntax](#post-apitasksfrom-syntax) · [update](#patch-apitasksid) · [complete](#post-apitasksidcomplete) · [complete-on](#post-apitasksidcomplete-on) · [delete](#delete-apitasksid)
 
@@ -309,14 +315,95 @@ Lists every materialized entity type available for raw access.
 
 ### `GET /api/entities/:type`
 
-Raw entity map for one type (`TASK`, `TAG`, `PROJECT`, `BOARD`, `PLANNER`,
-`ISSUE_PROVIDER`, …). This is the escape hatch for anything the typed endpoints
-don't expose - e.g. reading a board's `includedTagIds`. `404` on unknown type.
+Raw entity map for one type (`TASK`, `TAG`, `PROJECT`, `BOARD`, `PLANNER`, `ISSUE_PROVIDER`, …). This is the escape hatch for anything the typed endpoints don't expose - e.g. reading a board's `includedTagIds`.
+
+A type only exists once the board has data of that kind, so `404` here means "none yet" rather than "no such type". `GET /api/entities` lists what this board actually has.
 
 ```bash
 # which tag drives each Kanban column
 curl -H "X-Api-Key: $KEY" http://host:18230/api/entities/BOARD
 ```
+
+---
+
+## Archive
+
+Completed tasks are swept into the archive **daily**, so `GET /api/tasks?isDone=true` only ever shows what was finished since the last sweep. Anything older is here. Read-only: the archive is written by the app's own lifecycle, not by callers.
+
+### `GET /api/archive/tasks`
+
+Archived tasks, **newest completion first**, capped at **500** by default.
+
+| Param                | Meaning                                            |
+| -------------------- | -------------------------------------------------- |
+| `from`, `to`         | YYYY-MM-DD, inclusive, on the day it was completed |
+| `projectId`, `tagId` | same meaning as on `/api/tasks`                    |
+| `search`             | matches title or notes                             |
+| `fields`             | comma-separated projection; `id` always returned   |
+| `limit`              | whole number; overrides the default 500            |
+
+The cap is a guard, not pagination: the archive grows without bound, and narrowing with `from`/`to` is the intended way to ask for more. Tasks with no recorded completion date are excluded whenever `from` or `to` is given, and sort last otherwise.
+
+```bash
+# what did this account finish last week
+curl -H "X-Api-Key: $KEY" "http://host:18230/api/archive/tasks?from=2026-07-20&to=2026-07-26&fields=title,doneOn"
+```
+
+Honours [`?boardOf=`](#reading-someone-elses-board), so a shared board exposes its completed history as well as its current tasks.
+
+### `GET /api/archive/tasks/:id`
+
+Single archived task. `404` if it is not in the archive - it may still be a live task, in which case use [`GET /api/tasks/:id`](#get-apitasksid).
+
+---
+
+## Notes
+
+Standalone notes, the ones in the app's notes panel. Per-task text is the `notes` field on a task and is unrelated to these.
+
+### `GET /api/notes`
+
+All notes. `?projectId=<id>` narrows to one project; `?projectId=null` returns the notes that belong to no project.
+
+### `GET /api/notes/:id`
+
+Single note. `404` if unknown.
+
+### `POST /api/notes`
+
+Body: `{content (required), projectId?, isPinnedToToday?, backgroundColor?, imgUrl?}`. Omitting `projectId` creates a global note. `400` on an unknown `projectId`. → `201` with the created note.
+
+### `PATCH /api/notes/:id`
+
+Writable: `content`, `isPinnedToToday`, `backgroundColor`, `imgUrl`, `isLock`, `projectId`. Anything else → `400`. `modified` is stamped for you.
+
+### `DELETE /api/notes/:id`
+
+→ `{"deleted": "<id>"}`. Also removes it from its project and from the today ordering.
+
+---
+
+## Recurring tasks
+
+Reading is [`GET /api/task-repeat-cfgs`](#get-apitask-repeat-cfgs).
+
+### `POST /api/tasks/:id/repeat-cfg`
+
+Makes an existing task recurring. There is no route that creates a config on its own, because the app has no such action either: a config always describes how a particular task repeats. The task's `title`, `projectId` and `tagIds` are inherited and are not accepted in the body.
+
+Body, all optional: `{repeatCycle: DAILY|WEEKLY|MONTHLY|YEARLY, repeatEvery, startDate, startTime, monday…sunday, defaultEstimate, notes, tagIds, order, isPaused, repeatFromCompletionDate, waitForCompletion}`. Defaults match the app's own: weekly, every 1, Monday to Friday.
+
+`404` if the task is unknown · `409` if it already repeats · `400` on an unknown cycle or `repeatEvery` below 1. → `201` with the config.
+
+The monthly Nth-weekday and last-day anchors, sub-task templates and reminder options are deliberately not settable here: their rules are interdependent, and a malformed pair silently changes the recurrence. Set those in the UI.
+
+### `PATCH /api/task-repeat-cfgs/:id`
+
+Same writable fields. `title` and `projectId` are not among them.
+
+### `DELETE /api/task-repeat-cfgs/:id`
+
+Stops future instances. → `{"deleted": "<id>"}`. Tasks already created from it are left alone and keep pointing at the deleted config, exactly as in the UI.
 
 ---
 
