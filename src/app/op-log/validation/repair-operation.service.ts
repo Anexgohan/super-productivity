@@ -21,6 +21,7 @@ import { alertDialog } from '../../util/native-dialogs';
 import { RepairSyncContextService } from './repair-sync-context.service';
 import { StateSnapshotService } from '../backup/state-snapshot.service';
 import { SnackService } from '../../core/snack/snack.service';
+import { IS_READ_ONLY_BOARD } from '../../imex/sync/container-authority.service';
 
 export interface RebaseStaleRepairOptions {
   staleRepairOpId: string;
@@ -72,6 +73,18 @@ export class RepairOperationService {
   ): Promise<number> {
     if (!clientId) {
       throw new Error('clientId is required - cannot create repair operation');
+    }
+
+    // Reading somebody else's shared board. The repaired state is still
+    // dispatched by the caller, so the app renders correctly — we just do not
+    // mint an op for it. Recording one would write a full-state boundary into a
+    // log we may not upload to, which then blocks every later upload; and the
+    // repair describes a copy of their data, not a change the owner made.
+    if (IS_READ_ONLY_BOARD()) {
+      OpLog.normal(
+        '[RepairOperationService] read-only board, repairing the local copy without recording an operation',
+      );
+      return 0;
     }
 
     let seq: number = 0;

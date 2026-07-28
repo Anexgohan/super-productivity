@@ -13,6 +13,7 @@ import { RepairSyncContextService } from './repair-sync-context.service';
 import { StateSnapshotService } from '../backup/state-snapshot.service';
 import { SnackService } from '../../core/snack/snack.service';
 import { T } from '../../t.const';
+import { IS_READ_ONLY_BOARD } from '../../imex/sync/container-authority.service';
 
 describe('RepairOperationService', () => {
   let service: RepairOperationService;
@@ -123,6 +124,66 @@ describe('RepairOperationService', () => {
 
     service = TestBed.inject(RepairOperationService);
     repairSyncContext = TestBed.inject(RepairSyncContextService);
+  });
+
+  // Module-level signal, so it outlives the TestBed and would leak into the next spec.
+  afterEach(() => IS_READ_ONLY_BOARD.set(false));
+
+  describe('on a board this client may only read', () => {
+    // The bug this closes: viewing a shared board, the client repaired its local copy, minted a
+    // full-state REPAIR op for it, and got a 403 from the read-scoped token. The op stayed
+    // rejected, and because a rejected full-state op blocks every later upload until something
+    // supersedes it - which nothing on a read-only board ever can - sync stayed wedged.
+    beforeEach(() => IS_READ_ONLY_BOARD.set(true));
+
+    it('does not record an operation', async () => {
+      await service.createRepairOperation(
+        mockRepairedState,
+        createRepairSummary({ invalidReferencesRemoved: 2 }),
+        'test-client',
+      );
+
+      expect(mockOpLogStore.appendMixedSourceBatchSkipDuplicates).not.toHaveBeenCalled();
+    });
+
+    it('does not rewrite the state cache', async () => {
+      await service.createRepairOperation(
+        mockRepairedState,
+        createRepairSummary({ invalidReferencesRemoved: 2 }),
+        'test-client',
+      );
+
+      expect(mockOpLogStore.saveStateCache).not.toHaveBeenCalled();
+    });
+
+    it('stays quiet, since the repair describes a copy of another persons data', async () => {
+      await service.createRepairOperation(
+        mockRepairedState,
+        createRepairSummary({ invalidReferencesRemoved: 2 }),
+        'test-client',
+      );
+
+      expect(mockSnackService.open).not.toHaveBeenCalled();
+      expect(alertSpy).not.toHaveBeenCalled();
+    });
+
+    it('still refuses a missing clientId, so the guard cannot mask a real bug', async () => {
+      await expectAsync(
+        service.createRepairOperation(mockRepairedState, createRepairSummary(), ''),
+      ).toBeRejectedWithError(/clientId is required/);
+    });
+
+    it('records normally once the board is writable again', async () => {
+      IS_READ_ONLY_BOARD.set(false);
+
+      await service.createRepairOperation(
+        mockRepairedState,
+        createRepairSummary({ invalidReferencesRemoved: 2 }),
+        'test-client',
+      );
+
+      expect(mockOpLogStore.appendMixedSourceBatchSkipDuplicates).toHaveBeenCalled();
+    });
   });
 
   describe('rebaseStaleRepair', () => {

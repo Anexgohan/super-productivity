@@ -1,6 +1,9 @@
 import { TestBed } from '@angular/core/testing';
 import { OperationLogStoreService } from '../../op-log/persistence/operation-log-store.service';
-import { ContainerAuthorityService } from './container-authority.service';
+import {
+  ContainerAuthorityService,
+  IS_READ_ONLY_BOARD,
+} from './container-authority.service';
 import { SYNC_BASELINE_THRESHOLD, SyncBaselineService } from './sync-baseline.service';
 
 describe('SyncBaselineService', () => {
@@ -40,6 +43,9 @@ describe('SyncBaselineService', () => {
     service = TestBed.inject(SyncBaselineService);
   });
 
+  // Module-level signal, so it outlives the TestBed and would leak into the next spec.
+  afterEach(() => IS_READ_ONLY_BOARD.set(false));
+
   it('publishes when history has grown past the threshold', async () => {
     expect(await service.shouldPublish()).toBe(true);
   });
@@ -51,6 +57,12 @@ describe('SyncBaselineService', () => {
 
   it('does not publish outside a container-managed deployment', async () => {
     containerAuthority.isContainerManaged.and.resolveTo(false);
+    expect(await service.shouldPublish()).toBe(false);
+  });
+
+  it('does not publish onto a board it may only read', async () => {
+    // The token served for a shared board is read-scoped, so this upload would 403 and wedge sync behind a full-state op that can never land.
+    IS_READ_ONLY_BOARD.set(true);
     expect(await service.shouldPublish()).toBe(false);
   });
 

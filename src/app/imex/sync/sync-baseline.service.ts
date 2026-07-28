@@ -1,6 +1,9 @@
 import { inject, Injectable } from '@angular/core';
 import { OperationLogStoreService } from '../../op-log/persistence/operation-log-store.service';
-import { ContainerAuthorityService } from './container-authority.service';
+import {
+  ContainerAuthorityService,
+  IS_READ_ONLY_BOARD,
+} from './container-authority.service';
 import { SyncLog } from '../../core/log';
 
 /**
@@ -57,6 +60,12 @@ export class SyncBaselineService {
 
     // Container-managed only. Elsewhere the user owns their sync config, and silently rewriting their remote history is not ours to decide.
     if (!(await this._containerAuthority.isContainerManaged())) {
+      return false;
+    }
+
+    // Somebody else's shared board. Republishing their history is not ours to do, and the token we hold would refuse it anyway.
+    // Checked after isContainerManaged(), which is what loads the override this reads.
+    if (IS_READ_ONLY_BOARD()) {
       return false;
     }
 

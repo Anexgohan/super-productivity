@@ -58,7 +58,9 @@ export class MagicNavConfigService {
   private readonly _isProjectsExpanded = signal(
     lsGetBoolean(LS.IS_PROJECT_LIST_EXPANDED, true),
   );
-  private readonly _isTagsExpanded = signal(lsGetBoolean(LS.IS_TAG_LIST_EXPANDED, true));
+  // Collapsed by default, unlike projects: tags are a cross-cutting filter rather than
+  // where work lives, and an open list pushes the rest of the nav down.
+  private readonly _isTagsExpanded = signal(lsGetBoolean(LS.IS_TAG_LIST_EXPANDED, false));
 
   // Data signals
   private readonly _mainWorkContext = toSignal(

@@ -13,6 +13,7 @@ import { ActionType, OpType, OperationLogEntry } from '../core/operation.types';
 import { SnackService } from '../../core/snack/snack.service';
 import { provideMockStore } from '@ngrx/store/testing';
 import { StateSnapshotService } from '../backup/state-snapshot.service';
+import { IS_READ_ONLY_BOARD } from '../../imex/sync/container-authority.service';
 
 describe('OperationLogUploadService', () => {
   let service: OperationLogUploadService;
@@ -92,7 +93,66 @@ describe('OperationLogUploadService', () => {
     service = TestBed.inject(OperationLogUploadService);
   });
 
+  // Module-level signal, so it outlives the TestBed and would leak into the next spec.
+  afterEach(() => IS_READ_ONLY_BOARD.set(false));
+
   describe('uploadPendingOps', () => {
+    describe('on a board this client may only read', () => {
+      // Somebody else's shared board is on screen and the container served a read-scoped token for
+      // it, so every route this method uses answers 403. This is the single choke point for that:
+      // the sync wrapper, WS-triggered download, conflict coordinator and password change all
+      // funnel through here.
+      let readOnlyProvider: jasmine.SpyObj<
+        SyncProviderBase<SyncProviderId> & OperationSyncCapable
+      >;
+
+      beforeEach(() => {
+        IS_READ_ONLY_BOARD.set(true);
+        readOnlyProvider = jasmine.createSpyObj('ApiSyncProvider', [
+          'getLastServerSeq',
+          'uploadOps',
+          'setLastServerSeq',
+        ]);
+        readOnlyProvider.supportsOperationSync = true;
+        readOnlyProvider.providerMode = 'superSyncOps';
+        // Pending work exists: the point is that it is held back, not that there is none.
+        mockOpLogStore.getUnsynced.and.resolveTo([
+          createMockEntry(1, 'op-1', 'client-a'),
+        ]);
+      });
+
+      it('reports nothing uploaded', async () => {
+        const result = await service.uploadPendingOps(readOnlyProvider);
+
+        expect(result).toEqual({
+          uploadedCount: 0,
+          rejectedCount: 0,
+          piggybackedOps: [],
+          rejectedOps: [],
+        });
+      });
+
+      it('sends nothing to the server', async () => {
+        await service.uploadPendingOps(readOnlyProvider);
+
+        expect(readOnlyProvider.uploadOps).not.toHaveBeenCalled();
+      });
+
+      it('leaves the pending ops unsynced rather than acknowledging them', async () => {
+        // Marking them synced would lose them silently: the purge on switching back is the only
+        // thing that clears them, and until then they must still look like work that never landed.
+        await service.uploadPendingOps(readOnlyProvider);
+
+        expect(mockOpLogStore.markSynced).not.toHaveBeenCalled();
+      });
+
+      it('does not take the upload lock', async () => {
+        await service.uploadPendingOps(readOnlyProvider);
+
+        expect(mockLockService.request).not.toHaveBeenCalled();
+      });
+    });
+
     it('should return empty result when no sync provider', async () => {
       const result = await service.uploadPendingOps(null as any);
 

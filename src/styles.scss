@@ -24,7 +24,10 @@ p,
 input,
 textarea,
 pre,
-[contenteditable] {
+[contenteditable],
+// Error and status text lives in a div, so the rule above misses it. Reporting a
+// sync failure is hard enough without retyping the message off the screen.
+.mat-mdc-snack-bar-label {
   user-select: text;
   -webkit-touch-callout: default;
 }

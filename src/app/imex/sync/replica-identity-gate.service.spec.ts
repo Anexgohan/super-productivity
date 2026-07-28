@@ -1,6 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { ReplicaIdentityGateService } from './replica-identity-gate.service';
 import { OperationLogStoreService } from '../../op-log/persistence/operation-log-store.service';
+import { IS_READ_ONLY_BOARD } from './container-authority.service';
 
 describe('ReplicaIdentityGateService', () => {
   let service: ReplicaIdentityGateService;
@@ -38,6 +39,50 @@ describe('ReplicaIdentityGateService', () => {
     // navigates the Karma runner page away, and because Jasmine randomizes spec order that silently
     // truncates the whole suite at a different point each run.
     redirectSpy = spyOn(service as any, '_redirectToLogin');
+  });
+
+  describe('the read-only board flag', () => {
+    // Set from this gate as well as ContainerAuthorityService because this is the earliest reader
+    // of the document: it runs before the store hydrates, so before any sync can start. Set it only
+    // in the other place and the first upload of a shared board goes out before anything knows.
+    afterEach(() => IS_READ_ONLY_BOARD.set(false));
+
+    it('is raised before the gate has decided anything', async () => {
+      respondWith({ isReadOnly: true, identity: { ...SERVED } });
+      mockOpLogStore.getReplicaIdentity.and.resolveTo({ ...SERVED });
+
+      await service.enforce();
+
+      expect(IS_READ_ONLY_BOARD()).toBe(true);
+    });
+
+    it('is cleared for your own board', async () => {
+      IS_READ_ONLY_BOARD.set(true);
+      respondWith({ isReadOnly: false, identity: { ...SERVED } });
+      mockOpLogStore.getReplicaIdentity.and.resolveTo({ ...SERVED });
+
+      await service.enforce();
+
+      expect(IS_READ_ONLY_BOARD()).toBe(false);
+    });
+
+    it('is raised even when the identity is unusable, so an odd payload cannot open writes', async () => {
+      respondWith({ isReadOnly: true, identity: { userId: 'nope' } });
+
+      expect(await service.enforce()).toBe('ungated');
+      expect(IS_READ_ONLY_BOARD()).toBe(true);
+    });
+
+    it('is left alone when the container cannot be reached', async () => {
+      // Nothing answered, so nothing said the board became writable. Failing closed keeps a
+      // read-only session read-only across a blip rather than letting one upload through.
+      IS_READ_ONLY_BOARD.set(true);
+      respondWith({ error: 'Service Unavailable' }, false, 503);
+
+      await service.enforce();
+
+      expect(IS_READ_ONLY_BOARD()).toBe(true);
+    });
   });
 
   describe('when the deployment serves no identity', () => {

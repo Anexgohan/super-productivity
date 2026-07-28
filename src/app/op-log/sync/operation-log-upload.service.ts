@@ -45,6 +45,7 @@ import {
 } from '../../features/config/local-only-sync-settings.util';
 import { isLwwUpdateActionType } from '../core/lww-update-action-types';
 import { StateSnapshotService } from '../backup/state-snapshot.service';
+import { IS_READ_ONLY_BOARD } from '../../imex/sync/container-authority.service';
 
 // Re-export for consumers that import from this service
 export type {
@@ -77,6 +78,21 @@ export class OperationLogUploadService {
   ): Promise<UploadResult> {
     if (!syncProvider) {
       OpLog.warn('OperationLogUploadService: No active sync provider passed for upload.');
+      return { uploadedCount: 0, piggybackedOps: [], rejectedCount: 0, rejectedOps: [] };
+    }
+
+    // Somebody else's shared board is on screen and the token we hold is
+    // read-scoped, so the server refuses every route this method uses. Stopping
+    // here rather than letting it 403 is what keeps sync usable: a rejected
+    // full-state op blocks all later uploads until something supersedes it, and
+    // nothing on a read-only board ever can.
+    //
+    // The single choke point for it — every caller (sync wrapper, WS-triggered
+    // download, conflict coordinator, password change) funnels through here.
+    if (IS_READ_ONLY_BOARD()) {
+      OpLog.normal(
+        'OperationLogUploadService: read-only board, skipping upload of local operations.',
+      );
       return { uploadedCount: 0, piggybackedOps: [], rejectedCount: 0, rejectedOps: [] };
     }
 

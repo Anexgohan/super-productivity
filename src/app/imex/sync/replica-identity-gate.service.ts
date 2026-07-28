@@ -2,6 +2,7 @@ import { inject, Injectable } from '@angular/core';
 import { OperationLogStoreService } from '../../op-log/persistence/operation-log-store.service';
 import { OperationWriteFlushService } from '../../op-log/sync/operation-write-flush.service';
 import { SyncLog } from '../../core/log';
+import { IS_READ_ONLY_BOARD } from './container-authority.service';
 
 /** What the container says this browser is entitled to hold. */
 interface ServedIdentity {
@@ -182,7 +183,12 @@ export class ReplicaIdentityGateService {
     if (!res.ok) {
       return undefined;
     }
-    const body = (await res.json()) as { identity?: unknown };
+    const body = (await res.json()) as { identity?: unknown; isReadOnly?: unknown };
+    // Set here as well as in ContainerAuthorityService, from the same document and the same field.
+    // This gate is the EARLIEST reader of it - it runs before the store hydrates, and so before any
+    // sync can start. Waiting for the other reader would leave a window where the first upload of a
+    // shared board goes out before anything knows the board is read-only.
+    IS_READ_ONLY_BOARD.set(body?.isReadOnly === true);
     const identity = body?.identity as ServedIdentity | undefined;
     if (
       !identity ||

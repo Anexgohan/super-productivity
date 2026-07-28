@@ -40,6 +40,22 @@ const installKeyCacheStore = (): void => {
 export const IS_CONTAINER_MANAGED = signal(false);
 
 /**
+ * Whether the board on screen is one this browser may only READ
+ * (anex/container-parity).
+ *
+ * True while somebody else's shared board is open. The container serves a
+ * read-scoped sync token for it, so every upload route answers 403 — and
+ * without this the app still behaves as a full peer: it uploads, collects
+ * rejections, and wedges its own sync behind a full-state op that can never
+ * land.
+ *
+ * Re-read on every load rather than latched, unlike IS_CONTAINER_MANAGED.
+ * Switching boards reloads the page, so a stale `true` would follow the user
+ * back to their own board and silently stop it syncing.
+ */
+export const IS_READ_ONLY_BOARD = signal(false);
+
+/**
  * Whether the served container is the AUTHORITY for this client
  * (anex/container-parity).
  *
@@ -85,12 +101,16 @@ export class ContainerAuthorityService {
       return undefined;
     }
     let override: Partial<SyncConfig> | undefined;
+    // Outside SyncConfig on purpose: it describes this session's claim on the board, not how to reach the server, so it is never stored or synced.
+    let isReadOnly = false;
     try {
       const res = await fetch('/assets/sync-config-default-override.json');
       if (!res.ok) {
         return undefined;
       }
-      override = await res.json();
+      const body = await res.json();
+      isReadOnly = body?.isReadOnly === true;
+      override = body;
     } catch {
       return undefined;
     }
@@ -134,6 +154,10 @@ export class ContainerAuthorityService {
 
     this._isContainerManaged = true;
     IS_CONTAINER_MANAGED.set(true);
+    // Set unconditionally, including back to false: this doubles as the re-read
+    // after an auth failure, and a board that stopped being read-only must be
+    // able to say so.
+    IS_READ_ONLY_BOARD.set(isReadOnly);
     return override;
   }
 
