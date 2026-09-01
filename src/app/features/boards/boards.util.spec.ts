@@ -294,9 +294,11 @@ describe('buildDuplicatedBoard', () => {
     expect(copy.projectIds).toEqual(['']);
   });
 
-  it("drops taskIds — manual order over the source project's tasks", () => {
+  it('keeps the manual card order on a plain copy', () => {
+    // A template clears it instead — that is the only difference between the
+    // two copy modes.
     const copy = buildDuplicatedBoard(source, ['P2'], resolve, ' (copy)', newId);
-    expect(copy.panels[0].taskIds).toEqual([]);
+    expect(copy.panels[0].taskIds).toEqual(['t1', 't2']);
   });
 
   it('copies tag filters verbatim, since tags are global', () => {
