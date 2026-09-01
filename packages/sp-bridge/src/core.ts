@@ -58,7 +58,7 @@ const ALLOWED_REPEAT_CFG_FIELDS = new Set([
   'waitForCompletion',
 ]);
 const REPEAT_CYCLES = new Set(['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY']);
-const ALLOWED_BOARD_FIELDS = new Set(['title', 'cols', 'panels']);
+const ALLOWED_BOARD_FIELDS = new Set(['title', 'cols', 'panels', 'projectIds']);
 /**
  * Everything on a panel except `id` (identity) and `taskIds` (manual card
  * order, which has its own action so a reorder does not rewrite the filters).

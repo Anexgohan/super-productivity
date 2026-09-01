@@ -18,6 +18,7 @@ export const DEFAULT_BOARD_CFG: BoardCfg = {
   cols: 1,
   panels: [],
   title: '',
+  projectIds: [''],
 };
 
 export const DEFAULT_PANEL_CFG: BoardPanelCfg = {

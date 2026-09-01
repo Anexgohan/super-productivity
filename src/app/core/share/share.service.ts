@@ -351,28 +351,65 @@ export class ShareService {
         target: 'clipboard-text',
       };
     } catch (error) {
-      try {
-        const textArea = document.createElement('textarea');
-        textArea.value = text;
-        textArea.style.position = 'fixed';
-        textArea.style.left = '-999999px';
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textArea);
-
+      // `navigator.clipboard` is absent on an insecure origin, so on a plain-HTTP
+      // deployment EVERY copy lands here — the fallback is the real path, not an
+      // edge case.
+      if (this._copyViaExecCommand(text)) {
         this._snackService.open(`${label} copied to clipboard!`);
         return {
           success: true,
           target: 'clipboard-text',
         };
-      } catch (fallbackError) {
-        return {
-          success: false,
-          error: 'Failed to copy to clipboard',
-        };
       }
+      return {
+        success: false,
+        error: 'Failed to copy to clipboard',
+      };
     }
+  }
+
+  /**
+   * `document.execCommand('copy')` fallback for insecure origins.
+   *
+   * Two details are load-bearing, and getting either wrong fails on Firefox
+   * while still working on Chrome:
+   *  - the textarea stays in the viewport (`opacity: 0`, not `left: -999999px`);
+   *    Firefox will not copy a selection from an element parked off-screen.
+   *  - it is focused before `select()`, or the selection never becomes the
+   *    document's active one.
+   *
+   * And the return value MUST be honoured: `execCommand` reports failure by
+   * returning `false`, it does not throw, so a caller that ignores it tells the
+   * user "copied!" over an untouched clipboard.
+   */
+  private _copyViaExecCommand(text: string): boolean {
+    if (typeof document === 'undefined') {
+      return false;
+    }
+
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.style.position = 'fixed';
+    textArea.style.top = '0';
+    textArea.style.left = '0';
+    textArea.style.opacity = '0';
+    textArea.style.pointerEvents = 'none';
+
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+
+    let isSuccess = false;
+    try {
+      isSuccess = document.execCommand('copy');
+    } catch (err) {
+      Log.err('Clipboard fallback copy failed:', err);
+      isSuccess = false;
+    } finally {
+      document.body.removeChild(textArea);
+    }
+
+    return isSuccess;
   }
 
   /**

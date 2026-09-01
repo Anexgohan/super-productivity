@@ -1,0 +1,27 @@
+:host {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.scope-btn {
+  min-width: 0;
+}
+
+// While a project is selected the control has to read as active: it is hiding
+// things, and an unremarkable dropdown gives no cue that anything is filtered.
+.scope-btn.isScoped {
+  color: var(--c-accent);
+  font-weight: bold;
+}
+
+.scope-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 12ch;
+}
+
+.scope-caret {
+  margin-left: calc(-1 * var(--s));
+}

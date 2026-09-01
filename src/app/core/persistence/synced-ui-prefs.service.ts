@@ -60,6 +60,10 @@ const SYNCED_KEYS: readonly string[] = [
   LS.SELECTED_TIME_VIEW,
   LS.SCHEDULE_WEEK_ROW_HEIGHT,
   LS.SELECTED_BOARD,
+  // Which project the app is scoped to. A filter preference like
+  // TASK_VIEW_CUSTOMIZER_BY_CONTEXT, not screen geometry — it describes what the
+  // user wants to look at, so it follows the account rather than the browser.
+  LS.GLOBAL_PROJECT_SCOPE,
   LS.FOCUS_MODE_MODE,
   LS.LAST_COUNTDOWN_DURATION,
   LS.LAST_IDLE_DIALOG_MODE,

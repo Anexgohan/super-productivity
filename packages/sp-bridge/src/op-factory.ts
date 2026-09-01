@@ -290,6 +290,7 @@ export interface NewBoardInput {
   id?: string;
   cols?: number;
   panels?: NewPanelInput[];
+  projectIds?: string[];
 }
 
 export const buildBoardEntity = (input: NewBoardInput): Record<string, unknown> => {
@@ -301,6 +302,9 @@ export const buildBoardEntity = (input: NewBoardInput): Record<string, unknown> 
     // gaps or a squeezed grid; explicit `cols` still wins.
     cols: input.cols ?? Math.max(panels.length, 1),
     panels,
+    // [''] is "unassigned" (All Projects), matching what the client's
+    // `sanitizeBoard` normalizes an absent value to.
+    projectIds: input.projectIds ?? [''],
   };
 };
 

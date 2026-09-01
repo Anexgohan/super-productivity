@@ -70,4 +70,49 @@ describe('boards typia validation — legacy projectId compatibility', () => {
     );
     expect(result.success).toBe(false);
   });
+
+  /**
+   * Board-level `projectIds` (the global project scope) must stay optional for
+   * the same reason the panel-level one does: a board stored by any client that
+   * predates the field carries no `projectIds`, and several raw-data paths
+   * validate before the reducer's `sanitizeBoard` fills it in. If it were
+   * required, every such board would fail validation.
+   */
+  const makeBoardWith = (board: Partial<BoardCfg>): BoardsState => ({
+    boardCfgs: [
+      {
+        id: 'board1',
+        title: 'Board',
+        cols: 3,
+        panels: [{ ...basePanel, projectIds: [''] } as BoardPanelCfg],
+        ...board,
+      } as BoardCfg,
+    ],
+  });
+
+  it('accepts a board with no projectIds at all', () => {
+    expect(validateAppDataProperty('boards', makeBoardWith({})).success).toBe(true);
+  });
+
+  it('accepts an unassigned board', () => {
+    expect(
+      validateAppDataProperty('boards', makeBoardWith({ projectIds: [''] })).success,
+    ).toBe(true);
+  });
+
+  it('accepts a board assigned to projects', () => {
+    expect(
+      validateAppDataProperty('boards', makeBoardWith({ projectIds: ['p1', 'p2'] }))
+        .success,
+    ).toBe(true);
+  });
+
+  it('rejects a wrongly-typed board projectIds', () => {
+    expect(
+      validateAppDataProperty(
+        'boards',
+        makeBoardWith({ projectIds: [123] } as unknown as Partial<BoardCfg>),
+      ).success,
+    ).toBe(false);
+  });
 });

@@ -199,7 +199,10 @@
         "CREATE_NEW_TAGS_MSG": "{{nr}} new tags need to be created for this board to work",
         "EDIT_BOARD": "Edit board",
         "NO_PANELS_BTN": "Configure Board",
-        "NO_PANELS_MSG": "This board has no panels configured. Add some panels to it."
+        "NO_PANELS_MSG": "This board has no panels configured. Add some panels to it.",
+        "PANEL_SCOPED_TO_OTHER_PROJECT": "This column is limited to {{project}}",
+        "COPIED_TO_PROJECT": "Board copied to {{project}}",
+        "COPIED_UNASSIGNED": "Board copied — shown under All Projects"
       }
     },
     "CALDAV": {
@@ -2435,7 +2438,9 @@
       "USER_DELETED": "Account deleted",
       "USER_UPDATED": "Account updated",
       "YOU": "you",
-      "YOUR_ACCOUNT": "Your account"
+      "YOUR_ACCOUNT": "Your account",
+      "API_KEY_SELECTED_PRESS_COPY": "Key selected — press Ctrl+C (⌘C) to copy",
+      "API_KEY_COPIED": "API key copied to clipboard"
     },
     "APP_FEATURES": {
       "BOARDS": "Boards",
@@ -2928,7 +2933,10 @@
     "TOGGLE_TRACK_TIME": "Start/stop tracking time",
     "TRIGGER_SYNC": "Sync!",
     "UNPLAN_ALL_TASKS": "Unplan all tasks",
-    "ARCHIVED_PROJECTS": "Archived Projects"
+    "ARCHIVED_PROJECTS": "Archived Projects",
+    "PROJECT_SCOPE": "Project scope",
+    "PROJECT_SCOPE_ALL": "All Projects",
+    "PROJECT_SCOPE_HINT": "Showing {{project}} only"
   },
   "MIGRATE": {
     "C_DOWNLOAD_BACKUP": "Do you want to download a backup of your legacy data (can be used with older versions of Super Productivity)?",

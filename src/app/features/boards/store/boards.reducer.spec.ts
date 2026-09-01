@@ -272,6 +272,61 @@ describe('Boards Reducer - panel cfg sanitization', () => {
   });
 });
 
+describe('Boards Reducer - board project scope sanitization', () => {
+  it('normalizes an absent board projectIds to unassigned on loadAllData', () => {
+    const stored: BoardsState = {
+      boardCfgs: [makeBoard({ id: 'b1' })],
+    };
+    const appDataComplete = { boards: stored } as unknown as AppDataComplete;
+
+    const result = boardsReducer({ boardCfgs: [] }, loadAllData({ appDataComplete }));
+
+    expect(result.boardCfgs[0].projectIds).toEqual(['']);
+  });
+
+  it('keeps a specific board projectIds on loadAllData', () => {
+    const stored: BoardsState = {
+      boardCfgs: [makeBoard({ id: 'b1', projectIds: ['P1'] })],
+    };
+    const appDataComplete = { boards: stored } as unknown as AppDataComplete;
+
+    const result = boardsReducer({ boardCfgs: [] }, loadAllData({ appDataComplete }));
+
+    expect(result.boardCfgs[0].projectIds).toEqual(['P1']);
+  });
+
+  it('collapses a sentinel/specific mix to unassigned on loadAllData', () => {
+    const stored: BoardsState = {
+      boardCfgs: [makeBoard({ id: 'b1', projectIds: ['', 'P1'] })],
+    };
+    const appDataComplete = { boards: stored } as unknown as AppDataComplete;
+
+    const result = boardsReducer({ boardCfgs: [] }, loadAllData({ appDataComplete }));
+
+    expect(result.boardCfgs[0].projectIds).toEqual(['']);
+  });
+
+  it('normalizes board projectIds on addBoard', () => {
+    const board = makeBoard({ id: 'new' });
+    delete (board as Partial<BoardCfg>).projectIds;
+
+    const result = boardsReducer({ boardCfgs: [] }, BoardsActions.addBoard({ board }));
+
+    expect(result.boardCfgs[0].projectIds).toEqual(['']);
+  });
+
+  it('assigns a board to a project via updateBoard', () => {
+    const state: BoardsState = { boardCfgs: [makeBoard({ id: 'b1' })] };
+
+    const result = boardsReducer(
+      state,
+      BoardsActions.updateBoard({ id: 'b1', updates: { projectIds: ['P1'] } }),
+    );
+
+    expect(result.boardCfgs[0].projectIds).toEqual(['P1']);
+  });
+});
+
 describe('Boards Reducer - loadAllData with malformed payload (#7666)', () => {
   it('does not throw when boardCfgs is undefined', () => {
     const appDataComplete = {

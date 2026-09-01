@@ -242,9 +242,11 @@
       >
         <span class="k-main">
           <span class="k-label">{{ k.label }}</span>
-          @if (k.key) {
-            <code class="k-value">{{ isKeyRevealed(k) ? k.key : maskedKey(k) }}</code>
-          }
+          <code
+            #keyEl
+            class="k-value"
+            >{{ k.key ? (isKeyRevealed(k) ? k.key : maskedKey(k)) : '' }}</code
+          >
         </span>
 
         <span class="k-meta">
@@ -288,7 +290,7 @@
             <button
               mat-icon-button
               [matTooltip]="T.GCF.ACCOUNTS.API_KEY_COPY | translate"
-              (click)="copyKey(k)"
+              (click)="copyKey(k, keyEl)"
             >
               <mat-icon>content_copy</mat-icon>
             </button>

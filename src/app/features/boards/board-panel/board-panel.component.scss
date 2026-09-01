@@ -126,3 +126,13 @@ header {
     font-size: 10px;
   }
 }
+
+// Shown when the global project scope and the panel's own project scope cannot
+// both be satisfied. Without it the column is just empty, which reads as data
+// loss rather than as a filter doing its job.
+.scoped-out-hint {
+  padding: var(--s2);
+  font-size: var(--font-size-sm);
+  color: var(--text-color-muted);
+  text-align: center;
+}

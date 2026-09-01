@@ -435,6 +435,44 @@ endpoints, not a dedicated board endpoint.
 
 Two practical consequences when you build a column rather than move a card through one. A new column needs a tag to filter on, so creating the column is usually two writes, not one. And its tag has to be excluded from the columns to its left, or the same card shows up in two places at once, which is why the stock To Do panel excludes `KANBAN_IN_PROGRESS`.
 
+### Boards have a project scope
+
+A board carries `projectIds`, saying which project it belongs to. It uses the
+same `""` sentinel the panel filters use: `[""]` (or absent) means **unassigned**,
+and any array mixing `""` with real ids collapses to `[""]` on save.
+
+The header carries a project selector. On **All Projects** the app behaves as it
+always has. Pick a project and the board strip narrows to boards assigned to it -
+strictly, so an unassigned board shows only under All Projects. The scope also
+narrows what the panels contain, to tasks in that project.
+
+Two board-level filters could disagree, so they do not both exist in the UI: the
+per-panel project filter is no longer rendered in the board editor, and the
+header scope is the only one a person drives. `BoardSrcCfg.projectIds` is
+untouched underneath - still in the schema, still in the op-log, still writable
+over the REST API - so an API caller that deliberately wants a per-column project
+split can still build one. When a panel is scoped that way and the header scope
+names a different project, the column says so instead of rendering empty, because
+an unexplained empty column reads as lost data.
+
+A board naming only projects that do not exist stays visible under every scope.
+That is deliberate: a deleted project is permanent, and project ids are per
+account, so a board read over `?boardOf=` names its owner's projects, not yours.
+Hiding it would leave it reachable under no scope at all.
+
+The selected scope is a **preference, not geometry** - it says what you want to
+look at - so it follows the account through `SYNCED_KEYS`
+(`LS.GLOBAL_PROJECT_SCOPE`) rather than sitting per-browser. Like most
+preferences here it is read once at construction, so a change made on another
+device applies on the next reload.
+
+> **Not true yet.** The selector sits in the global header, but only the Boards
+> page honours it. Planner, Schedule, Search, the scheduled list and Habits
+> ignore the scope entirely and show every project regardless of it. Boards was
+> deliberately first - it is where the two scoping mechanisms met and had to be
+> reconciled - and widening it is mechanical now the precedence rule is settled.
+> Until that lands, the control is more global-looking than it is global.
+
 ### Starter boards exist before they are stored
 
 The two boards a fresh install shows, the Eisenhower Matrix and a Kanban, are not data. They are `DEFAULT_BOARDS`, the NgRx initial state, and nothing is written to the op-log until somebody edits a board for the first time.

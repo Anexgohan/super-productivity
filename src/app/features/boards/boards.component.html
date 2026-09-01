@@ -44,7 +44,7 @@
       <div class="board-add-wrapper">
         <h2>{{ T.F.BOARDS.V.ADD_NEW_BOARD | translate }}</h2>
         <board-edit
-          [boardCfg]="DEFAULT_BOARD_CFG"
+          [boardCfg]="newBoardCfg()"
           (afterSave)="goToLastIndex()"
         ></board-edit>
       </div>
@@ -66,7 +66,8 @@
     </button>
     <button
       mat-menu-item
-      (click)="duplicateBoard(board)"
+      [matMenuTriggerFor]="duplicateTargetMenu"
+      [matMenuTriggerData]="{ boardCfg: board }"
     >
       <mat-icon>file_copy</mat-icon>
       {{ T.G.DUPLICATE | translate }}
@@ -78,5 +79,30 @@
       <mat-icon class="color-warn-i">delete_forever</mat-icon>
       {{ T.G.DELETE | translate }}
     </button>
+  </ng-template>
+</mat-menu>
+
+<!-- Target project for a duplicate. A board holds no tasks, so this copies the
+     columns and their filters and re-points the scope; cards then come from the
+     target project's own tasks. -->
+<mat-menu #duplicateTargetMenu>
+  <ng-template
+    matMenuContent
+    let-board="boardCfg"
+  >
+    <button
+      mat-menu-item
+      (click)="duplicateBoard(board, '')"
+    >
+      {{ T.MH.PROJECT_SCOPE_ALL | translate }}
+    </button>
+    @for (project of projects(); track project.id) {
+      <button
+        mat-menu-item
+        (click)="duplicateBoard(board, project.id)"
+      >
+        {{ project.title }}
+      </button>
+    }
   </ng-template>
 </mat-menu>

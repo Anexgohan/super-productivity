@@ -685,13 +685,30 @@ One board. `404` on an unknown id.
 
 ### `POST /api/boards`
 
-Creates a board. → `201`. Body: `{"title": "...", "id": "OPTIONAL_ID", "cols": 3, "panels": [...]}`.
+Creates a board. → `201`. Body: `{"title": "...", "id": "OPTIONAL_ID", "cols": 3, "panels": [...], "projectIds": ["..."]}`.
 
 `id` is generated when omitted. `cols` defaults to the panel count, so a new board is not born with empty gaps. `409` if the id already exists, including the ids of the starter boards.
 
+`projectIds` is the board's **project scope**: which project the board belongs to. It defaults to `[""]`, the "unassigned" sentinel, which is also what `[""]` mixed with real ids collapses to. See [Board project scope](#board-project-scope) below.
+
 ### `PATCH /api/boards/:id`
 
-Updates a board. Writable: `title`, `cols`, `panels`. `panels` is a **full replacement array** - the panel routes below are conveniences over exactly that.
+Updates a board. Writable: `title`, `cols`, `panels`, `projectIds`. `panels` is a **full replacement array** - the panel routes below are conveniences over exactly that.
+
+#### Board project scope
+
+`projectIds` decides whether a board appears in the browser's board strip while the app is scoped to a project, using the same `""` sentinel the panel filter uses:
+
+| Value            | Meaning                                                                   |
+| ---------------- | ------------------------------------------------------------------------- |
+| `[""]` or absent | Unassigned. Shows only under "All Projects".                              |
+| `["p1"]`         | Belongs to `p1`. Shows under All Projects and under `p1`.                 |
+| `["p1","p2"]`    | Belongs to both, and shows under either.                                  |
+| `["", "p1"]`     | Collapses to `[""]` on write - "All" wins, exactly as it does on a panel. |
+
+A board naming only projects that do not exist stays visible under every scope rather than becoming unreachable. That covers a deleted project and, because project ids are per account, a board read over `?boardOf=` whose scope names the owner's projects rather than yours.
+
+The scope is a filter on **which boards are listed in the UI**, not on their contents: `GET /api/boards` always returns every board regardless of it, and a panel's own filters still decide which cards it holds.
 
 ### `DELETE /api/boards/:id`
 

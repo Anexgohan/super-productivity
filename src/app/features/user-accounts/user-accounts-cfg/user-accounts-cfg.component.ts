@@ -29,6 +29,7 @@ import { TranslatePipe, TranslateService } from '@ngx-translate/core';
 import { T } from '../../../t.const';
 import { ConfigFormSection } from '../../config/global-config.model';
 import { SnackService } from '../../../core/snack/snack.service';
+import { selectElementText } from '../../../util/select-element-text';
 import { Log } from '../../../core/log';
 import { ShareService } from '../../../core/share/share.service';
 import {
@@ -438,11 +439,66 @@ export class UserAccountsCfgComponent implements OnInit {
     });
   }
 
-  /** ShareService, not navigator.clipboard: the Clipboard API is absent on an insecure origin, and this stack is served over plain HTTP. */
-  async copyKey(key: ApiKeyRow): Promise<void> {
+  /**
+   * Copy the key, and always leave the user able to finish the job by hand.
+   *
+   * Scripted copying is not reliable here and cannot be made so from inside the
+   * app. This stack is served over plain HTTP, and only a SECURE context gets
+   * `navigator.clipboard` — `localhost` counts as secure, a LAN address does
+   * not, which is why copy works on other locally-hosted pages and not on this
+   * one. That forces the `execCommand` + offscreen-textarea fallback, which is
+   * precisely the shape of a ClickFix attack, so content blockers (uBlock
+   * Origin among them) refuse it.
+   *
+   * So: reveal the key, select the REAL visible text, then attempt the copy. A
+   * selection of on-screen text is not a ClickFix pattern and is never blocked,
+   * so if the scripted copy is refused the key is already selected and Ctrl+C
+   * completes it. The snack says which of the two happened instead of claiming
+   * success either way.
+   *
+   * Serving the app over HTTPS makes the scripted path work again and renders
+   * all of this moot.
+   */
+  async copyKey(key: ApiKeyRow, keyEl?: HTMLElement): Promise<void> {
     if (!key.key) return;
-    const result = await this._share.copyToClipboard(key.key, 'Key');
-    if (!result.success) this._fail(new Error(result.error ?? 'Copy failed'));
+
+    // Selecting a masked key would select bullets, so reveal it and let the
+    // view update before a range is taken over it.
+    if (!this.isKeyRevealed(key)) {
+      this.revealedKeyIds.update((ids) => new Set(ids).add(key.id));
+      this._cd.detectChanges();
+    }
+
+    // Secure origin (HTTPS, localhost, 127.0.0.1): the real API just works.
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(key.key);
+        this._ok(T.GCF.ACCOUNTS.API_KEY_COPIED);
+        return;
+      } catch {
+        // Denied — fall through and let the user copy the selection.
+      }
+    }
+
+    // Insecure origin. `document.execCommand('copy')` is deliberately NOT
+    // attempted here: writing to the clipboard from script without a secure
+    // context is the exact shape of a ClickFix attack, so content blockers
+    // refuse it AND warn the user that this page tried to hijack their
+    // clipboard - alarming, and it still would not copy anything.
+    //
+    // Selecting the key instead is unblockable, because the copy is then the
+    // user's own Ctrl+C keystroke rather than a scripted write.
+    //
+    // Serving the app over HTTPS restores the branch above and retires this one.
+    if (keyEl && selectElementText(keyEl)) {
+      this._snack.open({
+        type: 'CUSTOM',
+        ico: 'content_copy',
+        msg: this._translate.instant(T.GCF.ACCOUNTS.API_KEY_SELECTED_PRESS_COPY),
+      });
+      return;
+    }
+    this._fail(new Error('Copy failed'));
   }
 
   trackKeyById(_i: number, key: ApiKeyRow): number {

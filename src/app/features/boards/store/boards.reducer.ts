@@ -4,11 +4,12 @@ import { BoardCfg } from '../boards.model';
 import { DEFAULT_BOARDS } from '../boards.const';
 import { loadAllData } from '../../../root-store/meta/load-all-data.action';
 import { nanoid } from 'nanoid';
-import { sanitizePanelCfg } from '../boards.util';
+import { sanitizeBoardProjectIds, sanitizePanelCfg } from '../boards.util';
 import { IN_PROGRESS_TAG } from '../../tag/tag.const';
 
 const sanitizeBoard = (board: BoardCfg): BoardCfg => ({
   ...board,
+  projectIds: sanitizeBoardProjectIds(board.projectIds),
   panels: (board.panels || []).map(sanitizePanelCfg),
 });
 

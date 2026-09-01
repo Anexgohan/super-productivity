@@ -226,6 +226,8 @@ The provider id identifies which configured integration the issue belongs to. Th
 
 **`tagIds` on `PATCH` replaces everything.** Covered above, and worth repeating because it is the single most common way to quietly damage a board.
 
+**A board can be scoped to a project, and the UI hides the ones that are not.** Boards carry `projectIds`; the header's project selector narrows the board strip to the boards assigned to the project you picked. `GET /api/boards` is unaffected and still returns every board, so a board you cannot find in the browser is usually assigned elsewhere rather than missing. Set it with `PATCH /api/boards/:id -d '{"projectIds":["<projectId>"]}'`, or `[""]` to unassign.
+
 **New tasks go to their project, not to Today.** Creating a task never schedules it. If you meant today, follow up with `POST /api/today/plan` and the task's id.
 
 **Send `Content-Type` only when there is a body.** A `DELETE` with no body but a JSON content type fails with `400 FST_ERR_CTP_EMPTY_JSON_BODY`. Harmless once you know, baffling before.

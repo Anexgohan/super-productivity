@@ -69,6 +69,11 @@ export interface BoardCfg {
   title: string;
   cols: number;
   panels: BoardPanelCfg[];
+  // Absent/[''] = unassigned ("All Projects"), the same sentinel
+  // `BoardSrcCfg.projectIds` uses, so `isAllProjects` serves both. Optional so
+  // the typia validator tolerates boards written by any client that predates
+  // the field; `sanitizeBoard` normalizes it before it reaches a component.
+  projectIds?: string[];
 }
 
 /**
@@ -90,6 +95,7 @@ export const DEFAULT_BOARDS: BoardCfg[] = [
     id: 'EISENHOWER_MATRIX',
     title: 'F.BOARDS.DEFAULT.EISENHAUER_MATRIX',
     cols: 2,
+    projectIds: [''],
     panels: [
       {
         id: 'URGENT_AND_IMPORTANT',
@@ -146,6 +152,7 @@ export const DEFAULT_BOARDS: BoardCfg[] = [
     id: 'KANBAN_DEFAULT',
     title: 'F.BOARDS.DEFAULT.KANBAN',
     cols: 3,
+    projectIds: [''],
     panels: [
       {
         id: 'TODO',

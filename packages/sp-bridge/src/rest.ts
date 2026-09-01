@@ -108,9 +108,9 @@ const DOCS = {
       'list boards with their panels; an account that has never edited a board gets the app defaults rather than [], so this matches what its owner sees in a browser. [] means every board was deleted',
     'GET /api/boards/:id': 'single board by id',
     'POST /api/boards':
-      'create board; body: {title (required), id?, cols?, panels?}; 409 on an existing id, including the default board ids',
+      "create board; body: {title (required), id?, cols?, panels?, projectIds?}; projectIds scopes which project the board belongs to ([''] = unassigned/All Projects); 409 on an existing id, including the default board ids",
     'PATCH /api/boards/:id':
-      'update board; body: partial of {title, cols, panels}; a panel edit is a full replacement panels array',
+      'update board; body: partial of {title, cols, panels, projectIds}; a panel edit is a full replacement panels array',
     'DELETE /api/boards/:id': 'delete board; deleting all of them is remembered',
     'PUT /api/boards/order':
       'reorder boards; body: {ids: string[]} must name every board',

@@ -1,0 +1,37 @@
+<button
+  mat-button
+  class="scope-btn"
+  [class.isScoped]="isScoped()"
+  [matMenuTriggerFor]="scopeMenu"
+  [matTooltip]="T.MH.PROJECT_SCOPE | translate"
+>
+  <mat-icon>filter_list</mat-icon>
+  <span class="scope-label">{{ label() ?? (T.MH.PROJECT_SCOPE_ALL | translate) }}</span>
+  <mat-icon class="scope-caret">arrow_drop_down</mat-icon>
+</button>
+
+<mat-menu #scopeMenu>
+  <button
+    mat-menu-item
+    (click)="setScope('')"
+  >
+    <mat-icon>{{
+      isScoped() ? 'radio_button_unchecked' : 'radio_button_checked'
+    }}</mat-icon>
+    {{ T.MH.PROJECT_SCOPE_ALL | translate }}
+  </button>
+
+  @for (project of projects(); track project.id) {
+    <button
+      mat-menu-item
+      (click)="setScope(project.id)"
+    >
+      <mat-icon>{{
+        project.id === scopeService.scope()
+          ? 'radio_button_checked'
+          : 'radio_button_unchecked'
+      }}</mat-icon>
+      {{ project.title }}
+    </button>
+  }
+</mat-menu>

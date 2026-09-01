@@ -79,7 +79,6 @@ describe('BOARDS_FORM panel behavior (#7380)', () => {
   it('uses translation keys for board modal labels (#8070)', () => {
     const fields = panelFieldGroup();
     const scheduledState = fieldByKey(fields, 'scheduledState');
-    const project = fieldByKey(fields, 'projectIds');
     const isParentTasksOnly = fieldByKey(fields, 'isParentTasksOnly');
 
     expect(scheduledState.props?.label).toBe('F.BOARDS.FORM.SCHEDULED_STATE');
@@ -92,9 +91,24 @@ describe('BOARDS_FORM panel behavior (#7380)', () => {
       'F.BOARDS.FORM.SCHEDULED_STATE_SCHEDULED',
       'F.BOARDS.FORM.SCHEDULED_STATE_NOT_SCHEDULED',
     ]);
-    expect(project.props?.label).toBe('F.BOARDS.FORM.PROJECT');
-    expect(project.props?.defaultLabel).toBe('F.BOARDS.FORM.PROJECT_ALL');
     expect(isParentTasksOnly.props?.label).toBe('F.BOARDS.FORM.ONLY_PARENT_TASKS');
+  });
+
+  it('exposes the project scope on the BOARD, not on each panel', () => {
+    // The global scope in the header is the single mechanism a user drives.
+    // Two overlapping project filters make a column empty for reasons the UI
+    // cannot explain, so the panel-level field is deliberately not rendered.
+    expect(panelFieldGroup().find((f) => f.key === 'projectIds')).toBeUndefined();
+
+    const boardField = BOARDS_FORM.find((f) => f.key === 'projectIds');
+    expect(boardField).toBeDefined();
+    expect(boardField?.type).toBe('project-select');
+    expect(boardField?.props?.label).toBe('F.BOARDS.FORM.PROJECT');
+    expect(boardField?.props?.defaultLabel).toBe('F.BOARDS.FORM.PROJECT_ALL');
+    // Must stay an array: BoardCfg.projectIds is string[] and sanitizeBoard
+    // normalizes it as one.
+    expect(boardField?.props?.multiple).toBe(true);
+    expect(boardField?.props?.defaultValue).toEqual(['']);
   });
 
   it('starts valid for the URGENT_AND_IMPORTANT panel (2 included tags)', () => {

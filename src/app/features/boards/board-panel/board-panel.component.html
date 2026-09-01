@@ -77,6 +77,15 @@
     </planner-task>
   }
 
+  @if (scopedOutProjectTitle(); as scopedOutProject) {
+    <div class="scoped-out-hint">
+      {{
+        T.F.BOARDS.V.PANEL_SCOPED_TO_OTHER_PROJECT
+          | translate: { project: scopedOutProject }
+      }}
+    </div>
+  }
+
   <!--  @if (tasks().length === 0) {-->
   <!--    <div class="empty">{{ T.F.PLANNER.NO_TASKS | translate }}</div>-->
   <!--  }-->

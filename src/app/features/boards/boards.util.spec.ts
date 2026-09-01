@@ -1,7 +1,11 @@
 import {
   buildComparator,
+  buildDuplicatedBoard,
   doesTaskMatchPanel,
+  filterBoardsByProjectScope,
+  remapVisibleOrderToFullOrder,
   rewriteTagIdsForPanel,
+  sanitizeBoardProjectIds,
   sanitizePanelCfg,
 } from './boards.util';
 import {
@@ -11,6 +15,7 @@ import {
   BoardPanelCfgTaskTypeFilter,
 } from './boards.model';
 import { TaskCopy } from '../tasks/task.model';
+import { BoardCfg } from './boards.model';
 
 const basePanel: any = {
   id: 'p1',
@@ -125,6 +130,223 @@ describe('sanitizePanelCfg', () => {
     const once = sanitizePanelCfg({ ...basePanel, sortByDue: 'asc' } as any);
     const twice = sanitizePanelCfg(once);
     expect(twice).toEqual(once);
+  });
+});
+
+describe('sanitizeBoardProjectIds', () => {
+  it('treats absent as unassigned', () => {
+    expect(sanitizeBoardProjectIds(undefined)).toEqual(['']);
+  });
+
+  it('treats a non-array (corrupted data) as unassigned', () => {
+    expect(sanitizeBoardProjectIds('P1' as unknown as string[])).toEqual(['']);
+  });
+
+  it('leaves the unassigned sentinel alone', () => {
+    expect(sanitizeBoardProjectIds([''])).toEqual(['']);
+  });
+
+  it('keeps a specific project', () => {
+    expect(sanitizeBoardProjectIds(['P1'])).toEqual(['P1']);
+  });
+
+  it('collapses a mix of sentinel and specific ids to unassigned', () => {
+    // Same lossy canonicalization sanitizePanelCfg applies: "All" wins.
+    expect(sanitizeBoardProjectIds(['', 'P1'])).toEqual(['']);
+  });
+
+  it('is idempotent', () => {
+    const once = sanitizeBoardProjectIds(['P1']);
+    expect(sanitizeBoardProjectIds(once)).toEqual(once);
+    const allOnce = sanitizeBoardProjectIds(['', 'P1']);
+    expect(sanitizeBoardProjectIds(allOnce)).toEqual(allOnce);
+  });
+});
+
+const makeTestBoard = (id: string, projectIds: string[] | undefined): BoardCfg =>
+  ({ id, title: id, cols: 1, panels: [], projectIds }) as BoardCfg;
+
+describe('filterBoardsByProjectScope', () => {
+  const live = new Set(['P1', 'P2']);
+
+  it('returns every board under All Projects', () => {
+    const boards = [makeTestBoard('a', ['']), makeTestBoard('b', ['P1'])];
+    expect(filterBoardsByProjectScope(boards, '', live).map((b) => b.id)).toEqual([
+      'a',
+      'b',
+    ]);
+  });
+
+  it('shows only boards assigned to the scoped project', () => {
+    const boards = [makeTestBoard('a', ['P1']), makeTestBoard('b', ['P2'])];
+    expect(filterBoardsByProjectScope(boards, 'P1', live).map((b) => b.id)).toEqual([
+      'a',
+    ]);
+  });
+
+  it('hides unassigned boards when a project is scoped', () => {
+    const boards = [makeTestBoard('a', ['']), makeTestBoard('b', ['P1'])];
+    expect(filterBoardsByProjectScope(boards, 'P1', live).map((b) => b.id)).toEqual([
+      'b',
+    ]);
+  });
+
+  it('treats absent projectIds as unassigned', () => {
+    const boards = [makeTestBoard('a', undefined)];
+    expect(filterBoardsByProjectScope(boards, 'P1', live)).toEqual([]);
+  });
+
+  it('shows a multi-project board under each of its projects', () => {
+    const boards = [makeTestBoard('a', ['P1', 'P2'])];
+    expect(filterBoardsByProjectScope(boards, 'P1', live).map((b) => b.id)).toEqual([
+      'a',
+    ]);
+    expect(filterBoardsByProjectScope(boards, 'P2', live).map((b) => b.id)).toEqual([
+      'a',
+    ]);
+  });
+
+  it('keeps a board whose project was deleted visible rather than orphaning it', () => {
+    const boards = [makeTestBoard('gone', ['DELETED'])];
+    expect(filterBoardsByProjectScope(boards, 'P1', live).map((b) => b.id)).toEqual([
+      'gone',
+    ]);
+  });
+
+  it('keeps a shared board scoped to a foreign account project visible', () => {
+    // Read via ?boardOf=: the owner's project ids mean nothing here.
+    const boards = [makeTestBoard('shared', ['THEIR_PROJECT'])];
+    expect(filterBoardsByProjectScope(boards, 'P1', live).map((b) => b.id)).toEqual([
+      'shared',
+    ]);
+  });
+
+  it('still hides a board that names a live project other than the scope', () => {
+    const boards = [makeTestBoard('other', ['P2'])];
+    expect(filterBoardsByProjectScope(boards, 'P1', live)).toEqual([]);
+  });
+});
+
+describe('buildDuplicatedBoard', () => {
+  // Mimics the translate pipe: starter titles are i18n keys, everything else is
+  // already real text and passes through.
+  const resolve = (t: string): string =>
+    t === 'F.BOARDS.DEFAULT.KANBAN'
+      ? 'Kanban'
+      : t === 'F.BOARDS.DEFAULT.TO_DO'
+        ? 'To Do'
+        : t;
+
+  let n = 0;
+  const newId = (): string => `id-${++n}`;
+  beforeEach(() => (n = 0));
+
+  const source = {
+    id: 'src',
+    title: 'F.BOARDS.DEFAULT.KANBAN',
+    cols: 3,
+    projectIds: ['P1'],
+    panels: [
+      {
+        id: 'p1',
+        title: 'F.BOARDS.DEFAULT.TO_DO',
+        taskIds: ['t1', 't2'],
+        includedTagIds: ['TAG_A'],
+        excludedTagIds: ['TAG_B'],
+        taskDoneState: 1,
+        scheduledState: 1,
+        isParentTasksOnly: false,
+        projectIds: [''],
+      },
+    ],
+  } as unknown as BoardCfg;
+
+  it('resolves an i18n key title so the copy is not named after the key', () => {
+    const copy = buildDuplicatedBoard(source, undefined, resolve, ' (copy)', newId);
+    expect(copy.title).toBe('Kanban (copy)');
+    expect(copy.title).not.toContain('F.BOARDS.DEFAULT');
+  });
+
+  it('resolves panel titles too', () => {
+    const copy = buildDuplicatedBoard(source, undefined, resolve, ' (copy)', newId);
+    expect(copy.panels[0].title).toBe('To Do');
+  });
+
+  it('keeps the source scope when no target is given', () => {
+    const copy = buildDuplicatedBoard(source, undefined, resolve, ' (copy)', newId);
+    expect(copy.projectIds).toEqual(['P1']);
+  });
+
+  it('re-scopes to the target project', () => {
+    const copy = buildDuplicatedBoard(source, ['P2'], resolve, ' (copy)', newId);
+    expect(copy.projectIds).toEqual(['P2']);
+  });
+
+  it('normalizes an unassigned target to the sentinel', () => {
+    const copy = buildDuplicatedBoard(source, [''], resolve, ' (copy)', newId);
+    expect(copy.projectIds).toEqual(['']);
+  });
+
+  it("drops taskIds — manual order over the source project's tasks", () => {
+    const copy = buildDuplicatedBoard(source, ['P2'], resolve, ' (copy)', newId);
+    expect(copy.panels[0].taskIds).toEqual([]);
+  });
+
+  it('copies tag filters verbatim, since tags are global', () => {
+    const copy = buildDuplicatedBoard(source, ['P2'], resolve, ' (copy)', newId);
+    expect(copy.panels[0].includedTagIds).toEqual(['TAG_A']);
+    expect(copy.panels[0].excludedTagIds).toEqual(['TAG_B']);
+  });
+
+  it('gives the board and every panel fresh ids', () => {
+    const copy = buildDuplicatedBoard(source, ['P2'], resolve, ' (copy)', newId);
+    expect(copy.id).not.toBe(source.id);
+    expect(copy.panels[0].id).not.toBe('p1');
+  });
+
+  it('leaves the source untouched', () => {
+    const before = JSON.stringify(source);
+    buildDuplicatedBoard(source, ['P2'], resolve, ' (copy)', newId);
+    expect(JSON.stringify(source)).toBe(before);
+  });
+});
+
+describe('remapVisibleOrderToFullOrder', () => {
+  it('reorders normally when nothing is filtered out', () => {
+    const all = [
+      makeTestBoard('a', ['']),
+      makeTestBoard('b', ['']),
+      makeTestBoard('c', ['']),
+    ];
+    expect(remapVisibleOrderToFullOrder(all, all, 0, 2)).toEqual(['b', 'c', 'a']);
+  });
+
+  it('leaves hidden boards in their absolute positions', () => {
+    const all = [
+      makeTestBoard('a', ['P1']),
+      makeTestBoard('hidden', ['P2']),
+      makeTestBoard('b', ['P1']),
+    ];
+    const visible = [all[0], all[2]];
+    // Swap the two visible boards; 'hidden' must stay at index 1.
+    expect(remapVisibleOrderToFullOrder(all, visible, 0, 1)).toEqual([
+      'b',
+      'hidden',
+      'a',
+    ]);
+  });
+
+  it('returns a full permutation of every board id', () => {
+    const all = [
+      makeTestBoard('a', ['P1']),
+      makeTestBoard('hidden', ['P2']),
+      makeTestBoard('b', ['P1']),
+      makeTestBoard('c', ['P1']),
+    ];
+    const visible = [all[0], all[2], all[3]];
+    const ids = remapVisibleOrderToFullOrder(all, visible, 2, 0);
+    expect(ids.length).toBe(all.length);
+    expect([...ids].sort()).toEqual(['a', 'b', 'c', 'hidden']);
   });
 });
 

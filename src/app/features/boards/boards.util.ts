@@ -1,4 +1,5 @@
 import {
+  BoardCfg,
   BoardPanelCfg,
   BoardPanelCfgScheduledState,
   BoardPanelCfgTaskDoneState,
@@ -7,6 +8,7 @@ import {
 } from './boards.model';
 import { TaskCopy } from '../tasks/task.model';
 import { dateStrToUtcDate } from '../../util/date-str-to-utc-date';
+import { moveItemInArray } from '../../util/move-item-in-array';
 
 const VALID_SORT_FIELDS: ReadonlySet<BoardSortField> = new Set([
   'dueDate',
@@ -23,6 +25,112 @@ export const isAllProjects = (projectIds: string[] | undefined): boolean =>
 export const firstSpecificProjectId = (
   projectIds: string[] | undefined,
 ): string | undefined => projectIds?.find((id) => id !== '');
+
+/**
+ * Normalizes a board's own project scope.
+ * Absent/non-array (legacy or corrupted data) and any array containing the ""
+ * sentinel both collapse to [""] — "unassigned", which is what the boards page
+ * shows under "All Projects". Idempotent.
+ */
+export const sanitizeBoardProjectIds = (projectIds: string[] | undefined): string[] =>
+  !Array.isArray(projectIds) || isAllProjects(projectIds) ? [''] : projectIds;
+
+/**
+ * Boards visible under a project scope.
+ *
+ * `scope` is a project id, or '' for "All Projects" (which shows everything).
+ *
+ * Strict: a board left unassigned ([''] ) belongs to no project and shows only
+ * under "All Projects".
+ *
+ * The exception is a board whose assigned projects are all unknown to
+ * `liveProjectIds`. That happens two ways — the project was deleted (which is
+ * permanent and takes its tasks with it), or the board was shared from another
+ * account whose projects are not ours — and in both cases the board would
+ * otherwise be reachable under no scope at all. Showing it beats hiding it with
+ * no way to get it back.
+ */
+export const filterBoardsByProjectScope = (
+  boards: readonly BoardCfg[],
+  scope: string,
+  liveProjectIds: ReadonlySet<string>,
+): BoardCfg[] => {
+  if (!scope) {
+    return [...boards];
+  }
+  return boards.filter((board) => {
+    if (isAllProjects(board.projectIds)) {
+      return false;
+    }
+    const assigned = board.projectIds as string[];
+    return assigned.includes(scope) || !assigned.some((id) => liveProjectIds.has(id));
+  });
+};
+
+/**
+ * Translates a drag within the VISIBLE board list into a full board order.
+ *
+ * `sortBoards` takes every board id, but the tab strip may be showing a
+ * filtered subset, so the dragged indices are positions in the visible list.
+ * The visible ids are reordered among themselves and written back into the
+ * slots those boards already occupied, so boards hidden by the current scope
+ * keep their absolute positions. Without this a drag while filtered silently
+ * reorders boards the user cannot see.
+ */
+export const remapVisibleOrderToFullOrder = (
+  allBoards: readonly BoardCfg[],
+  visibleBoards: readonly BoardCfg[],
+  previousIndex: number,
+  currentIndex: number,
+): string[] => {
+  const visibleIds = new Set(visibleBoards.map((b) => b.id));
+  const reordered = moveItemInArray(
+    visibleBoards.map((b) => b.id),
+    previousIndex,
+    currentIndex,
+  );
+  let next = 0;
+  return allBoards.map((board) =>
+    visibleIds.has(board.id) ? reordered[next++] : board.id,
+  );
+};
+
+/**
+ * Builds the copy of a board, optionally re-scoped to another project.
+ *
+ * A board holds no tasks — its panels are filters — so this copies structure
+ * and re-points the scope. Two details matter:
+ *
+ *  - `taskIds` is dropped. It is manual card order over the SOURCE project's
+ *    tasks, so it is meaningless anywhere else (and stale even in place).
+ *  - Titles are resolved through `resolveTitle`. The starter boards store i18n
+ *    KEYS as titles (`F.BOARDS.DEFAULT.KANBAN`) which the render pipe resolves;
+ *    a copy is new data nothing will resolve again, so an unresolved key would
+ *    become the copy's literal, permanent name.
+ *
+ * Tag filters are copied verbatim: tags are global, so a column keeps working
+ * whatever project the copy lands in.
+ *
+ * `targetProjectIds` of `undefined` keeps the source's own scope.
+ */
+export const buildDuplicatedBoard = (
+  source: BoardCfg,
+  targetProjectIds: string[] | undefined,
+  resolveTitle: (title: string) => string,
+  copySuffix: string,
+  newId: () => string,
+): BoardCfg => ({
+  id: newId(),
+  title: `${resolveTitle(source.title)}${copySuffix}`,
+  cols: source.cols,
+  projectIds: sanitizeBoardProjectIds(targetProjectIds ?? source.projectIds),
+  panels: (source.panels || []).map((panel) => ({
+    ...panel,
+    id: newId(),
+    taskIds: [],
+    title: resolveTitle(panel.title),
+  })),
+});
 
 /**
  * Normalizes a panel cfg for persistence and hydration:

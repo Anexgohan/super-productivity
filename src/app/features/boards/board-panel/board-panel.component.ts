@@ -31,6 +31,7 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { AddTaskInlineComponent } from '../../planner/add-task-inline/add-task-inline.component';
 import { T } from '../../../t.const';
 import { TaskCopy } from '../../tasks/task.model';
+import { GlobalProjectScopeService } from '../../project/global-project-scope.service';
 import { TaskService } from '../../tasks/task.service';
 import { BoardsActions } from '../store/boards.actions';
 import { moveItemInArray } from '../../../util/move-item-in-array';
@@ -134,11 +135,19 @@ export class BoardPanelComponent {
     return cfg.excludedTagsMatch === 'all' ? [] : cfg.excludedTagIds;
   });
 
+  private _globalProjectScope = inject(GlobalProjectScopeService);
+
+  /**
+   * The panel's own project scope narrows the global one; it never widens it.
+   * When the panel is unscoped the global scope decides, so a task added from a
+   * scoped view lands in that project instead of falling through to the Inbox.
+   */
   additionalTaskFields = computed(() => {
     const panelCfg = this.panelCfg();
     const tagsToAdd = this.tagsToAddForInlineCreate();
+    const globalScope = this._globalProjectScope.scope();
     const firstProjectId = isAllProjects(panelCfg.projectIds)
-      ? undefined
+      ? globalScope || undefined
       : firstSpecificProjectId(panelCfg.projectIds);
 
     return {
@@ -154,6 +163,26 @@ export class BoardPanelComponent {
     };
   });
 
+  /**
+   * Set when the global project scope and this panel's own scope cannot both be
+   * satisfied, so the column is necessarily empty. Holds the panel's project
+   * title, because an unexplained empty column reads as lost data — the whole
+   * reason the intersection is surfaced instead of silently rendering nothing.
+   */
+  scopedOutProjectTitle = computed<string | null>(() => {
+    const globalScope = this._globalProjectScope.scope();
+    const panelCfg = this.panelCfg();
+    if (!globalScope || isAllProjects(panelCfg.projectIds)) {
+      return null;
+    }
+    if (panelCfg.projectIds?.includes(globalScope)) {
+      return null;
+    }
+    const panelProjectId = firstSpecificProjectId(panelCfg.projectIds);
+    const project = this.allProjects().find((p) => p.id === panelProjectId);
+    return project?.title ?? null;
+  });
+
   tasks = computed(() => {
     const panelCfg = this.panelCfg();
     const orderedTasks: TaskCopy[] = [];
@@ -162,8 +191,12 @@ export class BoardPanelComponent {
     // Hoist the backlog predicate out of the filter callback so it's allocated
     // once per recompute, not once per task.
     const isInBacklog = (t: Readonly<TaskCopy>): boolean => this._isTaskInBacklog(t);
-    const allFilteredTasks = this.allTasks().filter((task) =>
-      doesTaskMatchPanel(task, panelCfg, isInBacklog),
+    // The global project scope narrows every panel on top of its own filters.
+    const globalScope = this._globalProjectScope.scope();
+    const allFilteredTasks = this.allTasks().filter(
+      (task) =>
+        (!globalScope || task.projectId === globalScope) &&
+        doesTaskMatchPanel(task, panelCfg, isInBacklog),
     );
 
     allFilteredTasks.forEach((task) => {
