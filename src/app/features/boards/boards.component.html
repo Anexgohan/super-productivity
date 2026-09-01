@@ -66,11 +66,27 @@
     </button>
     <button
       mat-menu-item
-      [matMenuTriggerFor]="duplicateTargetMenu"
+      [matMenuTriggerFor]="moveTargetMenu"
+      [matMenuTriggerData]="{ boardCfg: board }"
+    >
+      <mat-icon>drive_file_move</mat-icon>
+      {{ T.F.BOARDS.V.MOVE_TO_PROJECT | translate }}
+    </button>
+    <button
+      mat-menu-item
+      [matMenuTriggerFor]="copyTargetMenu"
       [matMenuTriggerData]="{ boardCfg: board }"
     >
       <mat-icon>file_copy</mat-icon>
-      {{ T.G.DUPLICATE | translate }}
+      {{ T.F.BOARDS.V.COPY_TO_PROJECT | translate }}
+    </button>
+    <button
+      mat-menu-item
+      [matMenuTriggerFor]="templateTargetMenu"
+      [matMenuTriggerData]="{ boardCfg: board }"
+    >
+      <mat-icon>content_paste_go</mat-icon>
+      {{ T.F.BOARDS.V.COPY_AS_TEMPLATE | translate }}
     </button>
     <button
       mat-menu-item
@@ -82,10 +98,33 @@
   </ng-template>
 </mat-menu>
 
-<!-- Target project for a duplicate. A board holds no tasks, so this copies the
-     columns and their filters and re-points the scope; cards then come from the
-     target project's own tasks. -->
-<mat-menu #duplicateTargetMenu>
+<!-- Project pickers for the three board actions.
+     "No project" is the unassigned sentinel (''), NOT an assignment to
+     "All Projects" — that is a view over every board and never owns one. -->
+<mat-menu #moveTargetMenu>
+  <ng-template
+    matMenuContent
+    let-board="boardCfg"
+  >
+    <button
+      mat-menu-item
+      (click)="moveBoardToProject(board, '')"
+    >
+      {{ T.F.BOARDS.V.NO_PROJECT | translate }}
+    </button>
+    @for (project of projects(); track project.id) {
+      <button
+        mat-menu-item
+        [disabled]="board.projectIds?.includes(project.id)"
+        (click)="moveBoardToProject(board, project.id)"
+      >
+        {{ project.title }}
+      </button>
+    }
+  </ng-template>
+</mat-menu>
+
+<mat-menu #copyTargetMenu>
   <ng-template
     matMenuContent
     let-board="boardCfg"
@@ -94,12 +133,34 @@
       mat-menu-item
       (click)="duplicateBoard(board, '')"
     >
-      {{ T.MH.PROJECT_SCOPE_ALL | translate }}
+      {{ T.F.BOARDS.V.NO_PROJECT | translate }}
     </button>
     @for (project of projects(); track project.id) {
       <button
         mat-menu-item
         (click)="duplicateBoard(board, project.id)"
+      >
+        {{ project.title }}
+      </button>
+    }
+  </ng-template>
+</mat-menu>
+
+<mat-menu #templateTargetMenu>
+  <ng-template
+    matMenuContent
+    let-board="boardCfg"
+  >
+    <button
+      mat-menu-item
+      (click)="duplicateBoard(board, '', true)"
+    >
+      {{ T.F.BOARDS.V.NO_PROJECT | translate }}
+    </button>
+    @for (project of projects(); track project.id) {
+      <button
+        mat-menu-item
+        (click)="duplicateBoard(board, project.id, true)"
       >
         {{ project.title }}
       </button>

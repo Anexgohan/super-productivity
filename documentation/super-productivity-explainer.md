@@ -446,6 +446,31 @@ always has. Pick a project and the board strip narrows to boards assigned to it 
 strictly, so an unassigned board shows only under All Projects. The scope also
 narrows what the panels contain, to tasks in that project.
 
+A board is assigned from its own context menu — **Move to project**, **Copy to
+project**, or **Copy as empty template** — each picking one project or "No
+project". Assignment is deliberately NOT a form field: the shared
+`project-select` is built for panel filters, where "All Projects" means "match
+every project", so it expands `['']` into `['', ...everyProjectId]` and ticks
+every box. As an assignment that reads as "this board is in all projects" and
+makes a single project nearly unpickable.
+
+"All Projects" is a **view over every board, never an owner**. A board is either
+assigned to a project or unassigned; unassigned boards appear only under All
+Projects, and All Projects shows every board whatever its assignment.
+
+An assignment narrows the board's **contents** as well as its tab: a board
+assigned to Work lists only Work's tasks, in every view including All Projects,
+and a task added to one of its columns is created in Work. Scope resolution runs
+most-specific-first — the panel's own project filter, then the board's
+assignment, then the header scope.
+
+The two copy actions differ only in the manual card order. Both keep the tag
+filters, because those are what make cards appear at all; **Copy to project**
+keeps the card order so the columns look as they did, while **Copy as empty
+template** clears it so the board starts fresh. Neither touches task data:
+a board stores no tasks, so what a copy shows is whatever its filters match in
+its new home.
+
 Two board-level filters could disagree, so they do not both exist in the UI: the
 per-panel project filter is no longer rendered in the board editor, and the
 header scope is the only one a person drives. `BoardSrcCfg.projectIds` is

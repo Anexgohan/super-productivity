@@ -1,4 +1,5 @@
 import {
+  buildBoardProjectAssignment,
   buildComparator,
   buildDuplicatedBoard,
   doesTaskMatchPanel,
@@ -136,6 +137,12 @@ describe('sanitizePanelCfg', () => {
 describe('sanitizeBoardProjectIds', () => {
   it('treats absent as unassigned', () => {
     expect(sanitizeBoardProjectIds(undefined)).toEqual(['']);
+  });
+
+  it('treats an empty array as unassigned, not as "assigned to nothing"', () => {
+    // An empty assignment used to survive sanitization and then hit the orphan
+    // guard in the scope filter, so the board showed under EVERY project.
+    expect(sanitizeBoardProjectIds([])).toEqual(['']);
   });
 
   it('treats a non-array (corrupted data) as unassigned', () => {
@@ -308,6 +315,79 @@ describe('buildDuplicatedBoard', () => {
     const before = JSON.stringify(source);
     buildDuplicatedBoard(source, ['P2'], resolve, ' (copy)', newId);
     expect(JSON.stringify(source)).toBe(before);
+  });
+});
+
+describe('buildBoardProjectAssignment', () => {
+  it('assigns to a project', () => {
+    expect(buildBoardProjectAssignment('P1')).toEqual({ projectIds: ['P1'] });
+  });
+
+  it('unassigns with the empty sentinel', () => {
+    expect(buildBoardProjectAssignment('')).toEqual({ projectIds: [''] });
+  });
+
+  it('touches nothing but projectIds — a move keeps the same board', () => {
+    expect(Object.keys(buildBoardProjectAssignment('P1'))).toEqual(['projectIds']);
+  });
+});
+
+describe('buildDuplicatedBoard — copy vs empty template', () => {
+  const resolve = (t: string): string => t;
+  let n = 0;
+  const newId = (): string => `id-${++n}`;
+  beforeEach(() => (n = 0));
+
+  const source = {
+    id: 'src',
+    title: 'Kanban',
+    cols: 2,
+    projectIds: [''],
+    panels: [
+      {
+        id: 'p1',
+        title: 'In Progress',
+        taskIds: ['t1', 't2'],
+        includedTagIds: ['TAG_A'],
+        excludedTagIds: ['TAG_B'],
+        taskDoneState: 1,
+        scheduledState: 1,
+        isParentTasksOnly: false,
+        projectIds: [''],
+      },
+    ],
+  } as unknown as BoardCfg;
+
+  it('keeps tag filters in BOTH modes — they are what make cards appear', () => {
+    const copy = buildDuplicatedBoard(source, ['P1'], resolve, '', newId, false);
+    const template = buildDuplicatedBoard(source, ['P1'], resolve, '', newId, true);
+    expect(copy.panels[0].includedTagIds).toEqual(['TAG_A']);
+    expect(copy.panels[0].excludedTagIds).toEqual(['TAG_B']);
+    expect(template.panels[0].includedTagIds).toEqual(['TAG_A']);
+    expect(template.panels[0].excludedTagIds).toEqual(['TAG_B']);
+  });
+
+  it('a copy keeps the manual card order', () => {
+    const copy = buildDuplicatedBoard(source, ['P1'], resolve, '', newId, false);
+    expect(copy.panels[0].taskIds).toEqual(['t1', 't2']);
+  });
+
+  it('a template starts with no card order', () => {
+    const template = buildDuplicatedBoard(source, ['P1'], resolve, '', newId, true);
+    expect(template.panels[0].taskIds).toEqual([]);
+  });
+
+  it('a copy does not share the source taskIds array', () => {
+    const copy = buildDuplicatedBoard(source, ['P1'], resolve, '', newId, false);
+    copy.panels[0].taskIds.push('t3');
+    expect(source.panels[0].taskIds).toEqual(['t1', 't2']);
+  });
+
+  it('keeps the column layout and states in both modes', () => {
+    const template = buildDuplicatedBoard(source, ['P1'], resolve, '', newId, true);
+    expect(template.cols).toBe(2);
+    expect(template.panels[0].title).toBe('In Progress');
+    expect(template.panels[0].taskDoneState).toBe(1);
   });
 });
 

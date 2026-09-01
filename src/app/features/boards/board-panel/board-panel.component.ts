@@ -78,6 +78,17 @@ export class BoardPanelComponent {
   dragDelayForTouch = dragDelayForTouch;
 
   panelCfg = input.required<BoardPanelCfg>();
+
+  /**
+   * The owning board's project assignment. A board assigned to a project shows
+   * only that project's tasks — in every view, including "All Projects" —
+   * because that is what "this board belongs to Work" has to mean. Without it
+   * the assignment only decided which tab appeared, and a Work board still
+   * listed every project's cards.
+   *
+   * Absent/[''] = unassigned, which narrows nothing.
+   */
+  boardProjectIds = input<string[] | undefined>(undefined);
   editBoard = output<void>();
 
   store = inject(Store);
@@ -146,8 +157,11 @@ export class BoardPanelComponent {
     const panelCfg = this.panelCfg();
     const tagsToAdd = this.tagsToAddForInlineCreate();
     const globalScope = this._globalProjectScope.scope();
+    // Most specific scope wins: the panel's own, then the board's assignment,
+    // then the header. Otherwise a task added to a board that belongs to Work
+    // would land in the Inbox and vanish from the board it was typed into.
     const firstProjectId = isAllProjects(panelCfg.projectIds)
-      ? globalScope || undefined
+      ? (firstSpecificProjectId(this.boardProjectIds()) ?? globalScope) || undefined
       : firstSpecificProjectId(panelCfg.projectIds);
 
     return {
@@ -193,9 +207,14 @@ export class BoardPanelComponent {
     const isInBacklog = (t: Readonly<TaskCopy>): boolean => this._isTaskInBacklog(t);
     // The global project scope narrows every panel on top of its own filters.
     const globalScope = this._globalProjectScope.scope();
+    // Two narrowings sit on top of the panel's own filters: the board's own
+    // assignment, and the header's project scope.
+    const boardProjectIds = this.boardProjectIds();
+    const boardScope = isAllProjects(boardProjectIds) ? null : boardProjectIds;
     const allFilteredTasks = this.allTasks().filter(
       (task) =>
         (!globalScope || task.projectId === globalScope) &&
+        (!boardScope || boardScope.includes(task.projectId)) &&
         doesTaskMatchPanel(task, panelCfg, isInBacklog),
     );
 

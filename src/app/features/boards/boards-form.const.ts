@@ -34,20 +34,14 @@ export const BOARDS_FORM: LimitedFormlyFieldConfig<BoardCfg>[] = [
       type: 'number',
     },
   },
-  {
-    // Which project this board belongs to. Drives whether the board appears as
-    // a tab while the app is scoped to a project; [''] means unassigned, so the
-    // board only shows under "All Projects".
-    key: 'projectIds',
-    type: 'project-select',
-    props: {
-      label: T.F.BOARDS.FORM.PROJECT,
-      multiple: true,
-      required: true,
-      defaultValue: [''],
-      defaultLabel: T.F.BOARDS.FORM.PROJECT_ALL,
-    },
-  },
+  // NOTE: no project field here on purpose. A board belongs to one project (or
+  // none), which the shared `project-select` cannot express: it is built for
+  // PANEL filters, where "All Projects" means "match every project", so it
+  // expands [''] into ['', ...everyProjectId] and ticks every box. For an
+  // assignment that reads as "this board is in all projects" and makes picking
+  // a single one nearly impossible. Assignment lives in the board's context
+  // menu instead (Move / Copy / Copy as template), which is single-choice by
+  // construction.
 
   // ---------- Panels ----------
   {

@@ -202,7 +202,13 @@
         "NO_PANELS_MSG": "This board has no panels configured. Add some panels to it.",
         "PANEL_SCOPED_TO_OTHER_PROJECT": "This column is limited to {{project}}",
         "COPIED_TO_PROJECT": "Board copied to {{project}}",
-        "COPIED_UNASSIGNED": "Board copied — shown under All Projects"
+        "COPIED_UNASSIGNED": "Board copied — shown under All Projects",
+        "MOVE_TO_PROJECT": "Move to project",
+        "COPY_TO_PROJECT": "Copy to project",
+        "COPY_AS_TEMPLATE": "Copy as empty template",
+        "NO_PROJECT": "No project",
+        "MOVED_TO_PROJECT": "Board moved to {{project}}",
+        "MOVED_UNASSIGNED": "Board unassigned — shown under All Projects only"
       }
     },
     "CALDAV": {

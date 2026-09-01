@@ -33,7 +33,9 @@ export const firstSpecificProjectId = (
  * shows under "All Projects". Idempotent.
  */
 export const sanitizeBoardProjectIds = (projectIds: string[] | undefined): string[] =>
-  !Array.isArray(projectIds) || isAllProjects(projectIds) ? [''] : projectIds;
+  !Array.isArray(projectIds) || projectIds.length === 0 || isAllProjects(projectIds)
+    ? ['']
+    : projectIds;
 
 /**
  * Boards visible under a project scope.
@@ -96,13 +98,28 @@ export const remapVisibleOrderToFullOrder = (
 };
 
 /**
+ * Reassigns a board to a project — a MOVE, not a copy: same board, same id,
+ * same columns, it simply appears under a different project from now on.
+ *
+ * `projectId` of '' unassigns it, which means it shows only under
+ * "All Projects". "All Projects" is a view over every board, never an owner,
+ * so it is not something a board can be assigned TO.
+ */
+export const buildBoardProjectAssignment = (
+  projectId: string,
+): Pick<BoardCfg, 'projectIds'> => ({
+  projectIds: sanitizeBoardProjectIds([projectId]),
+});
+
+/**
  * Builds the copy of a board, optionally re-scoped to another project.
  *
  * A board holds no tasks — its panels are filters — so this copies structure
  * and re-points the scope. Two details matter:
  *
- *  - `taskIds` is dropped. It is manual card order over the SOURCE project's
- *    tasks, so it is meaningless anywhere else (and stale even in place).
+ *  - `taskIds` (manual card order) is kept for a copy and cleared for a
+ *    template. Ids that name tasks the copy cannot see are simply ignored by
+ *    the ordering pass, so a stale entry costs nothing.
  *  - Titles are resolved through `resolveTitle`. The starter boards store i18n
  *    KEYS as titles (`F.BOARDS.DEFAULT.KANBAN`) which the render pipe resolves;
  *    a copy is new data nothing will resolve again, so an unresolved key would
@@ -112,6 +129,8 @@ export const remapVisibleOrderToFullOrder = (
  * whatever project the copy lands in.
  *
  * `targetProjectIds` of `undefined` keeps the source's own scope.
+ * `isTemplate` clears the manual card order so the columns start fresh; tag
+ * filters are kept either way.
  */
 export const buildDuplicatedBoard = (
   source: BoardCfg,
@@ -119,6 +138,7 @@ export const buildDuplicatedBoard = (
   resolveTitle: (title: string) => string,
   copySuffix: string,
   newId: () => string,
+  isTemplate = false,
 ): BoardCfg => ({
   id: newId(),
   title: `${resolveTitle(source.title)}${copySuffix}`,
@@ -127,8 +147,12 @@ export const buildDuplicatedBoard = (
   panels: (source.panels || []).map((panel) => ({
     ...panel,
     id: newId(),
-    taskIds: [],
     title: resolveTitle(panel.title),
+    // Tag filters are kept in BOTH modes — tags are global, so a column keeps
+    // working wherever the copy lands, and that is what makes the cards show up
+    // at all. The two modes differ only in `taskIds`, the manual card order:
+    // a copy keeps it so the cards sit where they did, a template starts fresh.
+    taskIds: isTemplate ? [] : [...(panel.taskIds || [])],
   })),
 });
 

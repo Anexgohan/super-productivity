@@ -26,6 +26,7 @@ import { selectAllBoards } from './store/boards.selectors';
 import { selectUnarchivedVisibleProjects } from '../project/store/project.selectors';
 import { GlobalProjectScopeService } from '../project/global-project-scope.service';
 import {
+  buildBoardProjectAssignment,
   buildDuplicatedBoard,
   filterBoardsByProjectScope,
   remapVisibleOrderToFullOrder,
@@ -174,7 +175,50 @@ export class BoardsComponent {
    * click, long after the language file has loaded, and its result is written
    * to data rather than displayed.
    */
-  duplicateBoard(boardToDuplicate: BoardCfg, targetProjectId?: string): void {
+  /**
+   * Reassign a board to a project. A MOVE: same board, same id, same columns —
+   * it just lives under a different project now. `projectId` of '' unassigns.
+   *
+   * This is the one people want most of the time, and it is deliberately
+   * separate from the two copy actions so "put this board in Work" never
+   * silently leaves a second board behind.
+   */
+  moveBoardToProject(board: BoardCfg, projectId: string): void {
+    if (!board) {
+      Log.warn('No board selected to move');
+      return;
+    }
+    this.store.dispatch(
+      BoardsActions.updateBoard({
+        id: board.id,
+        updates: buildBoardProjectAssignment(projectId),
+      }),
+    );
+
+    const project = this.projects().find((p) => p.id === projectId);
+    this._snackService.open({
+      type: 'SUCCESS',
+      msg: project
+        ? this._translateService.instant(T.F.BOARDS.V.MOVED_TO_PROJECT, {
+            project: project.title,
+          })
+        : this._translateService.instant(T.F.BOARDS.V.MOVED_UNASSIGNED),
+    });
+  }
+
+  /**
+   * Copy a board into a project. `isTemplate` additionally clears each column's
+   * tag filters, so the structure carries over but the columns start empty.
+   *
+   * `instant()` is correct here, unlike for a rendered label: it runs on a
+   * click, long after the language file has loaded, and its result is written
+   * to data rather than displayed.
+   */
+  duplicateBoard(
+    boardToDuplicate: BoardCfg,
+    targetProjectId?: string,
+    isTemplate = false,
+  ): void {
     if (!boardToDuplicate) {
       Log.warn('No board selected to duplicate');
       return;
@@ -185,6 +229,7 @@ export class BoardsComponent {
       (title) => this._translateService.instant(title),
       this._translateService.instant(T.GLOBAL.COPY_SUFFIX),
       nanoid,
+      isTemplate,
     );
     this.store.dispatch(BoardsActions.addBoard({ board: copy }));
 

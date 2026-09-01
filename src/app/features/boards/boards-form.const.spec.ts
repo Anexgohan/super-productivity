@@ -94,21 +94,14 @@ describe('BOARDS_FORM panel behavior (#7380)', () => {
     expect(isParentTasksOnly.props?.label).toBe('F.BOARDS.FORM.ONLY_PARENT_TASKS');
   });
 
-  it('exposes the project scope on the BOARD, not on each panel', () => {
-    // The global scope in the header is the single mechanism a user drives.
-    // Two overlapping project filters make a column empty for reasons the UI
-    // cannot explain, so the panel-level field is deliberately not rendered.
+  it('exposes no project field on a panel OR the board form', () => {
+    // The board's project is set from its context menu (Move / Copy /
+    // Copy as template), not from a form field: the shared `project-select` is
+    // built for panel FILTERS, where "All Projects" means "match every
+    // project", so it expands [''] into ['', ...everyProjectId] and ticks every
+    // box — which for an assignment makes a single project nearly unpickable.
     expect(panelFieldGroup().find((f) => f.key === 'projectIds')).toBeUndefined();
-
-    const boardField = BOARDS_FORM.find((f) => f.key === 'projectIds');
-    expect(boardField).toBeDefined();
-    expect(boardField?.type).toBe('project-select');
-    expect(boardField?.props?.label).toBe('F.BOARDS.FORM.PROJECT');
-    expect(boardField?.props?.defaultLabel).toBe('F.BOARDS.FORM.PROJECT_ALL');
-    // Must stay an array: BoardCfg.projectIds is string[] and sanitizeBoard
-    // normalizes it as one.
-    expect(boardField?.props?.multiple).toBe(true);
-    expect(boardField?.props?.defaultValue).toEqual(['']);
+    expect(BOARDS_FORM.find((f) => f.key === 'projectIds')).toBeUndefined();
   });
 
   it('starts valid for the URGENT_AND_IMPORTANT panel (2 included tags)', () => {
