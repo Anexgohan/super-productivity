@@ -197,3 +197,18 @@ export const DEFAULT_BOARDS: BoardCfg[] = [
 
 /** A deep copy, so a caller that mutates what it is given cannot edit the starter list for everyone else in the process. */
 export const cloneDefaultBoards = (): BoardCfg[] => structuredClone(DEFAULT_BOARDS);
+
+const isUnassignedScope = (projectIds: string[] | undefined): boolean =>
+  !projectIds || projectIds.length === 0 || projectIds.includes('');
+
+/** A board copied or moved to another scope belongs wholly to it, so every column drops its own project filter; only an unassigned board staying unassigned keeps a deliberate per-column split. */
+export const reassignPanelProjectScopes = <P extends { projectIds?: string[] }>(
+  panels: P[],
+  fromProjectIds: string[] | undefined,
+  toProjectIds: string[] | undefined,
+): P[] =>
+  isUnassignedScope(fromProjectIds) && isUnassignedScope(toProjectIds)
+    ? panels
+    : panels.map((panel) =>
+        isUnassignedScope(panel.projectIds) ? panel : { ...panel, projectIds: [''] },
+      );

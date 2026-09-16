@@ -4,7 +4,7 @@
  * no MCP layer; agents consume the API directly).
  */
 import type { StateStore } from './state-store';
-import { cloneDefaultBoards } from '@sp/shared-schema';
+import { cloneDefaultBoards, reassignPanelProjectScopes } from '@sp/shared-schema';
 import {
   ALLOWED_TASK_FIELDS,
   buildTaskEntity,
@@ -969,10 +969,21 @@ export class BridgeCore {
     updates: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     await this._seedDefaultBoardsIfUntouched();
-    this._requireBoard(id);
+    const board = this._requireBoard(id);
     const bad = Object.keys(updates).filter((k) => !ALLOWED_BOARD_FIELDS.has(k));
     if (bad.length) throw err(`Field(s) not writable: ${bad.join(', ')}`, 400);
     if (Object.keys(updates).length === 0) throw err('No changes given', 400);
+    // Re-assigning carries the columns along, as the browser's Move does; explicit `panels` in the same request win.
+    if (Array.isArray(updates.projectIds) && updates.panels === undefined) {
+      updates = {
+        ...updates,
+        panels: reassignPanelProjectScopes(
+          this._panelsOf(board) as { projectIds?: string[] }[],
+          board.projectIds as string[] | undefined,
+          updates.projectIds as string[],
+        ),
+      };
+    }
     const op = await this.ops.updateBoard(id, updates, this.store.nextWriteClock());
     await this.store.submitOps([op]);
     return this._requireBoard(id);

@@ -471,6 +471,12 @@ template** clears it so the board starts fresh. Neither touches task data:
 a board stores no tasks, so what a copy shows is whatever its filters match in
 its new home.
 
+A board belongs **wholly** to the project it is moved or copied into, so no column keeps the old project. Copy, Move and `PATCH /api/boards/:id` with `projectIds` all reset each column's own project filter to `[""]` and let the board's assignment do the scoping (`reassignPanelProjectScopes` in `@sp/shared-schema`).
+
+Under an assigned board a column filter can only be redundant or name a project the board already rejects, and the second kind is a column that stays empty with no field in the editor to show why. The one split left alone is on an unassigned board that stays unassigned, since that is something an API caller built on purpose. A `PATCH` that also sends `panels` is taken as written.
+
+Moving a board to the project it is already in applies the same reset, which repairs a board copied before this rule existed.
+
 Two board-level filters could disagree, so they do not both exist in the UI: the
 per-panel project filter is no longer rendered in the board editor, and the
 header scope is the only one a person drives. `BoardSrcCfg.projectIds` is

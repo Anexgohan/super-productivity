@@ -191,7 +191,7 @@ export class BoardsComponent {
     this.store.dispatch(
       BoardsActions.updateBoard({
         id: board.id,
-        updates: buildBoardProjectAssignment(projectId),
+        updates: buildBoardProjectAssignment(board, projectId),
       }),
     );
 
@@ -208,7 +208,7 @@ export class BoardsComponent {
 
   /**
    * Copy a board into a project. `isTemplate` additionally clears each column's
-   * tag filters, so the structure carries over but the columns start empty.
+   * manual card order; tag filters carry over either way.
    *
    * `instant()` is correct here, unlike for a rendered label: it runs on a
    * click, long after the language file has loaded, and its result is written

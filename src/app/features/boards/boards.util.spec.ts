@@ -307,6 +307,24 @@ describe('buildDuplicatedBoard', () => {
     expect(copy.panels[0].excludedTagIds).toEqual(['TAG_B']);
   });
 
+  it('takes the columns off the source project when copied elsewhere', () => {
+    const pankhaBoard = {
+      ...source,
+      panels: [{ ...source.panels[0], projectIds: ['P1'] }],
+    } as BoardCfg;
+    const copy = buildDuplicatedBoard(pankhaBoard, ['P2'], resolve, ' (copy)', newId);
+    expect(copy.panels[0].projectIds).toEqual(['']);
+  });
+
+  it('keeps column scopes on a copy that stays where it is', () => {
+    const scoped = {
+      ...source,
+      panels: [{ ...source.panels[0], projectIds: ['P1'] }],
+    } as BoardCfg;
+    const copy = buildDuplicatedBoard(scoped, undefined, resolve, ' (copy)', newId);
+    expect(copy.panels[0].projectIds).toEqual(['P1']);
+  });
+
   it('gives the board and every panel fresh ids', () => {
     const copy = buildDuplicatedBoard(source, ['P2'], resolve, ' (copy)', newId);
     expect(copy.id).not.toBe(source.id);
@@ -321,16 +339,37 @@ describe('buildDuplicatedBoard', () => {
 });
 
 describe('buildBoardProjectAssignment', () => {
+  const panel = (id: string, projectIds: string[]): BoardPanelCfg =>
+    ({ id, projectIds }) as unknown as BoardPanelCfg;
+  const board = {
+    projectIds: ['PANKHA'],
+    panels: [panel('todo', ['PANKHA']), panel('bucket', [''])],
+  };
+
   it('assigns to a project', () => {
-    expect(buildBoardProjectAssignment('P1')).toEqual({ projectIds: ['P1'] });
+    expect(buildBoardProjectAssignment(board, 'P1').projectIds).toEqual(['P1']);
   });
 
   it('unassigns with the empty sentinel', () => {
-    expect(buildBoardProjectAssignment('')).toEqual({ projectIds: [''] });
+    expect(buildBoardProjectAssignment(board, '').projectIds).toEqual(['']);
   });
 
-  it('touches nothing but projectIds — a move keeps the same board', () => {
-    expect(Object.keys(buildBoardProjectAssignment('P1'))).toEqual(['projectIds']);
+  it('touches only the scope — a move keeps the same board', () => {
+    expect(Object.keys(buildBoardProjectAssignment(board, 'P1')).sort()).toEqual([
+      'panels',
+      'projectIds',
+    ]);
+  });
+
+  it('takes the columns off the old project, so none is left permanently empty', () => {
+    const { panels } = buildBoardProjectAssignment(board, 'GAME_DEV');
+    expect(panels.map((p) => p.projectIds)).toEqual([[''], ['']]);
+  });
+
+  it('repairs a board moved to the project it is already in', () => {
+    const copied = { ...board, projectIds: ['GAME_DEV'] };
+    const { panels } = buildBoardProjectAssignment(copied, 'GAME_DEV');
+    expect(panels.map((p) => p.projectIds)).toEqual([[''], ['']]);
   });
 });
 

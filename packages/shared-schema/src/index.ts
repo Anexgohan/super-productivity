@@ -90,6 +90,7 @@ export {
   BOARD_TAG_IDS,
   DEFAULT_BOARDS,
   cloneDefaultBoards,
+  reassignPanelProjectScopes,
 } from './boards';
 export type {
   BoardCfg,

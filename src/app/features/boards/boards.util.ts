@@ -9,6 +9,7 @@ import {
 import { TaskCopy } from '../tasks/task.model';
 import { dateStrToUtcDate } from '../../util/date-str-to-utc-date';
 import { moveItemInArray } from '../../util/move-item-in-array';
+import { reassignPanelProjectScopes } from '@sp/shared-schema';
 
 const VALID_SORT_FIELDS: ReadonlySet<BoardSortField> = new Set([
   'dueDate',
@@ -100,16 +101,22 @@ export const remapVisibleOrderToFullOrder = (
 /**
  * Reassigns a board to a project — a MOVE, not a copy: same board, same id,
  * same columns, it simply appears under a different project from now on.
+ * Columns drop their own project filter too; moving a board to its current project repairs an older copy.
  *
  * `projectId` of '' unassigns it, which means it shows only under
  * "All Projects". "All Projects" is a view over every board, never an owner,
  * so it is not something a board can be assigned TO.
  */
 export const buildBoardProjectAssignment = (
+  board: Pick<BoardCfg, 'projectIds' | 'panels'>,
   projectId: string,
-): Pick<BoardCfg, 'projectIds'> => ({
-  projectIds: sanitizeBoardProjectIds([projectId]),
-});
+): Pick<BoardCfg, 'projectIds' | 'panels'> => {
+  const projectIds = sanitizeBoardProjectIds([projectId]);
+  return {
+    projectIds,
+    panels: reassignPanelProjectScopes(board.panels || [], board.projectIds, projectIds),
+  };
+};
 
 /**
  * Builds the copy of a board, optionally re-scoped to another project.
@@ -128,7 +135,7 @@ export const buildBoardProjectAssignment = (
  * Tag filters are copied verbatim: tags are global, so a column keeps working
  * whatever project the copy lands in.
  *
- * `targetProjectIds` of `undefined` keeps the source's own scope.
+ * `targetProjectIds` of `undefined` keeps the source's scope, columns included; a target drops the columns' project filters.
  * `isTemplate` clears the manual card order so the columns start fresh; tag
  * filters are kept either way.
  */
@@ -144,7 +151,14 @@ export const buildDuplicatedBoard = (
   title: `${resolveTitle(source.title)}${copySuffix}`,
   cols: source.cols,
   projectIds: sanitizeBoardProjectIds(targetProjectIds ?? source.projectIds),
-  panels: (source.panels || []).map((panel) => ({
+  panels: (targetProjectIds === undefined
+    ? source.panels || []
+    : reassignPanelProjectScopes(
+        source.panels || [],
+        source.projectIds,
+        sanitizeBoardProjectIds(targetProjectIds),
+      )
+  ).map((panel) => ({
     ...panel,
     id: newId(),
     title: resolveTitle(panel.title),

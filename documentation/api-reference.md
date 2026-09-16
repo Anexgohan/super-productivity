@@ -708,7 +708,9 @@ Updates a board. Writable: `title`, `cols`, `panels`, `projectIds`. `panels` is 
 
 A board naming only projects that do not exist stays visible under every scope rather than becoming unreachable. That covers a deleted project and, because project ids are per account, a board read over `?boardOf=` whose scope names the owner's projects rather than yours.
 
-The scope is a filter on **which boards are listed in the UI**, not on their contents: `GET /api/boards` always returns every board regardless of it, and a panel's own filters still decide which cards it holds.
+The scope decides which boards the UI lists **and** narrows their contents to the assigned project. `GET /api/boards` always returns every board regardless of it.
+
+Changing `projectIds` resets every column's own project filter to `[""]`, so a board moved out of a project keeps nothing of it. Sending `panels` in the same request skips the reset. An unassigned board staying unassigned keeps its per-column split.
 
 ### `DELETE /api/boards/:id`
 
