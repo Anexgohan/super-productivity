@@ -100,8 +100,12 @@ describe('ShareService.copyToClipboard', () => {
   it('keeps the fallback textarea in the viewport and focused (Firefox)', async () => {
     denyAsyncClipboard();
     let seen: { opacity: string; left: string; focused: boolean } | null = null;
+    const text = 'spk_1_firefox_fallback';
     spyOn(document, 'execCommand').and.callFake(() => {
-      const el = document.body.querySelector('textarea');
+      // Match on the copied text: the Karma page is shared, so another spec's leftover textarea can come first in the DOM.
+      const el = Array.from(document.body.querySelectorAll('textarea')).find(
+        (t) => t.value === text,
+      );
       seen = {
         opacity: el?.style.opacity ?? '',
         left: el?.style.left ?? '',
@@ -110,8 +114,9 @@ describe('ShareService.copyToClipboard', () => {
       return true;
     });
 
-    await service.copyToClipboard('spk_1_abc', 'Key');
+    await service.copyToClipboard(text, 'Key');
 
+    expect(seen).not.toBeNull();
     // Firefox refuses to copy a selection from an element parked off-screen,
     // and needs it focused before select() takes effect.
     expect(seen!.opacity).toBe('0');
