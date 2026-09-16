@@ -23,6 +23,7 @@ import {
 } from '@angular/cdk/drag-drop';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { selectAllBoards } from './store/boards.selectors';
+import { selectTaskEntities } from '../tasks/store/task.selectors';
 import { selectUnarchivedVisibleProjects } from '../project/store/project.selectors';
 import { GlobalProjectScopeService } from '../project/global-project-scope.service';
 import {
@@ -79,6 +80,9 @@ export class BoardsComponent {
 
   /** Every board, in stored order — the order `sortBoards` operates on. */
   private _allBoards = toSignal(this.store.select(selectAllBoards));
+  private _taskEntities = this.store.selectSignal(selectTaskEntities);
+  private _projectIdOfTask = (taskId: string): string | undefined =>
+    this._taskEntities()[taskId]?.projectId;
   /** Also the target list for "Duplicate to". */
   projects = toSignal(this.store.select(selectUnarchivedVisibleProjects), {
     initialValue: [],
@@ -191,7 +195,7 @@ export class BoardsComponent {
     this.store.dispatch(
       BoardsActions.updateBoard({
         id: board.id,
-        updates: buildBoardProjectAssignment(board, projectId),
+        updates: buildBoardProjectAssignment(board, projectId, this._projectIdOfTask),
       }),
     );
 
@@ -230,6 +234,7 @@ export class BoardsComponent {
       this._translateService.instant(T.GLOBAL.COPY_SUFFIX),
       nanoid,
       isTemplate,
+      this._projectIdOfTask,
     );
     this.store.dispatch(BoardsActions.addBoard({ board: copy }));
 

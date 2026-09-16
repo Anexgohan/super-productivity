@@ -30,8 +30,8 @@ const tokenSettingKey = (userId: number): string => `supersync.user_token.${user
 
 /**
  * The read-only token for a published board, keyed on its OWNER rather than on whoever is reading.
- * One token per board, shared by every viewer of it, for the same cursor-stability reason: the client keys its sync cursor on hash(baseUrl|accessToken), so a
- * per-viewer token would make each reader re-download the whole op-log and would reset them again on every restart.
+ * One token per board, shared by every viewer of it, for the same cursor-stability reason.
+ * The client keys its sync cursor on hash(baseUrl|accessToken), so a per-viewer token would make each reader re-download the op-log on restart.
  */
 const readTokenSettingKey = (ownerId: number): string =>
   `supersync.board_read_token.${ownerId}`;
@@ -214,9 +214,11 @@ export class SyncIdentityProvider {
   /**
    * A read-only token for `owner`'s board, to hand to somebody who is not the owner.
    *
-   * This is the credential that makes publishing safe. It names the owner's sync account, because that is whose op-log the reader must download, but carries
-   * `scope: 'read'`, which the sync server refuses on every route that changes data. Without the scope this would be an unrestricted write credential for
-   * someone else's board: the sync API is on the same public origin as the app and authenticates by token alone, so the bridge's own role check never sees it.
+   * This is the credential that makes publishing safe.
+   * It names the owner's sync account, because that is whose op-log the reader must download.
+   * But it carries `scope: 'read'`, which the sync server refuses on every route that changes data.
+   * Without the scope this would be an unrestricted write credential for someone else's board.
+   * The sync API is on the app's public origin and authenticates by token alone, so the bridge's own role check never sees it.
    *
    * Refuses an owner with no sync account. There is no board to read yet, and provisioning one here would create an empty account as a side effect of
    * somebody trying to view it.

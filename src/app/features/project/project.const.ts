@@ -1,6 +1,6 @@
 import { Project } from './project.model';
+import { DEFAULT_PROJECT as SHARED_DEFAULT_PROJECT } from '@sp/shared-schema';
 import {
-  DEFAULT_PROJECT_COLOR,
   WORK_CONTEXT_DEFAULT_COMMON,
   WORK_CONTEXT_DEFAULT_THEME,
 } from '../work-context/work-context.const';
@@ -9,18 +9,8 @@ export const DEFAULT_PROJECT_ICON = 'list_alt';
 export const _MISSING_PROJECT_ = 'missing project';
 
 export const DEFAULT_PROJECT: Project = {
-  isHiddenFromMenu: false,
-  isArchived: false,
-  isDone: false,
-  doneOn: null,
-  isEnableBacklog: false,
-  backlogTaskIds: [],
-  noteIds: [],
-  ...WORK_CONTEXT_DEFAULT_COMMON,
-  theme: {
-    ...WORK_CONTEXT_DEFAULT_THEME,
-    primary: DEFAULT_PROJECT_COLOR,
-  },
+  ...SHARED_DEFAULT_PROJECT,
+  advancedCfg: WORK_CONTEXT_DEFAULT_COMMON.advancedCfg,
 };
 export const LEGACY_NO_LIST_TAG_ID = 'NO_LIST' as const;
 export const INBOX_PROJECT: Project = {

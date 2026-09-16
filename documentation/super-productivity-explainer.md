@@ -435,6 +435,14 @@ endpoints, not a dedicated board endpoint.
 
 Two practical consequences when you build a column rather than move a card through one. A new column needs a tag to filter on, so creating the column is usually two writes, not one. And its tag has to be excluded from the columns to its left, or the same card shows up in two places at once, which is why the stock To Do panel excludes `KANBAN_IN_PROGRESS`.
 
+### Board rules live in one place
+
+The browser and the bridge both write board ops, so every rule about how a board changes lives once in `packages/shared-schema/src/boards-state.ts`: new-board and new-column defaults, the cleanup applied on every add and update, the load repairs, and one pure function per board action. The browser's boards reducer and the bridge's materializer only call those functions, which keeps a board identical whichever side edited it. The one browser-only rule is the duplicate-panel-id repair, because it mints random ids that are never synced and the bridge must not invent ids no browser has.
+
+### New tasks, tags and projects use the app's own defaults
+
+`packages/shared-schema/src/entity-defaults.ts` holds the defaults the app uses for a new task, tag or project, and the recipe the app's tag service uses. The browser re-types them against its models and the bridge builds API entities from them, so a tag or project made over the API has the same fields, theme and random preset colour as one made in the app. How changes to tasks, tags and projects are applied is still written twice, once in the app's reducers and once in the bridge's materializer; unlike boards, that has not been merged.
+
 ### Boards have a project scope
 
 A board carries `projectIds`, saying which project it belongs to. It uses the
@@ -466,7 +474,7 @@ assignment, then the header scope.
 
 The two copy actions differ only in the manual card order. Both keep the tag
 filters, because those are what make cards appear at all; **Copy to project**
-keeps the card order so the columns look as they did, while **Copy as empty
+keeps the card order for tasks in the target project, while **Copy as empty
 template** clears it so the board starts fresh. Neither touches task data:
 a board stores no tasks, so what a copy shows is whatever its filters match in
 its new home.
@@ -475,7 +483,9 @@ A board belongs **wholly** to the project it is moved or copied into, so no colu
 
 Under an assigned board a column filter can only be redundant or name a project the board already rejects, and the second kind is a column that stays empty with no field in the editor to show why. The one split left alone is on an unassigned board that stays unassigned, since that is something an API caller built on purpose. A `PATCH` that also sends `panels` is taken as written.
 
-Moving a board to the project it is already in applies the same reset, which repairs a board copied before this rule existed.
+The saved card order goes the same way: entries for tasks outside the new project are dropped (`restrictPanelCardOrder`), so no other project's task ids travel with the board. A board moved to "No project" keeps its whole card order, since it shows every project.
+
+Moving a board to the project it is already in applies the same reset and filter, which repairs a board copied before these rules existed.
 
 Two board-level filters could disagree, so they do not both exist in the UI: the
 per-panel project filter is no longer rendered in the board editor, and the

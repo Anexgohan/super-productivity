@@ -25,8 +25,9 @@ export interface SessionUser {
   /**
    * Whose published board this browser is currently reading, when it is not their own.
    *
-   * Lives in the session rather than on the account because it is a property of this browser, not of the person: the same account can read a colleague's board
-   * in one window and their own in another. Switching reissues the cookie, and it is signed, so a viewer cannot name a board they were not granted.
+   * Lives in the session rather than on the account because it is a property of this browser, not of the person.
+   * The same account can read a colleague's board in one window and their own in another.
+   * Switching reissues the cookie, and it is signed, so a viewer cannot name a board they were not granted.
    */
   viewingUserId?: number;
 }

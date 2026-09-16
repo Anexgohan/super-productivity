@@ -5,7 +5,7 @@
     "declaration": false,
     "declarationMap": false,
     "noEmit": true,
-    "rootDir": ".",
+    "rootDir": "..",
     "types": ["vitest", "node"]
   },
   "include": ["src/**/*", "tests/**/*"],

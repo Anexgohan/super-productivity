@@ -20,7 +20,7 @@ import { nanoid } from 'nanoid';
 import { DEFAULT_TAG } from './tag.const';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { sortByTitle } from '../../util/sort-by-title';
-import { getRandomWorkContextColor } from '../work-context/work-context-color';
+import { createTagObject } from '@sp/shared-schema';
 import { DeletedTagTitlesSidecarService } from '../issue/two-way-sync/deleted-tag-titles-sidecar.service';
 import { MenuTreeService } from '../menu-tree/menu-tree.service';
 
@@ -97,17 +97,11 @@ export class TagService {
   }
 
   createTagObject(tag: Partial<Tag>): Tag {
-    const id = tag.id || nanoid();
+    // Shared recipe; `advancedCfg` is re-applied only to carry the app's enum-typed worklog settings.
     return {
-      ...DEFAULT_TAG,
-      id,
-      title: tag.title || 'EMPTY',
-      created: Date.now(),
-      icon: null,
-      taskIds: [],
-      ...tag,
-      color: tag.color || getRandomWorkContextColor(),
-    };
+      ...createTagObject(tag, nanoid),
+      advancedCfg: tag.advancedCfg ?? DEFAULT_TAG.advancedCfg,
+    } as Tag;
   }
 
   getAddTagActionAndId(tag: Partial<Tag>): { action: Action<any>; id: string } {

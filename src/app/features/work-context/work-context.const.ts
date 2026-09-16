@@ -3,50 +3,36 @@ import { WorklogExportSettings, WorklogGrouping } from '../worklog/worklog.model
 import { ConfigFormSection } from '../config/global-config.model';
 import { T } from '../../t.const';
 import { FormlyFieldConfig } from '@ngx-formly/core';
+import {
+  DEFAULT_BACKGROUND_IMAGE_BLUR,
+  WORK_CONTEXT_DEFAULT_COMMON as SHARED_WORK_CONTEXT_DEFAULT_COMMON,
+  WORK_CONTEXT_DEFAULT_THEME as SHARED_WORK_CONTEXT_DEFAULT_THEME,
+  WORKLOG_EXPORT_DEFAULTS as SHARED_WORKLOG_EXPORT_DEFAULTS,
+} from '@sp/shared-schema';
 
+export {
+  DEFAULT_PROJECT_COLOR,
+  DEFAULT_TAG_COLOR,
+  DEFAULT_TODAY_TAG_COLOR,
+  DEFAULT_BACKGROUND_OVERLAY_OPACITY,
+} from '@sp/shared-schema';
+export { DEFAULT_BACKGROUND_IMAGE_BLUR };
+export const MAX_BACKGROUND_IMAGE_BLUR = 20;
+
+// The values live in `@sp/shared-schema` so the bridge creates the same entities; these re-type them against the app's models.
 export const WORKLOG_EXPORT_DEFAULTS: WorklogExportSettings = {
-  cols: ['DATE', 'START', 'END', 'TIME_CLOCK', 'TITLES_INCLUDING_SUB'],
-  roundWorkTimeTo: null,
-  roundStartTimeTo: null,
-  roundEndTimeTo: null,
-  separateTasksBy: ' | ',
+  ...SHARED_WORKLOG_EXPORT_DEFAULTS,
   groupBy: WorklogGrouping.DATE,
 };
 
-export const DEFAULT_PROJECT_COLOR = '#29a1aa';
-export const DEFAULT_TAG_COLOR = '#a05db1';
-export const DEFAULT_TODAY_TAG_COLOR = '#6495ED';
-export const DEFAULT_BACKGROUND_IMAGE_BLUR = 0;
-export const MAX_BACKGROUND_IMAGE_BLUR = 20;
-export const DEFAULT_BACKGROUND_OVERLAY_OPACITY = 20;
-
-export const WORK_CONTEXT_DEFAULT_THEME: WorkContextThemeCfg = {
-  isAutoContrast: true,
-  isDisableBackgroundTint: false,
-  primary: DEFAULT_TAG_COLOR,
-  huePrimary: '500',
-  accent: '#ff4081',
-  // accent: 'rgb(180,14,225)',
-  hueAccent: '500',
-  warn: '#e11826',
-  hueWarn: '500',
-  backgroundImageDark: null,
-  backgroundImageLight: null,
-  backgroundOverlayOpacity: 20,
-  backgroundImageBlur: DEFAULT_BACKGROUND_IMAGE_BLUR,
-};
+export const WORK_CONTEXT_DEFAULT_THEME: WorkContextThemeCfg =
+  SHARED_WORK_CONTEXT_DEFAULT_THEME;
 
 export const WORK_CONTEXT_DEFAULT_COMMON: WorkContextCommon = {
+  ...SHARED_WORK_CONTEXT_DEFAULT_COMMON,
   advancedCfg: {
     worklogExportSettings: WORKLOG_EXPORT_DEFAULTS,
   },
-  theme: WORK_CONTEXT_DEFAULT_THEME,
-  // breakTime: {},
-  // breakNr: {},
-  taskIds: [],
-  icon: null,
-  id: '',
-  title: '',
 };
 
 export const HUES = [

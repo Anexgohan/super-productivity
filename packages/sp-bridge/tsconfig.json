@@ -10,7 +10,10 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "outDir": "dist",
-    "declaration": true
+    "declaration": true,
+    "paths": {
+      "@sp/shared-schema": ["../shared-schema/src/index.ts"]
+    }
   },
   "include": ["src/**/*.ts"]
 }

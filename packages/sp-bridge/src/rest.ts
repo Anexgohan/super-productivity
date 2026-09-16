@@ -115,7 +115,7 @@ const DOCS = {
     'PUT /api/boards/order':
       'reorder boards; body: {ids: string[]} must name every board',
     'POST /api/boards/:id/panels':
-      'add a column; body: one panel {title (required), id?, includedTagIds?, excludedTagIds?, taskDoneState?, scheduledState?, backlogState?, isParentTasksOnly?, projectIds?}; appended, and cols grows to match',
+      'add a column; body: one panel {title (required), id?, includedTagIds?, excludedTagIds?, includedTagsMatch?, excludedTagsMatch?, taskDoneState?, scheduledState?, backlogState?, isParentTasksOnly?, projectIds?, sortBy?, sortDir?}; appended, and cols grows to match',
     'PATCH /api/boards/:id/panels/:panelId':
       'update one column; writable: everything but id and taskIds',
     'DELETE /api/boards/:id/panels/:panelId':
@@ -222,8 +222,9 @@ export interface SessionOverrideWiring {
   /**
    * Deployment-wide Argon2 salt, base64. Generated once and served to every browser so they all derive the SAME key from the passphrase.
    *
-   * Without it each session invents its own salt, so reading a board back costs one ~200ms derivation per operation rather than one per session: a hundred
-   * operations meant a twenty-second first sync. Random and per-deployment, so it still prevents precomputation; per-message uniqueness is the IV's job.
+   * Without it each session invents its own salt, so reading a board back costs one ~200ms derivation per operation rather than one per session.
+   * A hundred operations meant a twenty-second first sync.
+   * Random and per-deployment, so it still prevents precomputation; per-message uniqueness is the IV's job.
    */
   encryptSalt: () => Promise<string>;
   identities: SyncIdentityProvider;
@@ -387,8 +388,8 @@ export const createRestServer = (
       // the container account's board.
       if (!user) return reply.status(403).send({ error: 'No board for this session' });
 
-      // Reading somebody else's published board. Re-checked here rather than trusted from the cookie, so unpublishing takes effect on the next config fetch
-      // instead of whenever the session happens to expire.
+      // Reading somebody else's published board.
+      // Re-checked here rather than trusted from the cookie, so unpublishing applies on the next config fetch, not at session expiry.
       const viewingId = session.user.viewingUserId;
       const owner = viewingId
         ? (await auth.store.listPublicUsers()).find((u) => u.id === viewingId)
@@ -398,8 +399,8 @@ export const createRestServer = (
       }
 
       try {
-        // A delegated board gets a read-scoped token. The sync API authenticates by token alone on the same public origin as the app, so an unscoped one here
-        // would hand a reader full write access to data that is not theirs, whatever the bridge's own role check says.
+        // A delegated board gets a read-scoped token.
+        // The sync API authenticates by token alone on the app's origin, so an unscoped token would let a reader write data that is not theirs.
         const accessToken = owner
           ? await identities.tokenForBoardRead(owner)
           : await identities.tokenForUser(user);
@@ -419,8 +420,8 @@ export const createRestServer = (
                 }
               : {}),
           },
-          // Reading someone else's shared board. The token served above is refused on every write route, so without this the app would attempt uploads,
-          // collect 403s, and report a broken token - then clear its own credentials after three of them.
+          // Reading someone else's shared board: the token above is refused on every write route.
+          // Without this flag the app would attempt uploads, collect 403s, report a broken token, and clear its credentials after three.
           isReadOnly: Boolean(owner),
           // Whose data this browser is entitled to hold. The client compares it
           // against the stamp on its local replica and purges on a mismatch, so
@@ -438,8 +439,8 @@ export const createRestServer = (
           // board was populated - the gate then adopted where it should purge.
           identity: {
             instanceId: await instanceId(),
-            // The BOARD, not the reader. These are the same person unless a published board is being read, and stamping such a replica with the reader's id
-            // would make it match again when they switch back to their own board - so the gate would adopt the owner's data as theirs instead of purging it.
+            // The BOARD, not the reader; they differ only while a published board is being read.
+            // Stamped with the reader's id, the replica would match again on switching back, and the gate would adopt the owner's data.
             userId: (owner ?? user).id,
             // Re-read: tokenForUser() provisions on first login and writes the
             // sync id, so the row fetched above is stale for a brand-new user.

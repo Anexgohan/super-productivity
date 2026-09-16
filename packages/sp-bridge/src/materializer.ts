@@ -21,7 +21,20 @@ import {
   extractUpdateChanges,
   isMultiEntityPayload,
 } from '@sp/sync-core';
-import type { SuperSyncOperation, SuperSyncServerOperation } from '@sp/shared-schema';
+import {
+  addBoardToState,
+  normalizeLoadedBoards,
+  removeBoardFromState,
+  repairLoadedBoards,
+  sortBoardsInState,
+  updateBoardInState,
+  updatePanelTaskIdsInState,
+} from '@sp/shared-schema';
+import type {
+  BoardCfg,
+  SuperSyncOperation,
+  SuperSyncServerOperation,
+} from '@sp/shared-schema';
 
 export type EntityMap = Record<string, Record<string, unknown>>;
 
@@ -79,6 +92,13 @@ const normalizeFullState = (fullState: Record<string, unknown>): EntityMap => {
     ) {
       out[canonical] = {
         ...(value as { entities: Record<string, unknown> }).entities,
+      };
+    } else if (canonical === 'BOARD' && value && typeof value === 'object') {
+      // Same load repairs a browser applies to boards it reads whole.
+      const boards = value as Record<string, unknown>;
+      out[canonical] = {
+        ...boards,
+        boardCfgs: repairLoadedBoards(normalizeLoadedBoards(boards.boardCfgs)),
       };
     } else if (value && typeof value === 'object') {
       out[canonical] = value as Record<string, unknown>;
@@ -227,33 +247,20 @@ export class Materializer {
   }
 
   /**
-   * Boards are not an entity map. The whole feature is a single
-   * `{ boardCfgs: BoardCfg[] }` record, so the generic id-keyed path below
-   * would write a sibling key *beside* the array rather than touch a board -
-   * which is why board ops were silently dropped and the bridge only ever saw
-   * boards via a full-state SYNC_IMPORT.
-   *
-   * Mirrors src/app/features/boards/store/boards.reducer.ts so a board edited
-   * in a browser and one edited through the REST API converge on the same
-   * result.
-   *
-   * `[Boards] Update Panel Cfg` is deliberately unhandled: its reducer case is
-   * commented out upstream, so acting on it here would move the bridge to a
-   * state no browser would ever reach. Panel edits arrive as an
-   * `[Boards] Update Board` carrying a replacement `panels` array.
+   * Boards are one `{ boardCfgs }` record, not an entity map, so the generic id-keyed path would write beside the array.
+   * Each case calls the same `@sp/shared-schema` function the browser's boards reducer does, so both writers converge on one result.
+   * `[Boards] Update Panel Cfg` has no reducer case; panel edits arrive as `[Boards] Update Board` with a replacement `panels` array.
    */
   private _applyBoardOp(op: SuperSyncOperation, payload: unknown): void {
     const action = asRecord(extractActionPayload(payload));
     const state = (this._state.BOARD ??= {});
-    const boards: Record<string, unknown>[] = Array.isArray(state.boardCfgs)
-      ? (state.boardCfgs as Record<string, unknown>[])
-      : [];
+    const boards = normalizeLoadedBoards(state.boardCfgs);
 
     switch (op.actionType) {
       case '[Boards] Add Board': {
         const board = asRecord(action.board);
         if (typeof board.id === 'string' && board.id) {
-          state.boardCfgs = [...boards, board];
+          state.boardCfgs = addBoardToState(boards, board as unknown as BoardCfg);
         }
         break;
       }
@@ -261,45 +268,26 @@ export class Materializer {
         const id = (action.id as string) || op.entityId;
         const updates = asRecord(action.updates);
         if (!id || Object.keys(updates).length === 0) break;
-        state.boardCfgs = boards.map((b) => (b.id === id ? { ...b, ...updates } : b));
+        state.boardCfgs = updateBoardInState(boards, id, updates as Partial<BoardCfg>);
         break;
       }
       case '[Boards] Remove Board': {
         const id = (action.id as string) || op.entityId;
         if (!id) break;
-        state.boardCfgs = boards.filter((b) => b.id !== id);
+        state.boardCfgs = removeBoardFromState(boards, id);
         break;
       }
       case '[Boards] Sort Boards': {
         const ids = Array.isArray(action.ids) ? (action.ids as string[]) : [];
         if (!ids.length) break;
-        const byId = new Map(boards.map((b) => [b.id as string, b]));
-        const ordered = ids
-          .map((id) => byId.get(id))
-          .filter((b): b is Record<string, unknown> => !!b);
-        // Boards missing from `ids` survive at the tail, matching the reducer:
-        // a stale sort from another client must not delete a new board.
-        const seen = new Set(ids);
-        state.boardCfgs = [
-          ...ordered,
-          ...boards.filter((b) => !seen.has(b.id as string)),
-        ];
+        state.boardCfgs = sortBoardsInState(boards, ids);
         break;
       }
       case '[Boards] Update Panel Cfg TaskIds': {
         const panelId = (action.panelId as string) || op.entityId;
-        const taskIds = Array.isArray(action.taskIds) ? action.taskIds : [];
+        const taskIds = Array.isArray(action.taskIds) ? (action.taskIds as string[]) : [];
         if (!panelId) break;
-        state.boardCfgs = boards.map((b) => {
-          const panels = Array.isArray(b.panels)
-            ? (b.panels as Record<string, unknown>[])
-            : [];
-          if (!panels.some((p) => p.id === panelId)) return b;
-          return {
-            ...b,
-            panels: panels.map((p) => (p.id === panelId ? { ...p, taskIds } : p)),
-          };
-        });
+        state.boardCfgs = updatePanelTaskIdsInState(boards, panelId, taskIds);
         break;
       }
     }

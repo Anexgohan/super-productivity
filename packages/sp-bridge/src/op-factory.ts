@@ -16,10 +16,14 @@ import { randomBytes } from 'node:crypto';
 import { encrypt } from '@sp/sync-core';
 import type { SuperSyncOperation } from '@sp/shared-schema';
 import {
-  BoardPanelCfgScheduledState,
-  BoardPanelCfgTaskDoneState,
-  BoardPanelCfgTaskTypeFilter,
+  DEFAULT_PANEL_CFG,
+  DEFAULT_PROJECT,
+  DEFAULT_TASK,
+  createTagObject,
+  getRandomWorkContextColor,
+  sanitizePanelCfg,
 } from '@sp/shared-schema';
+import type { BoardMatchMode, BoardPanelCfg, BoardSortField } from '@sp/shared-schema';
 
 export const CURRENT_SCHEMA_VERSION = 4;
 
@@ -39,11 +43,12 @@ export const nanoid = (size = 21): string => {
 export const uuidv7 = (): string => {
   const now = Date.now();
   const bytes = randomBytes(16);
-  bytes[0] = (now / 2 ** 40) & 0xff;
-  bytes[1] = (now / 2 ** 32) & 0xff;
-  bytes[2] = (now / 2 ** 24) & 0xff;
-  bytes[3] = (now / 2 ** 16) & 0xff;
-  bytes[4] = (now / 2 ** 8) & 0xff;
+  const byteOf = (divisor: number): number => (now / divisor) & 0xff;
+  bytes[0] = byteOf(2 ** 40);
+  bytes[1] = byteOf(2 ** 32);
+  bytes[2] = byteOf(2 ** 24);
+  bytes[3] = byteOf(2 ** 16);
+  bytes[4] = byteOf(2 ** 8);
   bytes[5] = now & 0xff;
   bytes[6] = (bytes[6] & 0x0f) | 0x70; // version 7
   bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant
@@ -77,60 +82,21 @@ export interface NewTaskInput {
   parentId?: string;
 }
 
-/** Full task entity with the same default set a real client writes. */
+/** Full task entity built from the app's own `DEFAULT_TASK`, so an API task matches a browser task field for field. */
 export const buildTaskEntity = (input: NewTaskInput): Record<string, unknown> => ({
+  ...DEFAULT_TASK,
   id: nanoid(),
-  subTaskIds: [],
-  timeSpentOnDay: {},
-  timeSpent: 0,
-  timeEstimate: input.timeEstimate ?? 0,
-  isDone: false,
-  title: input.title,
-  // Subtasks carry neither their own tags nor project membership (they inherit
-  // the parent's), matching how the client builds a sub-task entity.
-  tagIds: input.parentId ? [] : (input.tagIds ?? []),
   created: Date.now(),
-  attachments: [],
+  title: input.title,
+  timeEstimate: input.timeEstimate ?? DEFAULT_TASK.timeEstimate,
+  // Subtasks carry no tags of their own; they inherit the parent's, as in the app.
+  tagIds: input.parentId ? [] : (input.tagIds ?? []),
   projectId: input.projectId ?? 'INBOX_PROJECT',
-  notes: input.notes ?? '',
+  ...(input.notes !== undefined ? { notes: input.notes } : {}),
   ...(input.parentId ? { parentId: input.parentId } : {}),
   ...(input.dueDay ? { dueDay: input.dueDay } : {}),
   ...(input.dueWithTime ? { dueWithTime: input.dueWithTime } : {}),
 });
-
-// ── Tag / Project entity factories ───────────────────────────────────────────
-// Templated field-for-field from real entities in the live dataset so every
-// field and type validates under typia on receiving clients (a missing/wrong
-// field would trip typia-as-corrupt and break sync).
-
-const DEFAULT_ADVANCED_CFG = {
-  worklogExportSettings: {
-    cols: ['DATE', 'START', 'END', 'TIME_CLOCK', 'TITLES_INCLUDING_SUB'],
-    roundWorkTimeTo: null,
-    roundStartTimeTo: null,
-    roundEndTimeTo: null,
-    separateTasksBy: ' | ',
-    groupBy: 'DATE',
-  },
-};
-
-const buildTheme = (primary: string): Record<string, unknown> => ({
-  isAutoContrast: true,
-  isDisableBackgroundTint: false,
-  primary,
-  huePrimary: '500',
-  accent: '#ff4081',
-  hueAccent: '500',
-  warn: '#e11826',
-  hueWarn: '500',
-  backgroundImageDark: null,
-  backgroundImageLight: null,
-  backgroundOverlayOpacity: 20,
-  backgroundImageBlur: 0,
-});
-
-const DEFAULT_TAG_COLOR = '#7b1fa2';
-const DEFAULT_PROJECT_COLOR = '#29b6f6';
 
 export interface NewTagInput {
   title: string;
@@ -138,16 +104,16 @@ export interface NewTagInput {
   color?: string;
 }
 
-export const buildTagEntity = (input: NewTagInput): Record<string, unknown> => ({
-  id: nanoid(),
-  title: input.title,
-  created: Date.now(),
-  color: input.color ?? null,
-  icon: input.icon ?? null,
-  taskIds: [],
-  advancedCfg: DEFAULT_ADVANCED_CFG,
-  theme: buildTheme(input.color ?? DEFAULT_TAG_COLOR),
-});
+/** Same recipe as the app's tag service: a missing colour gets a random preset. */
+export const buildTagEntity = (input: NewTagInput): Record<string, unknown> =>
+  createTagObject(
+    {
+      title: input.title,
+      ...(input.color ? { color: input.color } : {}),
+      ...(input.icon ? { icon: input.icon } : {}),
+    },
+    nanoid,
+  );
 
 export interface NewProjectInput {
   title: string;
@@ -155,19 +121,19 @@ export interface NewProjectInput {
   isEnableBacklog?: boolean;
 }
 
+/** Same as the app's create-project dialog: `DEFAULT_PROJECT`, with a random preset colour unless one is given. */
 export const buildProjectEntity = (input: NewProjectInput): Record<string, unknown> => ({
+  ...DEFAULT_PROJECT,
   id: nanoid(),
   title: input.title,
-  isHiddenFromMenu: false,
-  isArchived: false,
-  isDone: false,
-  doneOn: null,
-  isEnableBacklog: input.isEnableBacklog ?? false,
+  isEnableBacklog: input.isEnableBacklog ?? DEFAULT_PROJECT.isEnableBacklog,
   taskIds: [],
   backlogTaskIds: [],
   noteIds: [],
-  advancedCfg: DEFAULT_ADVANCED_CFG,
-  theme: buildTheme(input.color ?? DEFAULT_PROJECT_COLOR),
+  theme: {
+    ...DEFAULT_PROJECT.theme,
+    primary: input.color ?? getRandomWorkContextColor(),
+  },
 });
 
 export interface NewNoteInput {
@@ -255,7 +221,7 @@ export const buildTaskRepeatCfgEntity = (
   startTime: input.startTime,
 });
 
-/** Panel filter fields, defaulted to match a stock Kanban column. Enums come from `@sp/shared-schema`, so these are the app's values, not a copy. */
+/** Panel filter fields; anything omitted takes the board editor's default (`DEFAULT_PANEL_CFG`). */
 export interface NewPanelInput {
   title: string;
   id?: string;
@@ -270,20 +236,35 @@ export interface NewPanelInput {
   isParentTasksOnly?: boolean;
   /** [''] means "All Projects" - the app's own convention, not a typo. */
   projectIds?: string[];
+  /** Absent = manual card order. */
+  sortBy?: BoardSortField;
+  sortDir?: 'asc' | 'desc';
+  /** Absent = 'all' required tags must match. */
+  includedTagsMatch?: BoardMatchMode;
+  /** Absent = excluded on 'any' match. */
+  excludedTagsMatch?: BoardMatchMode;
 }
 
-export const buildPanelEntity = (input: NewPanelInput): Record<string, unknown> => ({
-  id: input.id ?? nanoid(),
-  title: input.title,
-  includedTagIds: input.includedTagIds ?? [],
-  excludedTagIds: input.excludedTagIds ?? [],
-  taskIds: [],
-  taskDoneState: input.taskDoneState ?? BoardPanelCfgTaskDoneState.UnDone,
-  scheduledState: input.scheduledState ?? BoardPanelCfgScheduledState.All,
-  backlogState: input.backlogState ?? BoardPanelCfgTaskTypeFilter.NoBacklog,
-  isParentTasksOnly: input.isParentTasksOnly ?? false,
-  projectIds: input.projectIds ?? [''],
-});
+export const buildPanelEntity = (input: NewPanelInput): Record<string, unknown> => {
+  const panel: BoardPanelCfg = {
+    id: input.id ?? nanoid(),
+    title: input.title,
+    includedTagIds: input.includedTagIds ?? [...DEFAULT_PANEL_CFG.includedTagIds],
+    excludedTagIds: input.excludedTagIds ?? [...DEFAULT_PANEL_CFG.excludedTagIds],
+    taskIds: [],
+    taskDoneState: input.taskDoneState ?? DEFAULT_PANEL_CFG.taskDoneState,
+    scheduledState: input.scheduledState ?? DEFAULT_PANEL_CFG.scheduledState,
+    backlogState: input.backlogState ?? DEFAULT_PANEL_CFG.backlogState,
+    isParentTasksOnly: input.isParentTasksOnly ?? DEFAULT_PANEL_CFG.isParentTasksOnly,
+    projectIds: input.projectIds ?? [...(DEFAULT_PANEL_CFG.projectIds ?? [''])],
+    sortBy: input.sortBy,
+    sortDir: input.sortDir,
+    includedTagsMatch: input.includedTagsMatch,
+    excludedTagsMatch: input.excludedTagsMatch,
+  };
+  // The shared cleanup drops unknown sort fields and absent optionals, so the stored column is what a browser would store.
+  return sanitizePanelCfg(panel) as unknown as Record<string, unknown>;
+};
 
 export interface NewBoardInput {
   title: string;

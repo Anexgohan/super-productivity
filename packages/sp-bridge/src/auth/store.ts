@@ -417,7 +417,8 @@ export class AuthStore {
 
   /**
    * Drops the record entirely.
-   * Safe because a SERIAL sequence only ever moves forward, so the freed id is never handed to a future key and the old string can never verify again.
+   * Safe because a SERIAL sequence only ever moves forward.
+   * So the freed id is never handed to a future key, and the old string can never verify again.
    */
   async deleteApiKey(id: number): Promise<boolean> {
     const { rowCount } = await this._pool.query(

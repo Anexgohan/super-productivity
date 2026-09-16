@@ -1,7 +1,6 @@
 import { Tag } from './tag.model';
-import { BOARD_TAG_IDS } from '@sp/shared-schema';
+import { BOARD_TAG_IDS, DEFAULT_TAG as SHARED_DEFAULT_TAG } from '@sp/shared-schema';
 import {
-  DEFAULT_TAG_COLOR,
   DEFAULT_TODAY_TAG_COLOR,
   WORK_CONTEXT_DEFAULT_COMMON,
   WORK_CONTEXT_DEFAULT_THEME,
@@ -40,16 +39,8 @@ export const TODAY_TAG: Tag = {
 };
 
 export const DEFAULT_TAG: Tag = {
-  color: null,
-  created: Date.now(),
-  ...WORK_CONTEXT_DEFAULT_COMMON,
-  icon: null,
-  title: '',
-  id: '',
-  theme: {
-    ...WORK_CONTEXT_DEFAULT_THEME,
-    primary: DEFAULT_TAG_COLOR,
-  },
+  ...SHARED_DEFAULT_TAG,
+  advancedCfg: WORK_CONTEXT_DEFAULT_COMMON.advancedCfg,
 };
 
 // TODO translate

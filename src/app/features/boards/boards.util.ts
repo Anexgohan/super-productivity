@@ -9,34 +9,22 @@ import {
 import { TaskCopy } from '../tasks/task.model';
 import { dateStrToUtcDate } from '../../util/date-str-to-utc-date';
 import { moveItemInArray } from '../../util/move-item-in-array';
-import { reassignPanelProjectScopes } from '@sp/shared-schema';
+import {
+  isAllProjects,
+  reassignPanelProjectScopes,
+  restrictPanelCardOrder,
+  sanitizeBoardProjectIds,
+} from '@sp/shared-schema';
 
-const VALID_SORT_FIELDS: ReadonlySet<BoardSortField> = new Set([
-  'dueDate',
-  'created',
-  'title',
-  'timeEstimate',
-]);
-
-// Absent `projectIds` (legacy data that hasn't been sanitized yet) means
-// "All Projects", same as an array containing the "" sentinel.
-export const isAllProjects = (projectIds: string[] | undefined): boolean =>
-  !projectIds || projectIds.includes('');
+export {
+  isAllProjects,
+  sanitizeBoardProjectIds,
+  sanitizePanelCfg,
+} from '@sp/shared-schema';
 
 export const firstSpecificProjectId = (
   projectIds: string[] | undefined,
 ): string | undefined => projectIds?.find((id) => id !== '');
-
-/**
- * Normalizes a board's own project scope.
- * Absent/non-array (legacy or corrupted data) and any array containing the ""
- * sentinel both collapse to [""] — "unassigned", which is what the boards page
- * shows under "All Projects". Idempotent.
- */
-export const sanitizeBoardProjectIds = (projectIds: string[] | undefined): string[] =>
-  !Array.isArray(projectIds) || projectIds.length === 0 || isAllProjects(projectIds)
-    ? ['']
-    : projectIds;
 
 /**
  * Boards visible under a project scope.
@@ -110,11 +98,17 @@ export const remapVisibleOrderToFullOrder = (
 export const buildBoardProjectAssignment = (
   board: Pick<BoardCfg, 'projectIds' | 'panels'>,
   projectId: string,
+  projectIdOfTask: (taskId: string) => string | undefined,
 ): Pick<BoardCfg, 'projectIds' | 'panels'> => {
   const projectIds = sanitizeBoardProjectIds([projectId]);
+  const panels = reassignPanelProjectScopes(
+    board.panels || [],
+    board.projectIds,
+    projectIds,
+  );
   return {
     projectIds,
-    panels: reassignPanelProjectScopes(board.panels || [], board.projectIds, projectIds),
+    panels: restrictPanelCardOrder(panels, projectIds, projectIdOfTask),
   };
 };
 
@@ -124,9 +118,8 @@ export const buildBoardProjectAssignment = (
  * A board holds no tasks — its panels are filters — so this copies structure
  * and re-points the scope. Two details matter:
  *
- *  - `taskIds` (manual card order) is kept for a copy and cleared for a
- *    template. Ids that name tasks the copy cannot see are simply ignored by
- *    the ordering pass, so a stale entry costs nothing.
+ *  - `taskIds` (manual card order) is cleared for a template. A copy keeps it,
+ *    minus any task outside the copy's project, so no other project's ids travel along.
  *  - Titles are resolved through `resolveTitle`. The starter boards store i18n
  *    KEYS as titles (`F.BOARDS.DEFAULT.KANBAN`) which the render pipe resolves;
  *    a copy is new data nothing will resolve again, so an unresolved key would
@@ -145,7 +138,8 @@ export const buildDuplicatedBoard = (
   resolveTitle: (title: string) => string,
   copySuffix: string,
   newId: () => string,
-  isTemplate = false,
+  isTemplate: boolean,
+  projectIdOfTask: (taskId: string) => string | undefined,
 ): BoardCfg => ({
   id: newId(),
   title: `${resolveTitle(source.title)}${copySuffix}`,
@@ -153,87 +147,23 @@ export const buildDuplicatedBoard = (
   projectIds: sanitizeBoardProjectIds(targetProjectIds ?? source.projectIds),
   panels: (targetProjectIds === undefined
     ? source.panels || []
-    : reassignPanelProjectScopes(
-        source.panels || [],
-        source.projectIds,
+    : restrictPanelCardOrder(
+        reassignPanelProjectScopes(
+          source.panels || [],
+          source.projectIds,
+          sanitizeBoardProjectIds(targetProjectIds),
+        ),
         sanitizeBoardProjectIds(targetProjectIds),
+        projectIdOfTask,
       )
   ).map((panel) => ({
     ...panel,
     id: newId(),
     title: resolveTitle(panel.title),
-    // Tag filters are kept in BOTH modes — tags are global, so a column keeps
-    // working wherever the copy lands, and that is what makes the cards show up
-    // at all. The two modes differ only in `taskIds`, the manual card order:
-    // a copy keeps it so the cards sit where they did, a template starts fresh.
+    // Tag filters are kept in both modes, since tags are global; only the manual card order differs.
     taskIds: isTemplate ? [] : [...(panel.taskIds || [])],
   })),
 });
-
-/**
- * Normalizes a panel cfg for persistence and hydration:
- * - Migrates legacy `sortByDue` → `sortBy`/`sortDir`.
- * - Coerces `null` values (from Formly) on optional string-union fields to absent.
- * - Drops unknown `sortBy` values (e.g. from a newer client synced down).
- * Idempotent.
- */
-export const sanitizePanelCfg = (panel: BoardPanelCfg): BoardPanelCfg => {
-  const out: BoardPanelCfg = { ...panel };
-
-  // Migrate legacy `projectId` → `projectIds`.
-  // Preference given to legacy `projectId` if present (even if `projectIds`
-  // exists as [""] from overlaying DEFAULT_PANEL_CFG during migration).
-  // NOTE: This preference is deliberate to ensure we don't lose the user's
-  // choice if they had a specific project selected in an older version.
-  const legacyPanel = out as BoardPanelCfg & { projectId?: string };
-  if (legacyPanel.projectId !== undefined) {
-    if (
-      out.projectIds === undefined ||
-      (Array.isArray(out.projectIds) &&
-        out.projectIds.length === 1 &&
-        out.projectIds[0] === '')
-    ) {
-      out.projectIds = [legacyPanel.projectId || ''];
-    }
-    delete legacyPanel.projectId;
-  }
-
-  // Ensure `projectIds` is always an array (e.g. if loaded from older client
-  // that didn't run this migration yet).
-  if (!Array.isArray(out.projectIds)) {
-    out.projectIds = [''];
-  }
-
-  // Canonicalize any `projectIds` containing "" back to [""] (All Projects).
-  // This is lossy: if "" (All Projects) co-occurs with specific IDs, the specific IDs
-  // are dropped in favor of "All Projects".
-  if (isAllProjects(out.projectIds)) {
-    out.projectIds = [''];
-  }
-
-  if (out.sortByDue === 'asc' || out.sortByDue === 'desc') {
-    out.sortBy = 'dueDate';
-    out.sortDir = out.sortByDue;
-  }
-  delete (out as Partial<BoardPanelCfg>).sortByDue;
-
-  // Drop `sortBy` if null/undefined OR unknown value — prevents buildComparator
-  // from getting an unhandled field and returning undefined at runtime.
-  if (out.sortBy == null || !VALID_SORT_FIELDS.has(out.sortBy)) {
-    delete (out as Partial<BoardPanelCfg>).sortBy;
-  }
-  if (out.sortDir == null) {
-    delete (out as Partial<BoardPanelCfg>).sortDir;
-  }
-  if (out.includedTagsMatch == null) {
-    delete (out as Partial<BoardPanelCfg>).includedTagsMatch;
-  }
-  if (out.excludedTagsMatch == null) {
-    delete (out as Partial<BoardPanelCfg>).excludedTagsMatch;
-  }
-
-  return out;
-};
 
 /**
  * Normalize a task's due moment to a comparable millisecond timestamp, or null
@@ -357,10 +287,8 @@ export const doesTaskMatchPanel = (
   }
 
   if (
-    panelCfg.projectIds &&
-    panelCfg.projectIds.length > 0 &&
     !isAllProjects(panelCfg.projectIds) &&
-    !panelCfg.projectIds.includes(task.projectId)
+    !(panelCfg.projectIds as string[]).includes(task.projectId)
   ) {
     return false;
   }

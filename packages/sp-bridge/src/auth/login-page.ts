@@ -8,7 +8,19 @@
  * light/dark surfaces - so it reads as part of the product.
  */
 
-const SP_FONT_STACK = `-apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', Roboto, 'Inter', 'Open Sans', 'Helvetica Neue', Arial, 'Noto Sans', sans-serif`;
+const SP_FONT_STACK = [
+  '-apple-system',
+  'BlinkMacSystemFont',
+  "'Segoe UI Variable Text'",
+  "'Segoe UI'",
+  'Roboto',
+  "'Inter'",
+  "'Open Sans'",
+  "'Helvetica Neue'",
+  'Arial',
+  "'Noto Sans'",
+  'sans-serif',
+].join(', ');
 
 export interface LoginPageOptions {
   /** First run: no account exists yet, so ask the admin to create one. */

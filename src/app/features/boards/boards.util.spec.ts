@@ -235,6 +235,9 @@ describe('filterBoardsByProjectScope', () => {
 });
 
 describe('buildDuplicatedBoard', () => {
+  // t1 and t2 live in P2, the copy target; t9 lives in the source project P1.
+  const projectOf = (id: string): string | undefined =>
+    ({ t1: 'P2', t2: 'P2', t9: 'P1' })[id];
   // Mimics the translate pipe: starter titles are i18n keys, everything else is
   // already real text and passes through.
   const resolve = (t: string): string =>
@@ -269,40 +272,96 @@ describe('buildDuplicatedBoard', () => {
   } as unknown as BoardCfg;
 
   it('resolves an i18n key title so the copy is not named after the key', () => {
-    const copy = buildDuplicatedBoard(source, undefined, resolve, ' (copy)', newId);
+    const copy = buildDuplicatedBoard(
+      source,
+      undefined,
+      resolve,
+      ' (copy)',
+      newId,
+      false,
+      projectOf,
+    );
     expect(copy.title).toBe('Kanban (copy)');
     expect(copy.title).not.toContain('F.BOARDS.DEFAULT');
   });
 
   it('resolves panel titles too', () => {
-    const copy = buildDuplicatedBoard(source, undefined, resolve, ' (copy)', newId);
+    const copy = buildDuplicatedBoard(
+      source,
+      undefined,
+      resolve,
+      ' (copy)',
+      newId,
+      false,
+      projectOf,
+    );
     expect(copy.panels[0].title).toBe('To Do');
   });
 
   it('keeps the source scope when no target is given', () => {
-    const copy = buildDuplicatedBoard(source, undefined, resolve, ' (copy)', newId);
+    const copy = buildDuplicatedBoard(
+      source,
+      undefined,
+      resolve,
+      ' (copy)',
+      newId,
+      false,
+      projectOf,
+    );
     expect(copy.projectIds).toEqual(['P1']);
   });
 
   it('re-scopes to the target project', () => {
-    const copy = buildDuplicatedBoard(source, ['P2'], resolve, ' (copy)', newId);
+    const copy = buildDuplicatedBoard(
+      source,
+      ['P2'],
+      resolve,
+      ' (copy)',
+      newId,
+      false,
+      projectOf,
+    );
     expect(copy.projectIds).toEqual(['P2']);
   });
 
   it('normalizes an unassigned target to the sentinel', () => {
-    const copy = buildDuplicatedBoard(source, [''], resolve, ' (copy)', newId);
+    const copy = buildDuplicatedBoard(
+      source,
+      [''],
+      resolve,
+      ' (copy)',
+      newId,
+      false,
+      projectOf,
+    );
     expect(copy.projectIds).toEqual(['']);
   });
 
   it('keeps the manual card order on a plain copy', () => {
     // A template clears it instead — that is the only difference between the
     // two copy modes.
-    const copy = buildDuplicatedBoard(source, ['P2'], resolve, ' (copy)', newId);
+    const copy = buildDuplicatedBoard(
+      source,
+      ['P2'],
+      resolve,
+      ' (copy)',
+      newId,
+      false,
+      projectOf,
+    );
     expect(copy.panels[0].taskIds).toEqual(['t1', 't2']);
   });
 
   it('copies tag filters verbatim, since tags are global', () => {
-    const copy = buildDuplicatedBoard(source, ['P2'], resolve, ' (copy)', newId);
+    const copy = buildDuplicatedBoard(
+      source,
+      ['P2'],
+      resolve,
+      ' (copy)',
+      newId,
+      false,
+      projectOf,
+    );
     expect(copy.panels[0].includedTagIds).toEqual(['TAG_A']);
     expect(copy.panels[0].excludedTagIds).toEqual(['TAG_B']);
   });
@@ -312,8 +371,50 @@ describe('buildDuplicatedBoard', () => {
       ...source,
       panels: [{ ...source.panels[0], projectIds: ['P1'] }],
     } as BoardCfg;
-    const copy = buildDuplicatedBoard(pankhaBoard, ['P2'], resolve, ' (copy)', newId);
+    const copy = buildDuplicatedBoard(
+      pankhaBoard,
+      ['P2'],
+      resolve,
+      ' (copy)',
+      newId,
+      false,
+      projectOf,
+    );
     expect(copy.panels[0].projectIds).toEqual(['']);
+  });
+
+  it('drops card order entries for tasks outside the target project', () => {
+    const mixed = {
+      ...source,
+      panels: [{ ...source.panels[0], taskIds: ['t1', 't9', 'gone'] }],
+    } as BoardCfg;
+    const copy = buildDuplicatedBoard(
+      mixed,
+      ['P2'],
+      resolve,
+      ' (copy)',
+      newId,
+      false,
+      projectOf,
+    );
+    expect(copy.panels[0].taskIds).toEqual(['t1']);
+  });
+
+  it('keeps the whole card order on a copy that stays where it is', () => {
+    const mixed = {
+      ...source,
+      panels: [{ ...source.panels[0], taskIds: ['t1', 't9'] }],
+    } as BoardCfg;
+    const copy = buildDuplicatedBoard(
+      mixed,
+      undefined,
+      resolve,
+      ' (copy)',
+      newId,
+      false,
+      projectOf,
+    );
+    expect(copy.panels[0].taskIds).toEqual(['t1', 't9']);
   });
 
   it('keeps column scopes on a copy that stays where it is', () => {
@@ -321,24 +422,42 @@ describe('buildDuplicatedBoard', () => {
       ...source,
       panels: [{ ...source.panels[0], projectIds: ['P1'] }],
     } as BoardCfg;
-    const copy = buildDuplicatedBoard(scoped, undefined, resolve, ' (copy)', newId);
+    const copy = buildDuplicatedBoard(
+      scoped,
+      undefined,
+      resolve,
+      ' (copy)',
+      newId,
+      false,
+      projectOf,
+    );
     expect(copy.panels[0].projectIds).toEqual(['P1']);
   });
 
   it('gives the board and every panel fresh ids', () => {
-    const copy = buildDuplicatedBoard(source, ['P2'], resolve, ' (copy)', newId);
+    const copy = buildDuplicatedBoard(
+      source,
+      ['P2'],
+      resolve,
+      ' (copy)',
+      newId,
+      false,
+      projectOf,
+    );
     expect(copy.id).not.toBe(source.id);
     expect(copy.panels[0].id).not.toBe('p1');
   });
 
   it('leaves the source untouched', () => {
     const before = JSON.stringify(source);
-    buildDuplicatedBoard(source, ['P2'], resolve, ' (copy)', newId);
+    buildDuplicatedBoard(source, ['P2'], resolve, ' (copy)', newId, false, projectOf);
     expect(JSON.stringify(source)).toBe(before);
   });
 });
 
 describe('buildBoardProjectAssignment', () => {
+  const projectOf = (id: string): string | undefined =>
+    ({ keep: 'GAME_DEV', drop: 'PANKHA' })[id];
   const panel = (id: string, projectIds: string[]): BoardPanelCfg =>
     ({ id, projectIds }) as unknown as BoardPanelCfg;
   const board = {
@@ -347,33 +466,53 @@ describe('buildBoardProjectAssignment', () => {
   };
 
   it('assigns to a project', () => {
-    expect(buildBoardProjectAssignment(board, 'P1').projectIds).toEqual(['P1']);
-  });
-
-  it('unassigns with the empty sentinel', () => {
-    expect(buildBoardProjectAssignment(board, '').projectIds).toEqual(['']);
-  });
-
-  it('touches only the scope — a move keeps the same board', () => {
-    expect(Object.keys(buildBoardProjectAssignment(board, 'P1')).sort()).toEqual([
-      'panels',
-      'projectIds',
+    expect(buildBoardProjectAssignment(board, 'P1', projectOf).projectIds).toEqual([
+      'P1',
     ]);
   });
 
+  it('unassigns with the empty sentinel', () => {
+    expect(buildBoardProjectAssignment(board, '', projectOf).projectIds).toEqual(['']);
+  });
+
+  it('touches only the scope — a move keeps the same board', () => {
+    expect(
+      Object.keys(buildBoardProjectAssignment(board, 'P1', projectOf)).sort(),
+    ).toEqual(['panels', 'projectIds']);
+  });
+
   it('takes the columns off the old project, so none is left permanently empty', () => {
-    const { panels } = buildBoardProjectAssignment(board, 'GAME_DEV');
+    const { panels } = buildBoardProjectAssignment(board, 'GAME_DEV', projectOf);
     expect(panels.map((p) => p.projectIds)).toEqual([[''], ['']]);
+  });
+
+  it('drops tasks of other projects from the card order, even on a same-project move', () => {
+    const withOrder = {
+      projectIds: ['GAME_DEV'],
+      panels: [{ ...panel('todo', ['']), taskIds: ['keep', 'drop'] } as BoardPanelCfg],
+    };
+    const { panels } = buildBoardProjectAssignment(withOrder, 'GAME_DEV', projectOf);
+    expect(panels[0].taskIds).toEqual(['keep']);
+  });
+
+  it('keeps the card order when a board is unassigned', () => {
+    const withOrder = {
+      projectIds: ['PANKHA'],
+      panels: [{ ...panel('todo', ['']), taskIds: ['keep', 'drop'] } as BoardPanelCfg],
+    };
+    const { panels } = buildBoardProjectAssignment(withOrder, '', projectOf);
+    expect(panels[0].taskIds).toEqual(['keep', 'drop']);
   });
 
   it('repairs a board moved to the project it is already in', () => {
     const copied = { ...board, projectIds: ['GAME_DEV'] };
-    const { panels } = buildBoardProjectAssignment(copied, 'GAME_DEV');
+    const { panels } = buildBoardProjectAssignment(copied, 'GAME_DEV', projectOf);
     expect(panels.map((p) => p.projectIds)).toEqual([[''], ['']]);
   });
 });
 
 describe('buildDuplicatedBoard — copy vs empty template', () => {
+  const projectOf = (): string => 'P1';
   const resolve = (t: string): string => t;
   let n = 0;
   const newId = (): string => `id-${++n}`;
@@ -400,8 +539,24 @@ describe('buildDuplicatedBoard — copy vs empty template', () => {
   } as unknown as BoardCfg;
 
   it('keeps tag filters in BOTH modes — they are what make cards appear', () => {
-    const copy = buildDuplicatedBoard(source, ['P1'], resolve, '', newId, false);
-    const template = buildDuplicatedBoard(source, ['P1'], resolve, '', newId, true);
+    const copy = buildDuplicatedBoard(
+      source,
+      ['P1'],
+      resolve,
+      '',
+      newId,
+      false,
+      projectOf,
+    );
+    const template = buildDuplicatedBoard(
+      source,
+      ['P1'],
+      resolve,
+      '',
+      newId,
+      true,
+      projectOf,
+    );
     expect(copy.panels[0].includedTagIds).toEqual(['TAG_A']);
     expect(copy.panels[0].excludedTagIds).toEqual(['TAG_B']);
     expect(template.panels[0].includedTagIds).toEqual(['TAG_A']);
@@ -409,23 +564,55 @@ describe('buildDuplicatedBoard — copy vs empty template', () => {
   });
 
   it('a copy keeps the manual card order', () => {
-    const copy = buildDuplicatedBoard(source, ['P1'], resolve, '', newId, false);
+    const copy = buildDuplicatedBoard(
+      source,
+      ['P1'],
+      resolve,
+      '',
+      newId,
+      false,
+      projectOf,
+    );
     expect(copy.panels[0].taskIds).toEqual(['t1', 't2']);
   });
 
   it('a template starts with no card order', () => {
-    const template = buildDuplicatedBoard(source, ['P1'], resolve, '', newId, true);
+    const template = buildDuplicatedBoard(
+      source,
+      ['P1'],
+      resolve,
+      '',
+      newId,
+      true,
+      projectOf,
+    );
     expect(template.panels[0].taskIds).toEqual([]);
   });
 
   it('a copy does not share the source taskIds array', () => {
-    const copy = buildDuplicatedBoard(source, ['P1'], resolve, '', newId, false);
+    const copy = buildDuplicatedBoard(
+      source,
+      ['P1'],
+      resolve,
+      '',
+      newId,
+      false,
+      projectOf,
+    );
     copy.panels[0].taskIds.push('t3');
     expect(source.panels[0].taskIds).toEqual(['t1', 't2']);
   });
 
   it('keeps the column layout and states in both modes', () => {
-    const template = buildDuplicatedBoard(source, ['P1'], resolve, '', newId, true);
+    const template = buildDuplicatedBoard(
+      source,
+      ['P1'],
+      resolve,
+      '',
+      newId,
+      true,
+      projectOf,
+    );
     expect(template.cols).toBe(2);
     expect(template.panels[0].title).toBe('In Progress');
     expect(template.panels[0].taskDoneState).toBe(1);

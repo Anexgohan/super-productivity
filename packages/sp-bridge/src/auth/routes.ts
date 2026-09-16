@@ -109,8 +109,8 @@ export interface AuthDeps {
   purgeSyncAccount?: (supersyncUserId: number) => Promise<void>;
   /**
    * Drops the cached read-only token for a board, called when it is unpublished.
-   * The token itself stays valid until it expires, so this closes the cache rather than the credential; what actually stops a viewer is the board no longer
-   * appearing in the published list and the override refusing to serve it.
+   * The token itself stays valid until it expires, so this closes the cache rather than the credential.
+   * What actually stops a viewer is the board leaving the published list and the override refusing to serve it.
    */
   forgetBoardReadToken?: (ownerId: number) => void;
   /**
@@ -195,7 +195,7 @@ export const registerAuthRoutes = (
     reply: FastifyReply,
     user: { id: number; username: string; role: string },
     viewingUserId?: number,
-  ) => {
+  ): { username: string; role: string } => {
     const token = sessions.sign({
       userId: user.id,
       username: user.username,
@@ -351,13 +351,14 @@ export const registerAuthRoutes = (
     return provedPassword(req, reply, caller);
   };
 
-  const publicUser = (u: {
+  type PublicUser = {
     id: number;
     username: string;
     role: string;
     email: string | null;
     isPublic: boolean;
-  }) => ({
+  };
+  const publicUser = (u: PublicUser): PublicUser => ({
     id: u.id,
     username: u.username,
     role: u.role,
@@ -714,8 +715,8 @@ export const registerAuthRoutes = (
   /**
    * Switches which board this browser reads. `{ "userId": null }` returns to the caller's own.
    *
-   * Publication is re-checked here rather than trusted from the list the browser last saw, and again on every override fetch, so a board unpublished mid-session
-   * stops being served rather than running until the cookie expires.
+   * Publication is re-checked here rather than trusted from the list the browser last saw, and again on every override fetch.
+   * So a board unpublished mid-session stops being served instead of running until the cookie expires.
    */
   app.post<{ Body: { userId?: unknown } }>('/api/auth/viewing', async (req, reply) => {
     // Browser-only, and not an oversight: the choice is stored by reissuing the session cookie, and a key has no cookie to store it in.
@@ -804,7 +805,8 @@ export const registerAuthRoutes = (
   /**
    * Resolves a key in the path, refusing anyone who may not act on its owner.
    *
-   * Ownership is checked rather than trusted: without it, anyone who may manage their own keys could act on someone else's by naming their own id in the path.
+   * Ownership is checked rather than trusted.
+   * Without it, anyone who may manage their own keys could act on someone else's by naming their own id in the path.
    */
   const keyInPath = async (
     req: FastifyRequest<{ Params: { id: string; keyId: string } }>,

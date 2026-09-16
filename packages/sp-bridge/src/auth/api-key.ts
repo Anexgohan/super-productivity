@@ -81,6 +81,7 @@ export const verifyApiKey = (
 ): boolean => {
   const expected = Buffer.from(formatApiKey(jwtSecret, m));
   const actual = Buffer.from(presented);
-  // Lengths are fixed by construction, so a mismatch means a malformed key. timingSafeEqual throws on unequal lengths, and a throw is a timing signal.
+  // Lengths are fixed by construction, so a mismatch means a malformed key.
+  // timingSafeEqual throws on unequal lengths, and a throw is a timing signal.
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 };

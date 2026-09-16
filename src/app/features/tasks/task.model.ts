@@ -3,6 +3,7 @@ import { EntityState } from '@ngrx/entity';
 import { TaskAttachment } from './task-attachment/task-attachment.model';
 // Import the unified Task type from plugin-api
 import { Task as PluginTask } from '@super-productivity/plugin-api';
+import { DEFAULT_TASK as SHARED_DEFAULT_TASK } from '@sp/shared-schema';
 
 export enum HideSubTasksMode {
   // Show is undefined
@@ -201,16 +202,7 @@ export type IssueTask = Partial<Task> & {
 };
 
 export const DEFAULT_TASK: Omit<TaskCopy, 'projectId'> = {
-  id: '',
-  subTaskIds: [],
-  timeSpentOnDay: {},
-  timeSpent: 0,
-  timeEstimate: 0,
-  isDone: false,
-  title: '',
-  tagIds: [],
-  created: Date.now(),
-
+  ...SHARED_DEFAULT_TASK,
   attachments: [],
 };
 

@@ -4,7 +4,12 @@
  * no MCP layer; agents consume the API directly).
  */
 import type { StateStore } from './state-store';
-import { cloneDefaultBoards, reassignPanelProjectScopes } from '@sp/shared-schema';
+import {
+  cloneDefaultBoards,
+  reassignPanelProjectScopes,
+  restrictPanelCardOrder,
+} from '@sp/shared-schema';
+import type { SuperSyncOperation } from '@sp/shared-schema';
 import {
   ALLOWED_TASK_FIELDS,
   buildTaskEntity,
@@ -304,7 +309,10 @@ export class BridgeCore {
    * both updateTask (one op) and bulkUpdate (many ops, one upload) share the
    * exact same validation + op shape.
    */
-  private async _buildUpdateOp(id: string, changes: Record<string, unknown>) {
+  private async _buildUpdateOp(
+    id: string,
+    changes: Record<string, unknown>,
+  ): Promise<SuperSyncOperation> {
     if (!this.getTask(id)) {
       throw err('Task not found', 404);
     }
@@ -783,7 +791,9 @@ export class BridgeCore {
     if (!m || (!m[1] && !m[2])) return null;
     const hours = m[1] ? parseInt(m[1], 10) : 0;
     const mins = m[2] ? parseInt(m[2], 10) : 0;
-    return hours * 3600000 + mins * 60000;
+    const hourMs = hours * 3600000;
+    const minMs = mins * 60000;
+    return hourMs + minMs;
   }
 
   // ── Tags ────────────────────────────────────────────────────────────────────
@@ -973,14 +983,20 @@ export class BridgeCore {
     const bad = Object.keys(updates).filter((k) => !ALLOWED_BOARD_FIELDS.has(k));
     if (bad.length) throw err(`Field(s) not writable: ${bad.join(', ')}`, 400);
     if (Object.keys(updates).length === 0) throw err('No changes given', 400);
-    // Re-assigning carries the columns along, as the browser's Move does; explicit `panels` in the same request win.
+    // Re-assigning carries the columns and card order along, as the browser's Move does; explicit `panels` in the same request win.
     if (Array.isArray(updates.projectIds) && updates.panels === undefined) {
+      const toProjectIds = updates.projectIds as string[];
+      const rescoped = reassignPanelProjectScopes(
+        this._panelsOf(board) as { projectIds?: string[]; taskIds?: string[] }[],
+        board.projectIds as string[] | undefined,
+        toProjectIds,
+      );
       updates = {
         ...updates,
-        panels: reassignPanelProjectScopes(
-          this._panelsOf(board) as { projectIds?: string[] }[],
-          board.projectIds as string[] | undefined,
-          updates.projectIds as string[],
+        panels: restrictPanelCardOrder(
+          rescoped,
+          toProjectIds,
+          (taskId) => this.getTask(taskId)?.projectId as string | undefined,
         ),
       };
     }

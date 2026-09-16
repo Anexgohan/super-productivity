@@ -82,6 +82,25 @@ export type {
   SuperSyncDeleteAllDataResponse,
 } from './supersync-http-contract';
 
+// Defaults for new tasks, tags and projects (shared so API-created entities match app-created ones)
+export {
+  DEFAULT_PROJECT_COLOR,
+  DEFAULT_TAG_COLOR,
+  DEFAULT_TODAY_TAG_COLOR,
+  DEFAULT_BACKGROUND_IMAGE_BLUR,
+  DEFAULT_BACKGROUND_OVERLAY_OPACITY,
+  PRESET_COLORS,
+  getRandomWorkContextColor,
+  WORK_CONTEXT_DEFAULT_THEME,
+  WORKLOG_EXPORT_DEFAULTS,
+  WORK_CONTEXT_DEFAULT_COMMON,
+  DEFAULT_TASK,
+  DEFAULT_TAG,
+  DEFAULT_PROJECT,
+  createTagObject,
+} from './entity-defaults';
+export type { WorkContextHue, WorkContextThemeDefaults } from './entity-defaults';
+
 // Board shapes and starter boards (shared so the bridge sees what a fresh browser draws)
 export {
   BoardPanelCfgTaskDoneState,
@@ -90,8 +109,25 @@ export {
   BOARD_TAG_IDS,
   DEFAULT_BOARDS,
   cloneDefaultBoards,
+  isAllProjects,
+  sanitizeBoardProjectIds,
   reassignPanelProjectScopes,
+  restrictPanelCardOrder,
 } from './boards';
+export {
+  DEFAULT_BOARD_CFG,
+  DEFAULT_PANEL_CFG,
+  sanitizePanelCfg,
+  sanitizeBoard,
+  normalizeLoadedBoards,
+  fixBuggyDefaultBoardFilters,
+  repairLoadedBoards,
+  addBoardToState,
+  updateBoardInState,
+  removeBoardFromState,
+  sortBoardsInState,
+  updatePanelTaskIdsInState,
+} from './boards-state';
 export type {
   BoardCfg,
   BoardPanelCfg,

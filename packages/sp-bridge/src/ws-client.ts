@@ -122,7 +122,8 @@ export class SyncWebSocket {
 
   private _scheduleReconnect(): void {
     if (this._stopped || this._timer) return;
-    const delay = Math.min(RECONNECT_BASE_MS * 2 ** this._attempts, RECONNECT_MAX_MS);
+    const backoff = 2 ** this._attempts;
+    const delay = Math.min(RECONNECT_BASE_MS * backoff, RECONNECT_MAX_MS);
     this._attempts++;
     this._timer = setTimeout(() => {
       this._timer = null;

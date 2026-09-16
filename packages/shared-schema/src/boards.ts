@@ -198,8 +198,13 @@ export const DEFAULT_BOARDS: BoardCfg[] = [
 /** A deep copy, so a caller that mutates what it is given cannot edit the starter list for everyone else in the process. */
 export const cloneDefaultBoards = (): BoardCfg[] => structuredClone(DEFAULT_BOARDS);
 
-const isUnassignedScope = (projectIds: string[] | undefined): boolean =>
-  !projectIds || projectIds.length === 0 || projectIds.includes('');
+/** Absent, empty, non-array or containing the "" sentinel all mean "All Projects" (unassigned, for a board). */
+export const isAllProjects = (projectIds: string[] | undefined): boolean =>
+  !Array.isArray(projectIds) || projectIds.length === 0 || projectIds.includes('');
+
+/** Canonical project scope: every "All Projects" form collapses to [""]. Idempotent. */
+export const sanitizeBoardProjectIds = (projectIds: string[] | undefined): string[] =>
+  isAllProjects(projectIds) ? [''] : (projectIds as string[]);
 
 /** A board copied or moved to another scope belongs wholly to it, so every column drops its own project filter; only an unassigned board staying unassigned keeps a deliberate per-column split. */
 export const reassignPanelProjectScopes = <P extends { projectIds?: string[] }>(
@@ -207,8 +212,26 @@ export const reassignPanelProjectScopes = <P extends { projectIds?: string[] }>(
   fromProjectIds: string[] | undefined,
   toProjectIds: string[] | undefined,
 ): P[] =>
-  isUnassignedScope(fromProjectIds) && isUnassignedScope(toProjectIds)
+  isAllProjects(fromProjectIds) && isAllProjects(toProjectIds)
     ? panels
     : panels.map((panel) =>
-        isUnassignedScope(panel.projectIds) ? panel : { ...panel, projectIds: [''] },
+        isAllProjects(panel.projectIds) ? panel : { ...panel, projectIds: [''] },
       );
+
+/** Drops card-order entries for tasks outside `toProjectIds`, so a re-scoped board keeps no other project's task ids; an unassigned target keeps them all. */
+export const restrictPanelCardOrder = <P extends { taskIds?: string[] }>(
+  panels: P[],
+  toProjectIds: string[] | undefined,
+  projectIdOfTask: (taskId: string) => string | undefined,
+): P[] => {
+  if (isAllProjects(toProjectIds)) return panels;
+  const scope = toProjectIds as string[];
+  return panels.map((panel) => {
+    const taskIds = panel.taskIds ?? [];
+    const kept = taskIds.filter((id) => {
+      const projectId = projectIdOfTask(id);
+      return !!projectId && scope.includes(projectId);
+    });
+    return kept.length === taskIds.length ? panel : { ...panel, taskIds: kept };
+  });
+};

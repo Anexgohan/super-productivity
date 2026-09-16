@@ -70,7 +70,8 @@ export const isTokenUsable = (token: string, nowMs: number = Date.now()): boolea
   const claims = decodeClaims(token);
   if (!claims) return false;
   if (typeof claims.exp !== 'number') return true;
-  return claims.exp * 1000 - nowMs > RENEW_BEFORE_MS;
+  const expMs = claims.exp * 1000;
+  return expMs - nowMs > RENEW_BEFORE_MS;
 };
 
 /**

@@ -112,7 +112,8 @@ const runServe = async (): Promise<void> => {
       override: {
         baseUrl: cfg.publicSyncUrl,
         encryptKey: cfg.encryptionPassword,
-        // Generated once and persisted: it must be stable for the life of the deployment, since changing it only makes the next session derive a new key.
+        // Generated once and persisted: it must stay stable for the deployment's life.
+        // Changing it only makes the next session derive a new key.
         // Resolved at startup above, so browsers and this process are guaranteed to be writing under the same salt.
         encryptSalt: async () => encryptSaltB64 as string,
         identities,

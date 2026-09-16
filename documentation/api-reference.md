@@ -417,7 +417,7 @@ Creates a task. → `201` with the created task.
 | ---------------------------------------------------------- | -------- | --------------------------------------- |
 | `title`                                                    | ✅       |                                         |
 | `projectId`                                                |          | defaults to `INBOX_PROJECT`; must exist |
-| `notes`, `timeEstimate`, `tagIds`, `dueDay`, `dueWithTime` |          |                                         |
+| `notes`, `timeEstimate`, `tagIds`, `dueDay`, `dueWithTime` |          | `notes` is only written when given      |
 
 ```bash
 curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
@@ -636,7 +636,7 @@ Links a task to an external issue so the issue panel recognizes it.
 
 ### `POST /api/tags`
 
-Creates a tag. → `201`. Body: `{"title": "...", "icon": "...", "color": "#rrggbb"}`.
+Creates a tag. → `201`. Body: `{"title": "...", "icon": "...", "color": "#rrggbb"}`. Built exactly as the app builds one: without `color` it gets a random preset colour, and `icon` defaults to `null`.
 
 ### `PATCH /api/tags/:id`
 
@@ -656,6 +656,8 @@ The virtual `TODAY` tag is protected (`400`).
 
 Creates a project. → `201`. Body:
 `{"title": "...", "color": "#rrggbb", "isEnableBacklog": false}`.
+
+Built exactly as the app's create-project dialog builds one: `color` becomes the theme colour, a random preset colour when omitted, and `icon` is `null`.
 
 ### `PATCH /api/projects/:id`
 
@@ -710,7 +712,7 @@ A board naming only projects that do not exist stays visible under every scope r
 
 The scope decides which boards the UI lists **and** narrows their contents to the assigned project. `GET /api/boards` always returns every board regardless of it.
 
-Changing `projectIds` resets every column's own project filter to `[""]`, so a board moved out of a project keeps nothing of it. Sending `panels` in the same request skips the reset. An unassigned board staying unassigned keeps its per-column split.
+Changing `projectIds` resets every column's own project filter to `[""]` and drops card-order entries for tasks outside the new project, so a board moved out of a project keeps nothing of it. Sending `panels` in the same request skips the reset. An unassigned board staying unassigned keeps its per-column split.
 
 ### `DELETE /api/boards/:id`
 
@@ -734,11 +736,19 @@ Adds a column. → `201`. Body is one panel:
   "scheduledState": 1,
   "backlogState": 2,
   "isParentTasksOnly": false,
-  "projectIds": [""]
+  "projectIds": [""],
+  "sortBy": "dueDate",
+  "sortDir": "asc",
+  "includedTagsMatch": "all",
+  "excludedTagsMatch": "any"
 }
 ```
 
+`sortBy`: `dueDate`, `created`, `title` or `timeEstimate`; omit it for manual card order, and an unknown value is dropped. `includedTagsMatch`: `all` (default) or `any` of the included tags. `excludedTagsMatch`: `any` (default) or `all` of the excluded tags. The same fields work on the columns in `POST /api/boards`.
+
 `taskDoneState`: 1 all, 2 done, 3 undone. `scheduledState`: 1 all, 2 scheduled, 3 not scheduled. `backlogState`: 1 all, 2 no backlog, 3 only backlog. `projectIds: [""]` means all projects, which is the app's own convention rather than a typo.
+
+Only `title` is required. Omitted fields take the same defaults as a column added in the board editor: done and undone tasks (`taskDoneState: 1`), scheduled or not, backlog included (`backlogState: 1`), all projects, no tag filters. Send `taskDoneState: 3` and `backlogState: 2` for a stock Kanban column.
 
 `cols` grows with the panel count. The panel is **appended** - reorder with a `PATCH` on the board.
 
