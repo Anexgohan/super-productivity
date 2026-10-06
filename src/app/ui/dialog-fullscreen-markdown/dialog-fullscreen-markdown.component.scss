@@ -62,6 +62,8 @@
   padding: var(--s) var(--s2);
   background-color: var(--bg-lightest);
   @include extraBorder('-bottom');
+  // Its horizontal scroll removes its minimum height, so without this a tall editor squeezes it to nothing.
+  flex-shrink: 0;
   position: relative;
   z-index: 1;
   color: var(--text-color);
@@ -118,8 +120,8 @@
     overflow: hidden;
 
     .code-editor-host {
-      flex-grow: 1;
-      // Allow proper flex shrinking; CodeMirror scrolls inside it
+      // Sized from the space left, not from the note's length; CodeMirror scrolls inside it
+      flex: 1 1 0;
       min-height: 0;
       overflow: hidden;
     }
