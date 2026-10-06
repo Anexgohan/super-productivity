@@ -95,7 +95,6 @@ export const KEYBOARD_SETTINGS_FORM_CFG: ConfigFormSection<KeyboardConfig> = {
     kbField('taskDelete', T.GCF.KEYBOARD.TASK_DELETE),
     kbField('taskMoveToProject', T.GCF.KEYBOARD.TASK_MOVE_TO_PROJECT),
     kbField('taskOpenContextMenu', T.GCF.KEYBOARD.TASK_OPEN_CONTEXT_MENU),
-    kbField('taskOpenNotesFullscreen', T.GCF.KEYBOARD.TASK_OPEN_NOTES_FULLSCREEN),
     kbField('selectPreviousTask', T.GCF.KEYBOARD.SELECT_PREVIOUS_TASK),
     kbField('selectNextTask', T.GCF.KEYBOARD.SELECT_NEXT_TASK),
     kbField('moveTaskUp', T.GCF.KEYBOARD.MOVE_TASK_UP),

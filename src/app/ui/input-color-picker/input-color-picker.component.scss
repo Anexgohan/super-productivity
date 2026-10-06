@@ -23,6 +23,11 @@
   &:hover {
     transform: scale(1.1);
   }
+
+  // "Use the default": the default colour, ringed dashed so it never reads as a picked colour.
+  &.is-default {
+    border-style: dashed;
+  }
 }
 
 .backdrop {
@@ -32,28 +37,175 @@
 }
 
 .color-panel {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s);
+  width: 236px;
+  box-sizing: border-box;
   padding: var(--s);
   background: var(--card-bg);
+  color: var(--text-color);
   border-radius: 8px;
   box-shadow: var(--whiteframe-shadow-8dp);
   z-index: var(--z-backdrop);
 }
 
-.color-grid {
+.default-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--s);
+  padding: var(--s-half) var(--s);
+  border: 1px solid var(--divider-color);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+
+  &.selected {
+    border-color: var(--text-color);
+  }
+
+  mat-icon {
+    margin-left: auto;
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+  }
+}
+
+.default-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px dashed var(--text-color-muted);
+}
+
+// Saturation runs left to right, brightness bottom to top, over the strip's hue.
+.sv-square {
+  position: relative;
+  height: 140px;
+  border-radius: 6px;
+  cursor: crosshair;
+  touch-action: none;
+  background-image:
+    linear-gradient(to top, #000, transparent),
+    linear-gradient(to right, #fff, transparent);
+}
+
+.sv-handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.hue-slider {
+  appearance: none;
+  width: 100%;
+  height: 12px;
+  margin: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  background: linear-gradient(
+    to right,
+    #f00 0%,
+    #ff0 17%,
+    #0f0 33%,
+    #0ff 50%,
+    #00f 67%,
+    #f0f 83%,
+    #f00 100%
+  );
+
+  &::-webkit-slider-thumb {
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    background: transparent;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  }
+
+  &::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    background: transparent;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  }
+}
+
+.hex-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s);
+}
+
+.hex-preview {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--divider-color);
+}
+
+.hex-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--s-half) var(--s);
+  border: 1px solid var(--divider-color);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-transform: lowercase;
+
+  &:focus {
+    outline: none;
+    border-color: var(--c-primary);
+  }
+}
+
+.eyedropper-btn {
+  display: flex;
+  padding: var(--s-half);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-color-muted);
+  cursor: pointer;
+
+  &:hover {
+    color: var(--text-color);
+  }
+}
+
+.swatch-label {
+  color: var(--text-color-muted);
+  font-size: 0.75rem;
+}
+
+.swatch-grid {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(8, 1fr);
   gap: var(--s-half);
 }
 
 .color-swatch {
-  width: 32px;
-  height: 32px;
+  aspect-ratio: 1;
+  width: 100%;
   border-radius: 50%;
   border: 2px solid transparent;
+  box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.35);
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   padding: 0;
   transition: var(--transition-fast);
 
@@ -64,38 +216,4 @@
   &.selected {
     border-color: var(--text-color);
   }
-
-  mat-icon {
-    font-size: 18px;
-    width: 18px;
-    height: 18px;
-    color: #fff;
-  }
-}
-
-.custom-color-btn {
-  background-color: var(--card-bg);
-  border-color: var(--text-color-muted);
-  border-style: dashed;
-
-  mat-icon {
-    color: var(--text-color-muted);
-  }
-
-  &.selected {
-    border-style: solid;
-    border-color: var(--text-color);
-
-    mat-icon {
-      color: #fff;
-    }
-  }
-}
-
-.native-color-input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-  width: 0;
-  height: 0;
 }

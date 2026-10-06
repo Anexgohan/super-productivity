@@ -3,6 +3,7 @@ import { signal } from '@angular/core';
 import { ThemeSelectorComponent } from './theme-selector.component';
 import { GlobalThemeService } from '../global-theme.service';
 import { CustomThemeService } from '../custom-theme.service';
+import { NoteColorsService } from '../note-colors.service';
 import { ThemeStorageService, StoredTheme } from '../theme-storage.service';
 import { SnackService } from '../../snack/snack.service';
 import { TranslateService } from '@ngx-translate/core';
@@ -27,6 +28,14 @@ describe('ThemeSelectorComponent — install warnings', () => {
           },
         },
         { provide: CustomThemeService, useValue: customMock },
+        {
+          provide: NoteColorsService,
+          useValue: {
+            current: signal({}),
+            setColor: () => {},
+            resetCurrentTheme: () => {},
+          },
+        },
         { provide: ThemeStorageService, useValue: storageMock },
         { provide: SnackService, useValue: snackMock },
         {

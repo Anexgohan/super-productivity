@@ -95,6 +95,21 @@ describe('DialogFullscreenMarkdownComponent', () => {
       );
     }));
 
+    it('sends a checklist toggle to the code editor when it is showing', () => {
+      const setValue = jasmine.createSpy('setValue');
+      component['_codeEditor'] = { setValue } as never;
+      const wrapper = document.createElement('li');
+      wrapper.className = 'checkbox-wrapper undone';
+      const checkbox = document.createElement('span');
+      checkbox.className = 'checkbox material-icons';
+      wrapper.appendChild(checkbox);
+      mockPreviewEl.element.nativeElement.appendChild(wrapper);
+
+      component.clickPreview({ target: checkbox } as unknown as MouseEvent);
+
+      expect(setValue).toHaveBeenCalledWith('- [x] Task 1\n\n- [ ] Task 2', undefined);
+    });
+
     it('should keep link clicks from toggling the parent checklist item', () => {
       const wrapper = document.createElement('li');
       wrapper.className = 'checkbox-wrapper undone';

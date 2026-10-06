@@ -1,6 +1,7 @@
 import { MarkedOptions, MarkedRenderer } from 'ngx-markdown';
 import {
   Hooks,
+  type MarkedExtension,
   type Token,
   type TokenizerExtensionFunction,
   type TokenizerStartFunction,
@@ -10,6 +11,7 @@ import {
   isPathSafeToOpen,
 } from '../../../electron/shared-with-frontend/is-external-url-allowed';
 import { escapeHtml } from '../util/escape-html';
+import { renderCodeBlock } from './markdown-extras/code-block';
 
 /**
  * Escape a string for safe interpolation into a double-quoted HTML attribute.
@@ -230,28 +232,38 @@ export const markedOptionsFactory = (): MarkedOptions => {
     }, '');
   };
 
+  // Highlighting, the copy button and the Mermaid placeholder; marked keeps one trailing newline on the block's text.
+  renderer.code = ({ text, lang }: { text: string; lang?: string }) =>
+    renderCodeBlock(text.replace(/\n$/, ''), lang);
+
   // NOTE: We intentionally do NOT override renderer.text for URL auto-linking.
   // In marked v17 with gfm: true, URLs are automatically detected and converted to links
   // by the lexer before they reach the text renderer. Custom URL linkification here
   // would cause double-processing and broken HTML (links inside links).
 
-  const options: MarkedOptions = {
+  // No `extensions` or `hooks` here: ngx-markdown passes these options to every parse, and marked lets per-call options replace the
+  // extensions registered with marked.use() wholesale, which silently dropped footnotes and callouts. They live in noteMarkedExtension().
+  return {
     renderer,
     gfm: true,
     breaks: true,
     pedantic: false,
-    extensions: {
-      renderers: {},
-      childTokens: {},
-      inline: [tokenizeWebexTeamsAutoLink],
-      startInline: [startWebexTeamsAutoLink],
-    },
   };
+};
 
-  // Add preprocessing hook to handle image sizing syntax
+/** The app's own syntax: `webexteams://` auto-links and the `=WxH` image sizing, registered with marked.use() beside the other extensions. */
+export const noteMarkedExtension = (): MarkedExtension => {
   const hooks = new Hooks();
   hooks.preprocess = preprocessMarkdown;
-  options.hooks = hooks;
-
-  return options;
+  return {
+    extensions: [
+      {
+        name: 'webexTeamsAutoLink',
+        level: 'inline',
+        start: startWebexTeamsAutoLink,
+        tokenizer: tokenizeWebexTeamsAutoLink,
+      },
+    ],
+    hooks,
+  };
 };

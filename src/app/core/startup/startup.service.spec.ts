@@ -15,6 +15,7 @@ import { TrackingReminderService } from '../../features/tracking-reminder/tracki
 import { LegacyPfDbService } from '../persistence/legacy-pf-db.service';
 import { DataInitStateService } from '../data-init/data-init-state.service';
 import { CustomThemeService } from '../theme/custom-theme.service';
+import { NoteColorsService } from '../theme/note-colors.service';
 import { of } from 'rxjs';
 import { signal } from '@angular/core';
 import { LS } from '../persistence/storage-keys.const';
@@ -146,6 +147,10 @@ describe('StartupService', () => {
         { provide: LegacyPfDbService, useValue: legacyPfDbServiceSpy },
         { provide: DataInitStateService, useValue: dataInitStateServiceSpy },
         { provide: CustomThemeService, useValue: customThemeServiceSpy },
+        {
+          provide: NoteColorsService,
+          useValue: jasmine.createSpyObj('NoteColorsService', ['reloadFromStorage']),
+        },
         provideMockStore({
           selectors: [
             { selector: selectSyncConfig, value: { syncProvider: null } },

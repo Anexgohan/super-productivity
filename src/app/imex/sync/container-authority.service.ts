@@ -56,6 +56,13 @@ export const IS_CONTAINER_MANAGED = signal(false);
 export const IS_READ_ONLY_BOARD = signal(false);
 
 /**
+ * The board identity the container served on this load, as `instanceId:userId`, or null when none was served (no container, or unreachable).
+ * It names the BOARD, not the reader: while a shared board is read, it is the owner's.
+ * Set by ReplicaIdentityGateService with IS_READ_ONLY_BOARD, from the same document; SyncedUiPrefsService stamps the browser's preferences with it.
+ */
+export const SERVED_BOARD_IDENTITY = signal<string | null>(null);
+
+/**
  * Whether the served container is the AUTHORITY for this client
  * (anex/container-parity).
  *

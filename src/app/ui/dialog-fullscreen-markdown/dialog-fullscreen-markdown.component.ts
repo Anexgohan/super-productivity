@@ -7,9 +7,11 @@ import {
   effect,
   ElementRef,
   inject,
+  Injector,
   OnInit,
   output,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
@@ -21,6 +23,7 @@ import { MatIcon } from '@angular/material/icon';
 import { MatIconButton } from '@angular/material/button';
 import { MatTooltip } from '@angular/material/tooltip';
 import { MarkdownComponent } from 'ngx-markdown';
+import { NoteMarkdownExtrasDirective } from '../markdown-extras/note-markdown-extras.directive';
 import { TranslatePipe } from '@ngx-translate/core';
 import { Subject } from 'rxjs';
 import { debounceTime } from 'rxjs/operators';
@@ -47,7 +50,17 @@ import {
 } from '../inline-markdown/markdown-toolbar.util';
 import { ClipboardImageService } from '../../core/clipboard-image/clipboard-image.service';
 import { TaskAttachmentService } from '../../features/tasks/task-attachment/task-attachment.service';
-import { ClipboardPasteHandlerService } from '../../core/clipboard-image/clipboard-paste-handler.service';
+import {
+  ClipboardPasteHandlerService,
+  EditableText,
+} from '../../core/clipboard-image/clipboard-paste-handler.service';
+import type {
+  createNoteCodeEditor,
+  NoteCodeEditor,
+} from '../note-code-editor/note-code-editor';
+import { Log } from '../../core/log';
+import { GlobalConfigService } from '../../features/config/global-config.service';
+import { checkKeyCombo } from '../../util/check-key-combo';
 import { toggleChecklistItemAtIndex } from '../../features/markdown-checklist/checklist-operations';
 import { HISTORY_STATE } from 'src/app/app.constants';
 import { IS_MOBILE } from 'src/app/util/is-mobile';
@@ -74,6 +87,7 @@ const ALL_VIEW_MODES: ['SPLIT', 'PARSED', 'TEXT_ONLY'] = ['SPLIT', 'PARSED', 'TE
   imports: [
     FormsModule,
     MarkdownComponent,
+    NoteMarkdownExtrasDirective,
     MatButton,
     MatButtonToggle,
     MatButtonToggleGroup,
@@ -90,6 +104,7 @@ export class DialogFullscreenMarkdownComponent implements OnInit, AfterViewInit 
   private readonly _clipboardPasteHandler = inject(ClipboardPasteHandlerService);
   private readonly _cdr = inject(ChangeDetectorRef);
   private readonly _dateService = inject(DateService);
+  private readonly _injector = inject(Injector);
   _matDialogRef = inject<MatDialogRef<DialogFullscreenMarkdownComponent>>(MatDialogRef);
   data: { content: string; taskId?: string } = inject(MAT_DIALOG_DATA) || { content: '' };
 
@@ -97,6 +112,13 @@ export class DialogFullscreenMarkdownComponent implements OnInit, AfterViewInit 
   viewMode: ViewMode = isSmallScreen() ? 'TEXT_ONLY' : 'SPLIT';
   readonly previewEl = viewChild<MarkdownComponent>('previewEl');
   readonly textareaEl = viewChild<ElementRef>('textareaEl');
+  readonly editorHost = viewChild<ElementRef<HTMLElement>>('editorHost');
+  /** True once CodeMirror has loaded; until then, or if it fails to load, the plain text box edits the note. */
+  readonly isCodeEditor = signal(false);
+  private _createCodeEditor: typeof createNoteCodeEditor | null = null;
+  private _codeEditor: NoteCodeEditor | null = null;
+  /** The caret to carry from the text box into CodeMirror when it takes over. */
+  private _handoverSelection: { start: number; end: number } | undefined;
   readonly contentChanged = output<string>();
   private readonly _contentChanges$ = new Subject<string>();
   private _currentPastePlaceholder: string | null = null;
@@ -134,6 +156,20 @@ export class DialogFullscreenMarkdownComponent implements OnInit, AfterViewInit 
       this._cdr.markForCheck();
     });
 
+    // The editor element comes and goes with the view mode (it is absent in the preview-only mode), so CodeMirror follows it.
+    effect(() => {
+      const host = this.editorHost()?.nativeElement;
+      untracked(() => {
+        if (host && !this._codeEditor) {
+          this._mountCodeEditor(host);
+        } else if (!host && this._codeEditor) {
+          this._codeEditor.destroy();
+          this._codeEditor = null;
+        }
+      });
+    });
+    this._destroyRef.onDestroy(() => this._codeEditor?.destroy());
+
     // Auto-save with debounce
     this._contentChanges$
       .pipe(debounceTime(500), takeUntilDestroyed(this._destroyRef))
@@ -163,7 +199,16 @@ export class DialogFullscreenMarkdownComponent implements OnInit, AfterViewInit 
       .keydownEvents()
       .pipe(takeUntilDestroyed(this._destroyRef))
       .subscribe((e) => {
-        if (e.key === 'Escape') {
+        // An Escape the editor already used (closing its search panel) must not also close the note.
+        if (e.key === 'Escape' && !e.defaultPrevented) {
+          e.preventDefault();
+          this.close();
+          return;
+        }
+        // The add-note key opened this editor for a task, so the same key saves and closes it.
+        const toggleKey = this._injector.get(GlobalConfigService).cfg()
+          ?.keyboard.addNewNote;
+        if (checkKeyCombo(e, toggleKey)) {
           e.preventDefault();
           this.close();
         }
@@ -190,6 +235,69 @@ export class DialogFullscreenMarkdownComponent implements OnInit, AfterViewInit 
   ngAfterViewInit(): void {
     // Focus textarea if present (not in PARSED view mode)
     this.textareaEl()?.nativeElement?.focus();
+    void this._loadCodeEditor();
+  }
+
+  private async _loadCodeEditor(): Promise<void> {
+    try {
+      const { createNoteCodeEditor } =
+        await import('../note-code-editor/note-code-editor');
+      this._createCodeEditor = createNoteCodeEditor;
+    } catch (err) {
+      // Offline before the editor was ever cached, for one: the plain text box keeps working.
+      Log.err({ stage: 'load-note-code-editor', error: (err as Error).message });
+      return;
+    }
+    const textarea = this.textareaEl()?.nativeElement as HTMLTextAreaElement | undefined;
+    if (textarea) {
+      this._handoverSelection = {
+        start: textarea.selectionStart,
+        end: textarea.selectionEnd,
+      };
+    }
+    this.isCodeEditor.set(true);
+    this._cdr.markForCheck();
+  }
+
+  private _mountCodeEditor(host: HTMLElement): void {
+    if (!this._createCodeEditor) return;
+    this._codeEditor = this._createCodeEditor({
+      parent: host,
+      doc: this.data.content || '',
+      selection: this._handoverSelection,
+      ariaLabel: 'Note',
+      // Through ngModelChange, as the text box does, so subclasses keep their hooks (the add-note dialog drafts to sessionStorage there).
+      onChange: (text) => {
+        this.data.content = text;
+        this.ngModelChange(text);
+      },
+      onKeydown: (ev) => {
+        this.keydownHandler(ev);
+        return ev.defaultPrevented;
+      },
+      onPaste: (ev) => {
+        // The image path claims the event synchronously, before its first await.
+        void this.pasteHandler(ev);
+        return ev.defaultPrevented;
+      },
+    });
+    this._handoverSelection = undefined;
+    this._codeEditor.focus();
+  }
+
+  /** Whichever editor is showing: CodeMirror once loaded, the plain text box before that. */
+  private _editable(): EditableText | null {
+    return this._codeEditor ?? this.textareaEl()?.nativeElement ?? null;
+  }
+
+  /** Puts new note text in the editor; CodeMirror reports the change back through its own listener. */
+  private _setContent(text: string, selection?: { start: number; end: number }): void {
+    if (this._codeEditor) {
+      this._codeEditor.setValue(text, selection);
+      return;
+    }
+    this.data.content = text;
+    this._contentChanges$.next(text);
   }
 
   openShortcutsHelp(): void {
@@ -234,6 +342,7 @@ export class DialogFullscreenMarkdownComponent implements OnInit, AfterViewInit 
 
   keydownHandler(ev: KeyboardEvent): void {
     if (ev.key === 'Enter' && ev.ctrlKey) {
+      ev.preventDefault();
       this.close();
       return;
     }
@@ -241,8 +350,8 @@ export class DialogFullscreenMarkdownComponent implements OnInit, AfterViewInit 
     // Accept both Ctrl and Meta intentionally; the displayed shortcut label shows only one.
     const hasModifier = (ev.ctrlKey || ev.metaKey) && !ev.altKey;
 
-    const textarea = this.textareaEl()?.nativeElement;
-    if (!textarea) {
+    const editable = this._editable();
+    if (!editable) {
       return;
     }
 
@@ -267,9 +376,9 @@ export class DialogFullscreenMarkdownComponent implements OnInit, AfterViewInit 
     }
 
     const result = handleListKeydown(
-      textarea.value,
-      textarea.selectionStart,
-      textarea.selectionEnd,
+      editable.value,
+      editable.selectionStart,
+      editable.selectionEnd,
       ev.key,
       ev.shiftKey,
       ev.ctrlKey,
@@ -278,6 +387,14 @@ export class DialogFullscreenMarkdownComponent implements OnInit, AfterViewInit 
     );
     if (result) {
       ev.preventDefault();
+      if (this._codeEditor) {
+        this._setContent(result.text, {
+          start: result.selectionStart,
+          end: result.selectionEnd,
+        });
+        return;
+      }
+      const textarea = editable as HTMLTextAreaElement;
       textarea.value = result.text;
       textarea.setSelectionRange(result.selectionStart, result.selectionEnd);
       this.data.content = result.text;
@@ -292,11 +409,8 @@ export class DialogFullscreenMarkdownComponent implements OnInit, AfterViewInit 
         set: (val) => (this._currentPastePlaceholder = val),
       },
       getContent: () => this.data.content,
-      setContent: (content) => {
-        this.data.content = content;
-        this._contentChanges$.next(content);
-      },
-      getTextarea: () => this.textareaEl()?.nativeElement || null,
+      setContent: (content) => this._setContent(content),
+      getTextarea: () => this._editable(),
       getTaskId: () => this.data.taskId || null,
     });
   }
@@ -344,9 +458,7 @@ export class DialogFullscreenMarkdownComponent implements OnInit, AfterViewInit 
     }
     const next = toggleChecklistItemAtIndex(this.data.content, checkIndex);
     if (next !== this.data.content) {
-      this.data.content = next;
-      // Emit change for auto-save
-      this._contentChanges$.next(this.data.content);
+      this._setContent(next);
     }
   }
 
@@ -416,14 +528,24 @@ export class DialogFullscreenMarkdownComponent implements OnInit, AfterViewInit 
   private _applyTransformWithArgs(
     transformFn: (text: string, start: number, end: number) => TextTransformResult,
   ): void {
-    const textarea = this.textareaEl()?.nativeElement;
-    if (!textarea) {
+    const editable = this._editable();
+    if (!editable) {
       return;
     }
 
-    const { value, selectionStart, selectionEnd } = textarea;
+    const { value, selectionStart, selectionEnd } = editable;
     const result = transformFn(value || '', selectionStart, selectionEnd);
 
+    if (this._codeEditor) {
+      this._setContent(result.text, {
+        start: result.selectionStart,
+        end: result.selectionEnd,
+      });
+      this._codeEditor.focus();
+      return;
+    }
+
+    const textarea = editable as HTMLTextAreaElement;
     this.data.content = result.text;
     this._contentChanges$.next(result.text);
 

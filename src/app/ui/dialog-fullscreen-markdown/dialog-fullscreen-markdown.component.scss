@@ -117,6 +117,13 @@
     min-height: 0;
     overflow: hidden;
 
+    .code-editor-host {
+      flex-grow: 1;
+      // Allow proper flex shrinking; CodeMirror scrolls inside it
+      min-height: 0;
+      overflow: hidden;
+    }
+
     textarea {
       flex-grow: 1;
       padding: var(--s) var(--s2);

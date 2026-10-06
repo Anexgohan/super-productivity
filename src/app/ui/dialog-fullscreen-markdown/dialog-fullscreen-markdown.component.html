@@ -190,20 +190,28 @@
         </button>
       </div>
 
-      <textarea
-        #textareaEl
-        [(ngModel)]="data.content"
-        (keydown)="keydownHandler($event)"
-        (paste)="pasteHandler($event)"
-        (ngModelChange)="ngModelChange($event)"
-        rows="1"
-        tabindex="3"
-      ></textarea>
+      @if (isCodeEditor()) {
+        <div
+          #editorHost
+          class="code-editor-host"
+        ></div>
+      } @else {
+        <textarea
+          #textareaEl
+          [(ngModel)]="data.content"
+          (keydown)="keydownHandler($event)"
+          (paste)="pasteHandler($event)"
+          (ngModelChange)="ngModelChange($event)"
+          rows="1"
+          tabindex="3"
+        ></textarea>
+      }
     </div>
   }
   @if (viewMode === 'PARSED' || viewMode === 'SPLIT') {
     <markdown
       #previewEl
+      noteMarkdownExtras
       (click)="clickPreview($event)"
       [data]="resolvedContentData"
       class="markdown-preview markdown"

@@ -7,7 +7,6 @@ import {
   createEnvironmentInjector,
   importProvidersFrom,
   provideZonelessChangeDetection,
-  SecurityContext,
 } from '@angular/core';
 import { registerLocaleData } from '@angular/common';
 
@@ -32,7 +31,8 @@ import {
   provideHttpClient,
   withInterceptorsFromDi,
 } from '@angular/common/http';
-import { MarkdownModule, MARKED_OPTIONS, SANITIZE } from 'ngx-markdown';
+import { MarkdownModule } from 'ngx-markdown';
+import { noteMarkdownModuleConfig } from './app/ui/markdown-extras/note-markdown-config';
 import { MAT_FORM_FIELD_DEFAULT_OPTIONS } from '@angular/material/form-field';
 import { MAT_DIALOG_DEFAULT_OPTIONS } from '@angular/material/dialog';
 import { IS_TOUCH_PRIMARY } from './app/util/is-mouse-primary';
@@ -46,7 +46,6 @@ import {
 } from '@angular/material/core';
 import { MatDatepickerIntl } from '@angular/material/datepicker';
 import { FormlyConfigModule } from './app/ui/formly-config.module';
-import { markedOptionsFactory } from './app/ui/marked-options-factory';
 import { MaterialCssVarsModule } from 'angular-material-css-vars';
 import { DEFAULT_TODAY_TAG_COLOR } from './app/features/work-context/work-context.const';
 import { MatSidenavModule } from '@angular/material/sidenav';
@@ -135,13 +134,7 @@ bootstrapApplication(AppComponent, {
       FeatureStoresModule,
       MatNativeDateModule,
       FormlyConfigModule,
-      MarkdownModule.forRoot({
-        markedOptions: {
-          provide: MARKED_OPTIONS,
-          useFactory: markedOptionsFactory,
-        },
-        sanitize: { provide: SANITIZE, useValue: SecurityContext.HTML },
-      }),
+      MarkdownModule.forRoot(noteMarkdownModuleConfig()),
       MaterialCssVarsModule.forRoot({
         primary: DEFAULT_TODAY_TAG_COLOR,
       }),

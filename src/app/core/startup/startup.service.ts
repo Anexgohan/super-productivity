@@ -41,6 +41,7 @@ import { SyncedUiPrefsService } from '../persistence/synced-ui-prefs.service';
 import { setFocusModeMode } from '../../features/focus-mode/store/focus-mode.actions';
 import { readPersistedFocusModeMode } from '../../features/focus-mode/store/focus-mode.reducer';
 import { CustomThemeService } from '../theme/custom-theme.service';
+import { NoteColorsService } from '../theme/note-colors.service';
 import { UpdateCheckService } from '../update-check/update-check.service';
 import { JiraElectronBridgeService } from '../../features/issue/providers/jira/jira-electron-bridge.service';
 
@@ -156,6 +157,11 @@ export class StartupService {
       // first second of a session used to be missed silently. Neither this nor
       // hydrateNow() writes an operation, so both are safe before sync.
       syncedPrefs.init();
+      // Drop another account's preferences before this one's are loaded over them.
+      const ownership = syncedPrefs.claimForCurrentIdentity();
+      if (ownership === 'reset') {
+        Log.log('synced-ui-prefs: dropped preferences left by another account');
+      }
       const written = syncedPrefs.hydrateNow();
 
       // Re-apply when the preferences actually arrive: on a cleared browser the op-log is empty, so data-init fires with default config.
@@ -164,6 +170,9 @@ export class StartupService {
         .subscribe((keys: string[]) => {
           if (keys.includes(LS.CUSTOM_THEME)) {
             void this._customThemeService.applyActiveTheme();
+          }
+          if (keys.includes(LS.NOTE_COLORS)) {
+            this._injector.get(NoteColorsService).reloadFromStorage();
           }
           if (keys.includes(LS.FOCUS_MODE_MODE)) {
             this._store.dispatch(
@@ -211,6 +220,8 @@ export class StartupService {
         this._customThemeService.applyActiveTheme(),
         new Promise<void>((resolve) => setTimeout(resolve, APPLY_THEME_TIMEOUT_MS)),
       ]);
+      // Built here, after the account's preferences were hydrated, so it reads the account's note colours rather than this browser's.
+      this._injector.get(NoteColorsService).reloadFromStorage();
     } catch (err) {
       Log.err({ stage: 'apply-active-theme', error: (err as Error).message });
     }

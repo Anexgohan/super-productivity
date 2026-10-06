@@ -1,0 +1,45 @@
+// Note colour overrides from Settings > Theme (NoteColorsService).
+// Each rule applies only while its root class is set, so an unset colour leaves every theme exactly as it was.
+// A colour the user picked must beat the theme, and several themes style these surfaces with !important, hence !important and the :root prefix for specificity.
+
+:root.note-bg-set {
+  task-detail-item .markdown-wrapper,
+  task-detail-item .markdown-unparsed,
+  task-detail-item .markdown-parsed,
+  note .markdown-unparsed,
+  note .markdown-parsed,
+  dialog-fullscreen-markdown .content,
+  dialog-fullscreen-markdown .formatting-toolbar {
+    background: var(--note-bg) !important;
+  }
+}
+
+// The editor's dividers use the theme's border colour, which is picked to sit on the theme's own surfaces (a brown in Plainspace dark).
+// On a background the user chose they would clash, so they follow the note text instead, faintly, and suit any background.
+:root.note-bg-set dialog-fullscreen-markdown {
+  --extra-border-color: color-mix(in srgb, currentColor 18%, transparent);
+  --divider-color: color-mix(in srgb, currentColor 18%, transparent);
+}
+
+:root.note-fg-set {
+  task-detail-item .markdown-unparsed,
+  task-detail-item .markdown-parsed,
+  note .markdown-unparsed,
+  note .markdown-parsed,
+  dialog-fullscreen-markdown .content,
+  dialog-fullscreen-markdown .formatting-toolbar {
+    color: var(--note-fg) !important;
+  }
+}
+
+:root.note-code-bg-set {
+  .markdown pre,
+  .markdown :not(pre) > code {
+    background: var(--note-code-bg) !important;
+    border-radius: 4px;
+  }
+
+  .markdown pre code {
+    background: transparent !important;
+  }
+}

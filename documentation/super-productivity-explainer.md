@@ -97,9 +97,20 @@ expansion. Those describe the screen in front of you, so pushing a desktop's
 sidebar width onto a laptop makes the experience worse, not more consistent.
 Caches, debug logs and per-install counters stay local for the same reason.
 
+The browser's copy of those preferences carries an owner stamp (`SUP_UI_PREFS_OWNER`), checked at every start by `SyncedUiPrefsService.claimForCurrentIdentity()` the same way `ReplicaIdentityGateService` checks the replica.
+`localStorage` is shared by everyone who uses the browser, so without it the last account's theme, colours and project scope would be shown to the next one and then saved into their account.
+A stamp naming another account drops this browser's copy before the new account's is loaded; sign-out drops it too, but the start-up check is what guarantees it, whatever way the last session ended.
+While someone else's shared board is open, its preferences are the owner's, so none are taken in and none are sent; a preference changed there stays in that browser until the reader goes home, where their account's value wins.
+
+> **Not true yet.** Preferences still live inside each account's board data (`misc.uiPrefs`), so they cannot follow a reader onto someone else's shared board. Moving them onto the account on the server is tracked on the sp-dev board.
+
 One caveat: most settings read their stored value once, at construction, so a
 preference changed on another device applies here on the next reload rather than
-instantly. Dark mode is wired to react live.
+instantly. Dark mode, the theme and the note colours are wired to react live.
+
+Note colours (Settings, next to the theme picker) override the background, text and code-block colours of notes in the task panel, project notes and the full-screen editor.
+They are saved per theme and per light/dark variant under `SUP_NOTE_COLORS`, so a colour picked for dark Plainspace never lands on a light theme.
+A colour only takes effect once picked: each one switches on its own rules in `src/styles/components/note-colors.scss`, so an unset colour leaves the theme untouched, and a set one wins even over themes that style notes with `!important`.
 
 The case that actually hurt - a fresh browser rendering defaults - is handled by
 `StartupService.init()`, which waits for data-init and then calls
@@ -412,6 +423,21 @@ The core entity. A task has a `title`, an `isDone` flag, an optional
 `projectId`, a `tagIds` array, time fields (`timeEstimate`, `timeSpent`,
 `timeSpentOnDay`), scheduling fields (`dueDay`, `dueWithTime`), and - if it is a
 subtask - a `parentId`. Parent tasks list their children in `subTaskIds`.
+
+### Notes are stored as markdown and rendered by the browser
+
+A task's `notes` is a plain markdown string; the API and the bridge never render it, so whatever a client writes is stored as written.
+The browser renders it with `marked` plus code highlighting (highlight.js, a fixed set of languages), GitHub-style callouts, footnotes and Mermaid diagrams, all in `src/app/ui/markdown-extras/`.
+Rendering never rewrites the stored text, so none of this changes what the API reads back.
+The full-screen editor is CodeMirror (`src/app/ui/note-code-editor/`), with markdown and the code inside fenced blocks highlighted as you type, search, and bracket matching; it edits the same plain text, so it never reformats a note either.
+`Alt+N` (Settings, Keyboard, the add-note shortcut) opens the focused or selected task's notes in that editor, board cards included, and the same key saves and closes it; with no task selected it adds a project note as before.
+CodeMirror, highlight.js and Mermaid are each loaded the first time they are needed, never at app start, and if CodeMirror cannot load (offline before it was ever cached) the plain text box edits the note instead.
+
+Rendered HTML passes through the fork's own filter, `sanitizeNoteHtml` (DOMPurify), which replaced Angular's fixed allowlist.
+It refuses script, event handlers, frames, forms, `<style>` and the `style` attribute, and allows only the link schemes the app already permits plus `blob:` for pasted images.
+That matters here more than upstream: shared boards put other accounts' notes in your browser and agents write notes over the API, so a note is not always your own text.
+`style` stays out because it would let a note lay a fake screen over the app; ids pass but are prefixed `user-content-`, so a note's footnote links cannot shadow the page's own ids.
+Mermaid draws its SVG after the filter, under its own `strict` mode, because the filter refuses the `<style>` an SVG diagram needs; Mermaid is loaded only when a note contains a diagram.
 
 ### Projects
 

@@ -25,6 +25,7 @@
   @if (isShowPreview()) {
     <markdown
       #previewEl
+      noteMarkdownExtras
       (mousedown)="previewMousedown($event)"
       (click)="clickPreview($event)"
       [data]="resolvedMarkdownData"

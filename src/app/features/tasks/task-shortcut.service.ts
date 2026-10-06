@@ -1,4 +1,7 @@
-import { computed, inject, Injectable } from '@angular/core';
+import { computed, inject, Injectable, Injector } from '@angular/core';
+import { Location } from '@angular/common';
+import { MatDialog } from '@angular/material/dialog';
+import { openFullscreenMarkdownDialog } from '../../ui/dialog-fullscreen-markdown/open-fullscreen-markdown-dialog';
 import { TaskFocusService } from './task-focus.service';
 import { TaskService } from './task.service';
 import { GlobalConfigService } from '../config/global-config.service';
@@ -46,6 +49,7 @@ export class TaskShortcutService {
   private readonly _taskFocusService = inject(TaskFocusService);
   private readonly _taskService = inject(TaskService);
   private readonly _configService = inject(GlobalConfigService);
+  private readonly _injector = inject(Injector);
   readonly isTimeTrackingEnabled = computed(
     () => this._configService.appFeatures().isTimeTrackingEnabled,
   );
@@ -119,6 +123,22 @@ export class TaskShortcutService {
       }
       // If no focused task, return false to let ShortcutService handle global fallback
       return false;
+    }
+
+    // Add-note doubles as "this task's notes, full screen" whenever a task is focused or selected (the one in the detail panel).
+    // Board cards are not <task> components, so selecting one is the only way they can be targeted.
+    // With no task, it returns false and ShortcutService adds a new note as before; inside the editor the same key saves and closes.
+    if (checkKeyCombo(ev, keys.addNewNote)) {
+      const selectedTaskId = this._taskService.selectedTaskId();
+      if (focusedTaskId) {
+        this._handleTaskShortcut(focusedTaskId, 'openNotesFullscreen');
+      } else if (selectedTaskId) {
+        this._openNotesFullscreen(selectedTaskId);
+      } else {
+        return false;
+      }
+      ev.preventDefault();
+      return true;
     }
 
     // All other shortcuts require a focused task
@@ -389,6 +409,24 @@ export class TaskShortcutService {
     const active = document.activeElement as HTMLElement | null;
     const host = active?.closest('[data-task-id]') as HTMLElement | null;
     return host?.getAttribute('data-task-id') ?? null;
+  }
+
+  /** The same editor and save path as TaskComponent.openNotesFullscreen, for a task with no <task> component on screen. */
+  private _openNotesFullscreen(taskId: TaskId): void {
+    this._taskService.getByIdOnce$(taskId).subscribe((task) => {
+      const dialogRef = openFullscreenMarkdownDialog(
+        this._injector.get(MatDialog),
+        this._injector.get(Location),
+        { content: task.notes || '', taskId: task.id },
+      );
+      dialogRef.afterClosed().subscribe((result) => {
+        if (result?.action === 'DELETE') {
+          this._taskService.update(task.id, { notes: '' });
+        } else if (typeof result === 'string') {
+          this._taskService.update(task.id, { notes: result });
+        }
+      });
+    });
   }
 
   /**

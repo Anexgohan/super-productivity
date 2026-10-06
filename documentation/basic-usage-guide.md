@@ -263,6 +263,25 @@ None of this is enforced by the software. It is the set of habits that keeps a b
 
 When several cards share a branch, put the branch line on one parent card and make the rest subtasks, so the branch is recorded once.
 
+Beyond plain markdown, notes render:
+
+- **Code blocks with highlighting.** Name the language after the opening fence (` ```ts `, ` ```python `, ` ```bash `, ` ```glsl `, ` ```json `, ` ```yaml `, and most common languages and their usual short names). A block with no language or an unknown one shows as plain text. Every block gets a copy button.
+- **Callouts.** A blockquote whose first line is `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]` or `[!CAUTION]`, as on GitHub.
+- **Footnotes.** `[^1]` in the text and `[^1]: the note` on its own line; clicking one scrolls to the other.
+- **Diagrams.** A ` ```mermaid ` block is drawn as a Mermaid diagram. One that fails to parse shows its source with the error underneath.
+
+````markdown
+> [!WARNING]
+> The save format changes in this release.
+
+```mermaid
+graph LR
+  Draft --> Review --> Merged
+```
+````
+
+Raw HTML in a note is filtered. Script, event handlers, frames, forms and inline `style` never survive, so lay notes out with markdown rather than HTML.
+
 **Give logged work a consistent shape.** For example, cards recording merged pull requests carry a `PR` tag and a note built the same way every time:
 
 ```markdown

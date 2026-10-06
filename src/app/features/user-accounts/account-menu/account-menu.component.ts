@@ -25,6 +25,7 @@ import { T } from '../../../t.const';
 import { Log } from '../../../core/log';
 import { UserAccountsService, type CurrentUser } from '../user-accounts.service';
 import { OperationLogStoreService } from '../../../op-log/persistence/operation-log-store.service';
+import { SyncedUiPrefsService } from '../../../core/persistence/synced-ui-prefs.service';
 
 @Component({
   selector: 'account-menu',
@@ -46,6 +47,7 @@ export class AccountMenuComponent implements OnInit {
   private readonly _api = inject(UserAccountsService);
   private readonly _router = inject(Router);
   private readonly _opLogStore = inject(OperationLogStoreService);
+  private readonly _syncedPrefs = inject(SyncedUiPrefsService);
 
   readonly T = T;
   readonly me = signal<CurrentUser | null>(null);
@@ -121,6 +123,9 @@ export class AccountMenuComponent implements OnInit {
     } catch (err) {
       Log.err('AccountMenu: could not purge local replica on logout', err);
     }
+    // The preferences go too, from this browser only.
+    // The start-up stamp check would catch them for the next account anyway; this just does not wait for it.
+    this._syncedPrefs.forgetLocal();
     // Full reload rather than a route change: drops the in-memory replica and
     // every service holding a reference to it.
     window.location.href = '/login';

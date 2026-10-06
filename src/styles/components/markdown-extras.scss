@@ -1,0 +1,208 @@
+// Code blocks, callouts, footnotes and diagrams in rendered notes (src/app/ui/markdown-extras/).
+// Colours come from the theme's own tokens, so each theme and both light and dark modes colour them consistently.
+// Background defaults sit in :where() to keep zero specificity: themes that style `pre` and `code` themselves still win.
+
+.markdown-preview,
+.markdown {
+  // ---------------------------------------------------------------- code
+  .code-block {
+    position: relative;
+    margin-bottom: var(--s2);
+
+    // Beats `.markdown *:first-child { padding-top: 0 }`, which would otherwise flatten a block at the top of a note.
+    pre {
+      margin: 0;
+      padding: var(--s) var(--s4) var(--s) var(--s2);
+      border-radius: var(--card-border-radius);
+    }
+  }
+
+  :where(.code-block) pre {
+    background: var(--c-dark-10);
+  }
+
+  .code-copy-btn {
+    position: absolute;
+    top: var(--s-half);
+    right: var(--s-half);
+    display: flex;
+    padding: var(--s-half);
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-color-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+
+    .material-icons {
+      font-size: 16px;
+      user-select: none;
+    }
+
+    &:hover,
+    &:focus-visible {
+      color: var(--text-color);
+      background: var(--c-dark-10);
+    }
+  }
+
+  .code-block:hover .code-copy-btn,
+  .code-copy-btn:focus-visible {
+    opacity: 1;
+  }
+
+  @media (hover: none) {
+    .code-copy-btn {
+      opacity: 0.7;
+    }
+  }
+
+  .hljs-comment,
+  .hljs-quote,
+  .hljs-meta {
+    color: var(--text-color-muted);
+    font-style: italic;
+  }
+
+  .hljs-keyword,
+  .hljs-selector-tag,
+  .hljs-literal,
+  .hljs-doctag,
+  .hljs-section {
+    color: var(--c-primary);
+  }
+
+  .hljs-string,
+  .hljs-regexp,
+  .hljs-addition,
+  .hljs-template-tag,
+  .hljs-template-variable {
+    color: var(--c-success, #4e9a4e);
+  }
+
+  .hljs-number,
+  .hljs-symbol,
+  .hljs-bullet,
+  .hljs-variable.constant_,
+  .hljs-built_in {
+    color: var(--c-warning, #c28a2b);
+  }
+
+  .hljs-title,
+  .hljs-type,
+  .hljs-attr,
+  .hljs-attribute,
+  .hljs-selector-class,
+  .hljs-selector-id,
+  .hljs-name {
+    color: var(--c-accent);
+  }
+
+  .hljs-deletion {
+    color: var(--c-error, var(--c-warn));
+  }
+
+  .hljs-emphasis {
+    font-style: italic;
+  }
+
+  .hljs-strong {
+    font-weight: bold;
+  }
+
+  // ---------------------------------------------------------------- callouts
+  .note-alert {
+    --note-alert-color: var(--c-primary);
+    margin: 0 0 var(--s2);
+    padding: var(--s) var(--s2);
+    border-left: 4px solid var(--note-alert-color);
+    border-radius: 0 var(--card-border-radius) var(--card-border-radius) 0;
+
+    > *:last-child {
+      margin-bottom: 0;
+    }
+  }
+
+  .note-alert-tip {
+    --note-alert-color: var(--c-success, #4e9a4e);
+  }
+
+  .note-alert-important {
+    --note-alert-color: var(--c-accent);
+  }
+
+  .note-alert-warning {
+    --note-alert-color: var(--c-warning, #c28a2b);
+  }
+
+  .note-alert-caution {
+    --note-alert-color: var(--c-error, var(--c-warn));
+  }
+
+  .note-alert-title {
+    display: flex;
+    align-items: center;
+    gap: var(--s-half);
+    margin-bottom: var(--s-half);
+    color: var(--note-alert-color);
+    font-weight: 600;
+
+    .material-icons {
+      font-size: 18px;
+      user-select: none;
+    }
+  }
+
+  // ---------------------------------------------------------------- footnotes
+  .footnotes {
+    margin-top: var(--s2);
+    padding-top: var(--s);
+    border-top: 1px solid var(--divider-color);
+    font-size: 0.9em;
+
+    ol {
+      margin-bottom: 0;
+    }
+  }
+
+  [data-footnote-ref],
+  [data-footnote-backref] {
+    text-decoration: none;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  // ---------------------------------------------------------------- diagrams
+  .mermaid-block {
+    margin-bottom: var(--s2);
+
+    &.is-drawn .mermaid-src {
+      display: none;
+    }
+  }
+
+  .mermaid-svg {
+    overflow-x: auto;
+
+    svg {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      margin: 0 auto;
+    }
+  }
+
+  .mermaid-error {
+    margin-top: var(--s-half);
+    color: var(--c-error, var(--c-warn));
+    font-size: 12px;
+  }
+}

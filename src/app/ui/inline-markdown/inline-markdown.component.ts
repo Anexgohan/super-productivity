@@ -23,6 +23,7 @@ import { MatMenu, MatMenuItem, MatMenuTrigger } from '@angular/material/menu';
 import { MatTooltip } from '@angular/material/tooltip';
 import { TranslatePipe } from '@ngx-translate/core';
 import { MarkdownComponent } from 'ngx-markdown';
+import { NoteMarkdownExtrasDirective } from '../markdown-extras/note-markdown-extras.directive';
 import { IS_ELECTRON } from '../../app.constants';
 import { GlobalConfigService } from '../../features/config/global-config.service';
 import { isMarkdownChecklist } from '../../features/markdown-checklist/is-markdown-checklist';
@@ -60,6 +61,7 @@ const DRAG_THRESHOLD_PX = 5;
   imports: [
     FormsModule,
     MarkdownComponent,
+    NoteMarkdownExtrasDirective,
     MatIconButton,
     MatTooltip,
     MatIcon,
@@ -353,6 +355,10 @@ export class InlineMarkdownComponent implements OnInit, OnDestroy {
     const target = $event.target as HTMLElement;
     if (target.tagName === 'A') {
       // Let links work normally
+      return;
+    }
+    // Code copy buttons belong to NoteMarkdownExtrasDirective, not to "click to edit".
+    if (target.closest('button')) {
       return;
     }
 
@@ -681,7 +687,8 @@ export class InlineMarkdownComponent implements OnInit, OnDestroy {
       const target = ev.target as HTMLElement;
       if (target.tagName && target.tagName.toLowerCase() === 'a') {
         const href = target.getAttribute('href');
-        if (href !== null) {
+        // In-note links (footnotes) are scrolled to by NoteMarkdownExtrasDirective, never opened outside the app.
+        if (href !== null && !href.startsWith('#')) {
           ev.preventDefault();
           window.ea.openExternalUrl(href);
         }

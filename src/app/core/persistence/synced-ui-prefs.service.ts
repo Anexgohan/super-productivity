@@ -6,6 +6,10 @@ import { Subject } from 'rxjs';
 import { GlobalConfigService } from '../../features/config/global-config.service';
 import { LS } from './storage-keys.const';
 import { Log } from '../log';
+import {
+  IS_READ_ONLY_BOARD,
+  SERVED_BOARD_IDENTITY,
+} from '../../imex/sync/container-authority.service';
 
 /**
  * Makes user PREFERENCES follow the account instead of the browser profile
@@ -51,6 +55,8 @@ import { Log } from '../log';
 /** Preferences that describe the USER and should follow the account. */
 const SYNCED_KEYS: readonly string[] = [
   LS.CUSTOM_THEME,
+  // Note colour overrides are chosen per theme, so they follow the account like the theme itself.
+  LS.NOTE_COLORS,
   LS.IS_ADD_TO_BOTTOM,
   LS.TASK_VIEW_CUSTOMIZER_BY_CONTEXT,
   LS.DONE_TASKS_HIDDEN,
@@ -76,6 +82,27 @@ const SYNCED_KEYS: readonly string[] = [
   LS.ONBOARDING_PRESET_DONE,
   LS.ONBOARDING_HINTS_DONE,
 ];
+
+/**
+ * Who the preferences in this browser's localStorage belong to, decided at every start before they are used.
+ * - `ungated`: no container identity (desktop, or the container was unreachable); nothing to compare, behave as before.
+ * - `read-only`: someone else's shared board is open. Its preferences are the owner's, not this reader's, so none are taken in or sent.
+ * - `matched`: the stamp names this account; keep them.
+ * - `adopted`: unstamped, from before stamping existed; treated as this account's, the way ReplicaIdentityGateService adopts an unstamped replica.
+ * - `reset`: the stamp names another account; they are dropped from this browser before this account's are loaded.
+ */
+export type PrefsOwnership = 'ungated' | 'read-only' | 'matched' | 'adopted' | 'reset';
+
+export const decidePrefsOwnership = (
+  stamp: string | null,
+  served: string | null,
+  isReadOnly: boolean,
+): PrefsOwnership => {
+  if (isReadOnly) return 'read-only';
+  if (!served) return 'ungated';
+  if (!stamp) return 'adopted';
+  return stamp === served ? 'matched' : 'reset';
+};
 
 /** Coalesce bursts (e.g. dragging a row-height control) into one sync op. */
 const PERSIST_DEBOUNCE_MS = 400;
@@ -114,15 +141,16 @@ export class SyncedUiPrefsService {
     const setItem = localStorage.setItem.bind(localStorage);
     const removeItem = localStorage.removeItem.bind(localStorage);
 
+    // On someone else's shared board a change stays in this browser: the board is not the reader's, and its uploads are blocked anyway.
     localStorage.setItem = (key: string, value: string): void => {
       setItem(key, value);
-      if (!this._isApplyingRemote && SYNCED_KEYS.includes(key)) {
+      if (!this._isApplyingRemote && !IS_READ_ONLY_BOARD() && SYNCED_KEYS.includes(key)) {
         this._queue(key, value);
       }
     };
     localStorage.removeItem = (key: string): void => {
       removeItem(key);
-      if (!this._isApplyingRemote && SYNCED_KEYS.includes(key)) {
+      if (!this._isApplyingRemote && !IS_READ_ONLY_BOARD() && SYNCED_KEYS.includes(key)) {
         this._queue(key, null);
       }
     };
@@ -167,6 +195,51 @@ export class SyncedUiPrefsService {
   }
 
   /**
+   * Makes sure the preferences in this browser belong to the account being loaded, before anything reads them.
+   * localStorage is shared by everyone who uses this browser.
+   * Without a stamp, the last account's theme, colours and scope would be taken for the next one's, and `seedMissingFromLocal` would save them.
+   * Checked at every start rather than only on sign-out, so an expired session, a cleared cookie or a closed tab cannot skip it.
+   * Same reasoning as ReplicaIdentityGateService, which stamps the replica.
+   * Call after the gate has run and before `hydrateNow()`.
+   */
+  claimForCurrentIdentity(): PrefsOwnership {
+    const served = SERVED_BOARD_IDENTITY();
+    const ownership = decidePrefsOwnership(
+      localStorage.getItem(LS.UI_PREFS_OWNER),
+      served,
+      IS_READ_ONLY_BOARD(),
+    );
+    if (ownership === 'reset') {
+      this.forgetLocal();
+    }
+    if ((ownership === 'reset' || ownership === 'adopted') && served) {
+      localStorage.setItem(LS.UI_PREFS_OWNER, served);
+    }
+    return ownership;
+  }
+
+  /**
+   * Drops this browser's copy of the synced preferences without telling any account, so the account keeps its own.
+   * Used when they belong to someone else, and on sign-out.
+   */
+  forgetLocal(): void {
+    this._isApplyingRemote = true;
+    try {
+      for (const key of SYNCED_KEYS) {
+        localStorage.removeItem(key);
+      }
+      localStorage.removeItem(LS.UI_PREFS_OWNER);
+    } finally {
+      this._isApplyingRemote = false;
+    }
+    this._pending = {};
+    if (this._flushTimer) {
+      clearTimeout(this._flushTimer);
+      this._flushTimer = null;
+    }
+  }
+
+  /**
    * Writes the account's stored preferences into localStorage right now.
    *
    * Needed because most consumers read localStorage once, at construction or
@@ -179,6 +252,9 @@ export class SyncedUiPrefsService {
    * Returns the number of keys written, for logging.
    */
   hydrateNow(): number {
+    if (IS_READ_ONLY_BOARD()) {
+      return 0;
+    }
     const prefs = this._globalConfigService.misc()?.uiPrefs;
     if (!prefs) {
       return 0;
@@ -218,6 +294,9 @@ export class SyncedUiPrefsService {
    * Returns the number of keys seeded, for logging.
    */
   seedMissingFromLocal(): number {
+    if (IS_READ_ONLY_BOARD()) {
+      return 0;
+    }
     const current = this._globalConfigService.misc()?.uiPrefs ?? {};
     const next: Record<string, string> = { ...current };
     let seeded = 0;
@@ -251,7 +330,7 @@ export class SyncedUiPrefsService {
         takeUntilDestroyed(this._destroyRef),
       )
       .subscribe((prefs) => {
-        if (!prefs) {
+        if (!prefs || IS_READ_ONLY_BOARD()) {
           return;
         }
         const changed: string[] = [];

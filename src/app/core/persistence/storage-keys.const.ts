@@ -84,6 +84,11 @@ export enum LS {
 
   DARK_MODE = 'DARK_MODE',
   CUSTOM_THEME = 'CUSTOM_THEME',
+  NOTE_COLORS = 'SUP_NOTE_COLORS',
+  // Whose synced preferences this browser holds; local only, never synced.
+  UI_PREFS_OWNER = 'SUP_UI_PREFS_OWNER',
+  // Colours recently picked in the colour picker; a convenience, kept per browser.
+  RECENT_COLORS = 'SUP_RECENT_COLORS',
 
   SELECTED_BOARD = 'SELECTED_BOARD',
   GLOBAL_PROJECT_SCOPE = 'GLOBAL_PROJECT_SCOPE',

@@ -22,6 +22,13 @@ import { GlobalThemeService } from '../global-theme.service';
 import { DialogWallpaperComponent } from '../dialog-wallpaper/dialog-wallpaper.component';
 import { CustomTheme, CustomThemeRef, CustomThemeService } from '../custom-theme.service';
 import { ThemeStorageService } from '../theme-storage.service';
+import { NoteColorsService } from '../note-colors.service';
+import {
+  NOTE_COLOR_PRESETS,
+  NOTE_COLOR_THEME_DEFAULTS,
+  NoteColorField,
+} from '../note-colors.util';
+import { InputColorPickerComponent } from '../../../ui/input-color-picker/input-color-picker.component';
 import { SnackService } from '../../snack/snack.service';
 import { T } from '../../../t.const';
 import { TranslatePipe } from '@ngx-translate/core';
@@ -54,6 +61,7 @@ const valueToRef = (value: string): CustomThemeRef => {
     MatLabel,
     MatTooltip,
     TranslatePipe,
+    InputColorPickerComponent,
   ],
   template: `
     <div class="theme-selector-container">
@@ -132,6 +140,32 @@ const valueToRef = (value: string): CustomThemeRef => {
         />
       </div>
 
+      <div class="note-colors-select">
+        <h3>{{ T.GCF.MISC.NOTE_COLORS | translate }}</h3>
+        <div class="note-colors-pickers">
+          @for (field of noteColorFields; track field.key) {
+            <input-color-picker
+              [label]="field.label | translate"
+              [value]="noteColorsService.current()[field.key] ?? ''"
+              [presets]="noteColorPresets"
+              [allowDefault]="true"
+              [defaultColor]="noteColorDefaults[field.key]"
+              (valueChange)="noteColorsService.setColor(field.key, $event)"
+            />
+          }
+          <button
+            mat-stroked-button
+            type="button"
+            [disabled]="!hasNoteColors()"
+            (click)="noteColorsService.resetCurrentTheme()"
+          >
+            <mat-icon>restart_alt</mat-icon>
+            {{ T.GCF.MISC.NOTE_COLORS_RESET | translate }}
+          </button>
+        </div>
+        <p class="note-colors-hint">{{ T.GCF.MISC.NOTE_COLORS_HINT | translate }}</p>
+      </div>
+
       <div class="wallpaper-select">
         <h3>{{ T.GCF.MISC.WALLPAPER | translate }}</h3>
         <button
@@ -160,6 +194,26 @@ const valueToRef = (value: string): CustomThemeRef => {
         display: flex;
         align-items: center;
         gap: 16px;
+      }
+
+      .note-colors-select {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 16px;
+      }
+
+      .note-colors-pickers {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 16px;
+      }
+
+      .note-colors-hint {
+        flex-basis: 100%;
+        margin: 0;
+        opacity: 0.7;
       }
 
       h3 {
@@ -198,6 +252,7 @@ const valueToRef = (value: string): CustomThemeRef => {
       @media (max-width: 600px) {
         .dark-mode-select,
         .theme-select,
+        .note-colors-select,
         .wallpaper-select {
           flex-direction: column;
           align-items: flex-start;
@@ -214,6 +269,7 @@ const valueToRef = (value: string): CustomThemeRef => {
 export class ThemeSelectorComponent {
   readonly globalThemeService = inject(GlobalThemeService);
   readonly customThemeService = inject(CustomThemeService);
+  readonly noteColorsService = inject(NoteColorsService);
   private readonly _themeStorage = inject(ThemeStorageService);
   private readonly _snackService = inject(SnackService);
   private readonly _matDialog = inject(MatDialog);
@@ -222,6 +278,19 @@ export class ThemeSelectorComponent {
   readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
 
   readonly activeValue = computed(() => refToValue(this.customThemeService.activeRef()));
+
+  readonly noteColorFields: { key: NoteColorField; label: string }[] = [
+    { key: 'bg', label: T.GCF.MISC.NOTE_BG },
+    { key: 'fg', label: T.GCF.MISC.NOTE_FG },
+    { key: 'codeBg', label: T.GCF.MISC.NOTE_CODE_BG },
+  ];
+
+  readonly noteColorPresets = NOTE_COLOR_PRESETS;
+  readonly noteColorDefaults = NOTE_COLOR_THEME_DEFAULTS;
+
+  readonly hasNoteColors = computed(
+    () => Object.keys(this.noteColorsService.current()).length > 0,
+  );
 
   optionValue(theme: CustomTheme): string {
     return refToValue({ kind: theme.kind, id: theme.id });

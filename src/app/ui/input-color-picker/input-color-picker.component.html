@@ -6,7 +6,11 @@
   #trigger
   type="button"
   class="color-trigger"
-  [style.background-color]="value()"
+  [class.is-default]="isDefault()"
+  [style.background]="isDefault() ? defaultColor() : value()"
+  [attr.aria-label]="label() || (T.G.COLOR_PICKER_OPEN | translate)"
+  [attr.aria-expanded]="isOpen()"
+  [title]="isDefault() ? (T.G.COLOR_PICKER_DEFAULT | translate) : value()"
   (click)="toggle()"
 ></button>
 
@@ -17,45 +21,112 @@
   ></div>
   <div
     class="color-panel"
-    [style.position]="'fixed'"
+    role="dialog"
+    [attr.aria-label]="label() || (T.G.COLOR_PICKER_OPEN | translate)"
     [style.top]="panelTop"
     [style.left]="panelLeft"
   >
-    <div class="color-grid">
-      @for (color of presetColors; track color) {
+    @if (allowDefault()) {
+      <button
+        type="button"
+        class="default-btn"
+        [class.selected]="isDefault()"
+        (click)="selectColor('')"
+      >
+        <span
+          class="default-swatch"
+          [style.background]="defaultColor()"
+        ></span>
+        {{ T.G.COLOR_PICKER_DEFAULT | translate }}
+        @if (isDefault()) {
+          <mat-icon>check</mat-icon>
+        }
+      </button>
+    }
+
+    <div
+      #svSquare
+      class="sv-square"
+      [style.background-color]="hueColor()"
+      [attr.aria-label]="T.G.COLOR_PICKER_SHADE | translate"
+      (pointerdown)="onSvPointerDown($event)"
+    >
+      <div
+        class="sv-handle"
+        [style.left.%]="draft().s * 100"
+        [style.top.%]="(1 - draft().v) * 100"
+        [style.background-color]="draftHex()"
+      ></div>
+    </div>
+
+    <input
+      class="hue-slider"
+      type="range"
+      min="0"
+      max="359"
+      [value]="draft().h"
+      [attr.aria-label]="T.G.COLOR_PICKER_HUE | translate"
+      (input)="onHueInput($event)"
+      (change)="onHueChange()"
+    />
+
+    <div class="hex-row">
+      <span
+        class="hex-preview"
+        [style.background-color]="draftHex()"
+      ></span>
+      <input
+        class="hex-input"
+        type="text"
+        maxlength="7"
+        spellcheck="false"
+        autocomplete="off"
+        [value]="hexText()"
+        [attr.aria-label]="T.G.COLOR_PICKER_HEX | translate"
+        (input)="onHexInput($event)"
+        (keydown.enter)="onHexCommit()"
+        (blur)="onHexCommit()"
+      />
+      @if (hasEyeDropper) {
+        <button
+          type="button"
+          class="eyedropper-btn"
+          [title]="T.G.COLOR_PICKER_EYEDROPPER | translate"
+          [attr.aria-label]="T.G.COLOR_PICKER_EYEDROPPER | translate"
+          (click)="pickFromScreen()"
+        >
+          <mat-icon>colorize</mat-icon>
+        </button>
+      }
+    </div>
+
+    <div class="swatch-grid">
+      @for (color of presets(); track color) {
         <button
           type="button"
           class="color-swatch"
           [style.background-color]="color"
           [class.selected]="value() === color"
+          [title]="color"
           (click)="selectColor(color)"
-        >
-          @if (value() === color) {
-            <mat-icon>check</mat-icon>
-          }
-        </button>
+        ></button>
       }
-      <button
-        type="button"
-        class="color-swatch custom-color-btn"
-        [style.background-color]="isPresetColor() ? '' : value()"
-        [class.selected]="!isPresetColor()"
-        (click)="openNativePicker()"
-      >
-        @if (!isPresetColor()) {
-          <mat-icon>check</mat-icon>
-        } @else {
-          <mat-icon>colorize</mat-icon>
-        }
-      </button>
     </div>
+
+    @if (recent().length) {
+      <div class="swatch-label">{{ T.G.COLOR_PICKER_RECENT | translate }}</div>
+      <div class="swatch-grid">
+        @for (color of recent(); track color) {
+          <button
+            type="button"
+            class="color-swatch"
+            [style.background-color]="color"
+            [class.selected]="value() === color"
+            [title]="color"
+            (click)="selectColor(color)"
+          ></button>
+        }
+      </div>
+    }
   </div>
 }
-
-<input
-  #nativeInput
-  type="color"
-  class="native-color-input"
-  [value]="value()"
-  (change)="onNativeChange($event)"
-/>

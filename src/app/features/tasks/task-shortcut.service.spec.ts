@@ -26,6 +26,7 @@ describe('TaskShortcutService', () => {
     taskToggleDetailPanelOpen: 'I',
     taskOpenNotesPanel: 'N',
     taskOpenNotesFullscreen: 'Shift+N',
+    addNewNote: 'Alt+N',
     taskOpenEstimationDialog: 'T',
     taskSchedule: 'S',
     taskScheduleDeadline: 'Shift+S',
@@ -763,6 +764,34 @@ describe('TaskShortcutService', () => {
       );
       expect(mockTaskService.scheduleForTodayById).toHaveBeenCalledTimes(1);
       expect(staleComponent.moveToTodayWithFocus).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('add-note key on a selected task (board cards)', () => {
+    const altN = (): KeyboardEvent => createKeyboardEvent('n', 'KeyN', { altKey: true });
+    let openSpy: jasmine.Spy;
+
+    beforeEach(() => {
+      openSpy = spyOn(
+        service as unknown as { _openNotesFullscreen: (id: string) => void },
+        '_openNotesFullscreen',
+      );
+    });
+
+    it("opens the selected task's notes full screen when no task is focused", () => {
+      mockTaskService.selectedTaskId.set('board-card-1');
+      const ev = altN();
+
+      expect(service.handleTaskShortcuts(ev)).toBe(true);
+      expect(openSpy).toHaveBeenCalledWith('board-card-1');
+      expect(ev.defaultPrevented).toBe(true);
+    });
+
+    it('leaves the key to add-note when no task is focused or selected', () => {
+      mockTaskService.selectedTaskId.set(null);
+
+      expect(service.handleTaskShortcuts(altN())).toBe(false);
+      expect(openSpy).not.toHaveBeenCalled();
     });
   });
 });

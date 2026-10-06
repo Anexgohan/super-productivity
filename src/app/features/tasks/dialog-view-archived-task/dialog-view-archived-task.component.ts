@@ -13,6 +13,7 @@ import { TranslatePipe, TranslateService } from '@ngx-translate/core';
 import { MatIcon } from '@angular/material/icon';
 import { MatButton } from '@angular/material/button';
 import { MarkdownComponent } from 'ngx-markdown';
+import { NoteMarkdownExtrasDirective } from '../../../ui/markdown-extras/note-markdown-extras.directive';
 import { MsToStringPipe } from '../../../ui/duration/ms-to-string.pipe';
 import { LocaleDatePipe } from '../../../ui/pipes/locale-date.pipe';
 import { TaskAttachmentListComponent } from '../task-attachment/task-attachment-list/task-attachment-list.component';
@@ -47,6 +48,7 @@ export interface ViewArchivedTaskData {
     MatIcon,
     MatButton,
     MarkdownComponent,
+    NoteMarkdownExtrasDirective,
     MsToStringPipe,
     LocaleDatePipe,
     TaskAttachmentListComponent,

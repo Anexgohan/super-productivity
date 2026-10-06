@@ -5,6 +5,7 @@ import { DialogFullscreenMarkdownComponent } from '../../../ui/dialog-fullscreen
 import { NoteService } from '../note.service';
 import { FormsModule } from '@angular/forms';
 import { MarkdownComponent } from 'ngx-markdown';
+import { NoteMarkdownExtrasDirective } from '../../../ui/markdown-extras/note-markdown-extras.directive';
 import { MatButtonToggle, MatButtonToggleGroup } from '@angular/material/button-toggle';
 import { MatTooltip } from '@angular/material/tooltip';
 import { MatIcon } from '@angular/material/icon';
@@ -25,6 +26,7 @@ import { IS_MOBILE } from 'src/app/util/is-mobile';
   imports: [
     FormsModule,
     MarkdownComponent,
+    NoteMarkdownExtrasDirective,
     MatButtonToggleGroup,
     MatButtonToggle,
     MatTooltip,

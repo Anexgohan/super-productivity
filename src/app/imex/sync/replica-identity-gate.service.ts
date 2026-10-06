@@ -2,7 +2,7 @@ import { inject, Injectable } from '@angular/core';
 import { OperationLogStoreService } from '../../op-log/persistence/operation-log-store.service';
 import { OperationWriteFlushService } from '../../op-log/sync/operation-write-flush.service';
 import { SyncLog } from '../../core/log';
-import { IS_READ_ONLY_BOARD } from './container-authority.service';
+import { IS_READ_ONLY_BOARD, SERVED_BOARD_IDENTITY } from './container-authority.service';
 
 /** What the container says this browser is entitled to hold. */
 interface ServedIdentity {
@@ -174,6 +174,7 @@ export class ReplicaIdentityGateService {
   private async _probeContainer(): Promise<
     ServedIdentity | undefined | 'unauthenticated'
   > {
+    SERVED_BOARD_IDENTITY.set(null);
     const res = await fetch('/assets/sync-config-default-override.json', {
       cache: 'no-store',
     });
@@ -197,6 +198,7 @@ export class ReplicaIdentityGateService {
     ) {
       return undefined;
     }
+    SERVED_BOARD_IDENTITY.set(`${identity.instanceId}:${identity.userId}`);
     // Older bridges served an identity without this flag. Treating a missing
     // value as "has data" keeps them on the non-destructive branch.
     return { ...identity, serverHasData: identity.serverHasData !== false };

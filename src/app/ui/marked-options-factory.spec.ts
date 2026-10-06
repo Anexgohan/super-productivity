@@ -1,6 +1,7 @@
 import {
   escapeHtmlAttr,
   markedOptionsFactory,
+  noteMarkedExtension,
   parseImageDimensionsFromTitle,
   preprocessMarkdown,
 } from './marked-options-factory';
@@ -12,6 +13,7 @@ import { marked } from 'marked';
  */
 const parseWithFactory = (markdown: string): string => {
   marked.setOptions(marked.getDefaults());
+  marked.use(noteMarkedExtension());
   const options = markedOptionsFactory();
   marked.setOptions(options);
   return marked.parse(markdown) as string;
