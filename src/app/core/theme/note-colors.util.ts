@@ -3,13 +3,18 @@
  * Stored as one JSON map under `LS.NOTE_COLORS`, which follows the account through `SyncedUiPrefsService`.
  */
 
-export type NoteColorField = 'bg' | 'fg' | 'codeBg';
+export type NoteColorField = 'bg' | 'fg' | 'codeBg' | 'inlineCodeBg';
 
 export type NoteColors = Partial<Record<NoteColorField, string>>;
 
 export type NoteColorsByTheme = Record<string, NoteColors>;
 
-export const NOTE_COLOR_FIELDS: readonly NoteColorField[] = ['bg', 'fg', 'codeBg'];
+export const NOTE_COLOR_FIELDS: readonly NoteColorField[] = [
+  'bg',
+  'fg',
+  'codeBg',
+  'inlineCodeBg',
+];
 
 /**
  * The CSS custom property each field sets, and the root class that switches its rules on in `note-colors.scss`.
@@ -22,6 +27,7 @@ export const NOTE_COLOR_CSS: Record<
   bg: { cssVar: '--note-bg', rootClass: 'note-bg-set' },
   fg: { cssVar: '--note-fg', rootClass: 'note-fg-set' },
   codeBg: { cssVar: '--note-code-bg', rootClass: 'note-code-bg-set' },
+  inlineCodeBg: { cssVar: '--note-inline-code-bg', rootClass: 'note-inline-code-bg-set' },
 };
 
 /** Neutrals that work as a note background, text or code-block colour: darks first, then lights. The picker's hue square covers anything else. */
@@ -49,11 +55,16 @@ export const NOTE_COLOR_THEME_DEFAULTS: Record<NoteColorField, string> = {
   bg: 'var(--bg-lightest)',
   fg: 'var(--text-color)',
   codeBg: 'var(--c-dark-10)',
+  // Inline code has no background of its own unless a theme gives it one.
+  inlineCodeBg: 'transparent',
 };
 
-const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+const HEX_COLOR = /^#[0-9a-f]{6}([0-9a-f]{2})?$/i;
 
-/** The pickers only produce #rrggbb, so anything else came from a corrupt or foreign value and is dropped rather than written into a style. */
+/**
+ * The pickers only produce #rrggbb, or #rrggbbaa for a see-through tint.
+ * Anything else came from a corrupt or foreign value and is dropped rather than written into a style.
+ */
 const isNoteColor = (value: unknown): value is string =>
   typeof value === 'string' && HEX_COLOR.test(value);
 

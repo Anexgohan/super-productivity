@@ -108,7 +108,8 @@ One caveat: most settings read their stored value once, at construction, so a
 preference changed on another device applies here on the next reload rather than
 instantly. Dark mode, the theme and the note colours are wired to react live.
 
-Note colours (Settings, next to the theme picker) override the background, text and code-block colours of notes in the task panel, project notes and the full-screen editor.
+Note colours (Settings, next to the theme picker) override the background, text, code-block and inline-code colours of notes in the task panel, project notes and the full-screen editor.
+Note colours can be see-through (`#rrggbbaa`, from the picker's opacity strip), so a light tint, on code blocks especially, suits whatever background sits behind it; theme, project and tag colours stay solid because Material's palette and contrast maths assume it.
 They are saved per theme and per light/dark variant under `SUP_NOTE_COLORS`, so a colour picked for dark Plainspace never lands on a light theme.
 A colour only takes effect once picked: each one switches on its own rules in `src/styles/components/note-colors.scss`, so an unset colour leaves the theme untouched, and a set one wins even over themes that style notes with `!important`.
 

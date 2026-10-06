@@ -149,6 +149,7 @@ const valueToRef = (value: string): CustomThemeRef => {
               [value]="noteColorsService.current()[field.key] ?? ''"
               [presets]="noteColorPresets"
               [allowDefault]="true"
+              [allowAlpha]="true"
               [defaultColor]="noteColorDefaults[field.key]"
               (valueChange)="noteColorsService.setColor(field.key, $event)"
             />
@@ -283,6 +284,7 @@ export class ThemeSelectorComponent {
     { key: 'bg', label: T.GCF.MISC.NOTE_BG },
     { key: 'fg', label: T.GCF.MISC.NOTE_FG },
     { key: 'codeBg', label: T.GCF.MISC.NOTE_CODE_BG },
+    { key: 'inlineCodeBg', label: T.GCF.MISC.NOTE_INLINE_CODE_BG },
   ];
 
   readonly noteColorPresets = NOTE_COLOR_PRESETS;

@@ -1,4 +1,11 @@
-import { hexToHsv, hsvToHex, normalizeHex, pushRecentColor } from './color-picker.util';
+import {
+  hexToHsv,
+  hsvToHex,
+  normalizeHex,
+  pushRecentColor,
+  splitAlpha,
+  withAlpha,
+} from './color-picker.util';
 
 describe('color-picker.util', () => {
   describe('normalizeHex', () => {
@@ -12,6 +19,40 @@ describe('color-picker.util', () => {
     it('refuses anything that is not a hex colour', () => {
       for (const bad of ['', '#12', '#12345', '#1234567', 'red', '#ggg', 'rgb(1,2,3)']) {
         expect(normalizeHex(bad)).toBeNull();
+      }
+    });
+
+    it('refuses opacity unless the picker allows it', () => {
+      expect(normalizeHex('#11223344')).toBeNull();
+      expect(normalizeHex('#1234')).toBeNull();
+    });
+
+    it('keeps opacity when allowed, and drops it when fully opaque', () => {
+      expect(normalizeHex('#11223344', true)).toBe('#11223344');
+      expect(normalizeHex('#1234', true)).toBe('#11223344');
+      expect(normalizeHex('#112233FF', true)).toBe('#112233');
+      expect(normalizeHex('#abc', true)).toBe('#aabbcc');
+      expect(normalizeHex('#1122334', true)).toBeNull();
+    });
+  });
+
+  describe('splitAlpha / withAlpha', () => {
+    it('splits a colour into its solid part and opacity', () => {
+      expect(splitAlpha('#11223380')).toEqual({ rgb: '#112233', alpha: 128 / 255 });
+      expect(splitAlpha('#112233')).toEqual({ rgb: '#112233', alpha: 1 });
+    });
+
+    it('adds opacity, clamped, and leaves solid colours solid', () => {
+      expect(withAlpha('#112233', 0.5)).toBe('#11223380');
+      expect(withAlpha('#112233', 0)).toBe('#11223300');
+      expect(withAlpha('#112233', 1)).toBe('#112233');
+      expect(withAlpha('#11223344', 2)).toBe('#112233');
+    });
+
+    it('round-trips through each other', () => {
+      for (const hex of ['#1e1e2e1a', '#faf6ef', '#29a1aa00']) {
+        const { rgb, alpha } = splitAlpha(hex);
+        expect(withAlpha(rgb, alpha)).toBe(hex);
       }
     });
   });
@@ -36,6 +77,10 @@ describe('color-picker.util', () => {
       ]) {
         expect(hsvToHex(hexToHsv(hex))).toBe(hex);
       }
+    });
+
+    it('ignores opacity', () => {
+      expect(hexToHsv('#ff000080')).toEqual({ h: 0, s: 1, v: 1 });
     });
   });
 

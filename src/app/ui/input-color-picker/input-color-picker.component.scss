@@ -2,6 +2,15 @@
   display: inline-block;
   position: relative;
   margin-bottom: var(--s);
+  --checker: repeating-conic-gradient(#c8c8c8 0% 25%, #fff 0% 50%) 0 0 / 8px 8px;
+}
+
+// Every swatch shows its colour (`--swatch`) over a checkerboard, so a see-through colour reads as see-through.
+.color-trigger,
+.default-swatch,
+.hex-preview,
+.color-swatch {
+  background: linear-gradient(var(--swatch), var(--swatch)), var(--checker);
 }
 
 .color-label {
@@ -105,23 +114,14 @@
   pointer-events: none;
 }
 
-.hue-slider {
+.hue-slider,
+.alpha-slider {
   appearance: none;
   width: 100%;
   height: 12px;
   margin: 0;
   border-radius: 6px;
   cursor: pointer;
-  background: linear-gradient(
-    to right,
-    #f00 0%,
-    #ff0 17%,
-    #0f0 33%,
-    #0ff 50%,
-    #00f 67%,
-    #f0f 83%,
-    #f00 100%
-  );
 
   &::-webkit-slider-thumb {
     appearance: none;
@@ -141,6 +141,24 @@
     background: transparent;
     box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
   }
+}
+
+.hue-slider {
+  background: linear-gradient(
+    to right,
+    #f00 0%,
+    #ff0 17%,
+    #0f0 33%,
+    #0ff 50%,
+    #00f 67%,
+    #f0f 83%,
+    #f00 100%
+  );
+}
+
+// Opacity runs from clear on the left to the solid colour on the right.
+.alpha-slider {
+  background: linear-gradient(to right, transparent, var(--swatch)), var(--checker);
 }
 
 .hex-row {

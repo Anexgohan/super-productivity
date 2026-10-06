@@ -7,7 +7,7 @@
   type="button"
   class="color-trigger"
   [class.is-default]="isDefault()"
-  [style.background]="isDefault() ? defaultColor() : value()"
+  [style.--swatch]="isDefault() ? defaultColor() : value()"
   [attr.aria-label]="label() || (T.G.COLOR_PICKER_OPEN | translate)"
   [attr.aria-expanded]="isOpen()"
   [title]="isDefault() ? (T.G.COLOR_PICKER_DEFAULT | translate) : value()"
@@ -35,7 +35,7 @@
       >
         <span
           class="default-swatch"
-          [style.background]="defaultColor()"
+          [style.--swatch]="defaultColor()"
         ></span>
         {{ T.G.COLOR_PICKER_DEFAULT | translate }}
         @if (isDefault()) {
@@ -55,7 +55,7 @@
         class="sv-handle"
         [style.left.%]="draft().s * 100"
         [style.top.%]="(1 - draft().v) * 100"
-        [style.background-color]="draftHex()"
+        [style.background-color]="draftRgb()"
       ></div>
     </div>
 
@@ -70,15 +70,29 @@
       (change)="onHueChange()"
     />
 
+    @if (allowAlpha()) {
+      <input
+        class="alpha-slider"
+        type="range"
+        min="0"
+        max="100"
+        [value]="alpha() * 100"
+        [style.--swatch]="draftRgb()"
+        [attr.aria-label]="T.G.COLOR_PICKER_OPACITY | translate"
+        (input)="onAlphaInput($event)"
+        (change)="onAlphaChange()"
+      />
+    }
+
     <div class="hex-row">
       <span
         class="hex-preview"
-        [style.background-color]="draftHex()"
+        [style.--swatch]="draftHex()"
       ></span>
       <input
         class="hex-input"
         type="text"
-        maxlength="7"
+        [attr.maxlength]="allowAlpha() ? 9 : 7"
         spellcheck="false"
         autocomplete="off"
         [value]="hexText()"
@@ -105,7 +119,7 @@
         <button
           type="button"
           class="color-swatch"
-          [style.background-color]="color"
+          [style.--swatch]="color"
           [class.selected]="value() === color"
           [title]="color"
           (click)="selectColor(color)"
@@ -120,7 +134,7 @@
           <button
             type="button"
             class="color-swatch"
-            [style.background-color]="color"
+            [style.--swatch]="color"
             [class.selected]="value() === color"
             [title]="color"
             (click)="selectColor(color)"

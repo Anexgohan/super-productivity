@@ -20,6 +20,8 @@ import {
   hsvToHex,
   normalizeHex,
   pushRecentColor,
+  splitAlpha,
+  withAlpha,
 } from './color-picker.util';
 
 interface EyeDropperResult {
@@ -28,14 +30,14 @@ interface EyeDropperResult {
 type EyeDropperCtor = new () => { open(): Promise<EyeDropperResult> };
 
 const PANEL_WIDTH = 236;
-const PANEL_HEIGHT = 380;
+const PANEL_HEIGHT = 404;
 const PANEL_GAP = 4;
 
 const readRecent = (): string[] => {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(LS.RECENT_COLORS) || '[]');
     return Array.isArray(parsed)
-      ? parsed.map((c) => normalizeHex(String(c))).filter((c): c is string => !!c)
+      ? parsed.map((c) => normalizeHex(String(c), true)).filter((c): c is string => !!c)
       : [];
   } catch {
     return [];
@@ -48,6 +50,9 @@ const readRecent = (): string[] => {
  * The browser's own colour dialog never opens; on Linux that was the GTK chooser.
  * Dragging only previews; the colour is sent on release, so one pick is one change rather than one per pixel.
  * With `allowDefault`, an empty value means "use the default", shown as `defaultColor` with a dashed ring and offered as the panel's first choice.
+ * With `allowAlpha`, an opacity strip is added and colours may be `#rrggbbaa`, for tints over whatever lies behind.
+ * Only for colours drawn as plain backgrounds or text.
+ * Theme, project and tag colours feed Material's palette and contrast maths, which assume a solid colour.
  */
 @Component({
   selector: 'input-color-picker',
@@ -61,6 +66,7 @@ export class InputColorPickerComponent {
   readonly label = input<string>('');
   readonly presets = input<readonly string[]>(PRESET_COLORS);
   readonly allowDefault = input<boolean>(false);
+  readonly allowAlpha = input<boolean>(false);
   /** What the trigger shows while the value is empty: any CSS colour, e.g. a theme variable. */
   readonly defaultColor = input<string>('transparent');
   readonly valueChange = output<string>();
@@ -71,13 +77,23 @@ export class InputColorPickerComponent {
   readonly isOpen = signal(false);
   readonly draft = signal<Hsv>({ h: 0, s: 0, v: 0 });
   readonly hexText = signal('');
-  readonly recent = signal<string[]>([]);
+  readonly alpha = signal(1);
+  /** Every recent colour in this browser, shared by all pickers. */
+  private readonly _allRecent = signal<string[]>([]);
+  /** The ones this picker can produce: a solid-only picker hides colours with opacity. */
+  readonly recent = computed(() =>
+    this._allRecent().filter((c) => normalizeHex(c, this.allowAlpha()) === c),
+  );
   readonly hasEyeDropper = 'EyeDropper' in window;
 
   readonly isDefault = computed(
     () => this.allowDefault() && !normalizeHex(this.value() || ''),
   );
-  readonly draftHex = computed(() => hsvToHex(this.draft()));
+  /** The draft without its opacity: what the shade square and its handle show. */
+  readonly draftRgb = computed(() => hsvToHex(this.draft()));
+  readonly draftHex = computed(() =>
+    this.allowAlpha() ? withAlpha(this.draftRgb(), this.alpha()) : this.draftRgb(),
+  );
   readonly hueColor = computed(() => hsvToHex({ h: this.draft().h, s: 1, v: 1 }));
 
   panelTop = '';
@@ -95,10 +111,9 @@ export class InputColorPickerComponent {
       this.isOpen.set(false);
       return;
     }
-    const current = normalizeHex(this.value() || '') ?? '#808080';
-    this.draft.set(hexToHsv(current));
-    this.hexText.set(current);
-    this.recent.set(readRecent());
+    const current = normalizeHex(this.value() || '', this.allowAlpha()) ?? '#808080';
+    this._setDraft(current);
+    this._allRecent.set(readRecent());
     this._updatePanelPosition();
     this.isOpen.set(true);
   }
@@ -136,15 +151,27 @@ export class InputColorPickerComponent {
     this._commitDraft();
   }
 
+  onAlphaInput(ev: Event): void {
+    this.alpha.set(+(ev.target as HTMLInputElement).value / 100);
+    this.hexText.set(this.draftHex());
+  }
+
+  onAlphaChange(): void {
+    this._commitDraft();
+  }
+
   onHexInput(ev: Event): void {
     const text = (ev.target as HTMLInputElement).value;
     this.hexText.set(text);
-    const hex = normalizeHex(text);
-    if (hex) this.draft.set(hexToHsv(hex));
+    const hex = normalizeHex(text, this.allowAlpha());
+    if (hex) {
+      this.draft.set(hexToHsv(hex));
+      this.alpha.set(splitAlpha(hex).alpha);
+    }
   }
 
   onHexCommit(): void {
-    const hex = normalizeHex(this.hexText());
+    const hex = normalizeHex(this.hexText(), this.allowAlpha());
     if (hex) {
       this._emit(hex);
     } else {
@@ -157,10 +184,11 @@ export class InputColorPickerComponent {
     if (!ctor) return;
     try {
       const { sRGBHex } = await new ctor().open();
-      const hex = normalizeHex(sRGBHex);
-      if (hex) {
-        this.draft.set(hexToHsv(hex));
-        this.hexText.set(hex);
+      const picked = normalizeHex(sRGBHex);
+      if (picked) {
+        // The screen gives a solid colour; any opacity already set is kept.
+        const hex = this.allowAlpha() ? withAlpha(picked, this.alpha()) : picked;
+        this._setDraft(hex);
         this._emit(hex);
       }
     } catch {
@@ -176,15 +204,21 @@ export class InputColorPickerComponent {
     this.hexText.set(this.draftHex());
   }
 
+  private _setDraft(hex: string): void {
+    this.draft.set(hexToHsv(hex));
+    this.alpha.set(splitAlpha(hex).alpha);
+    this.hexText.set(hex);
+  }
+
   private _commitDraft(): void {
     this._emit(this.draftHex());
   }
 
   private _emit(color: string): void {
-    const hex = normalizeHex(color);
+    const hex = normalizeHex(color, this.allowAlpha());
     if (hex && !this.presets().includes(hex)) {
       const next = pushRecentColor(readRecent(), hex);
-      this.recent.set(next);
+      this._allRecent.set(next);
       try {
         localStorage.setItem(LS.RECENT_COLORS, JSON.stringify(next));
       } catch {

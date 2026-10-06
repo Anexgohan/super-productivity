@@ -30,19 +30,19 @@ describe('note-colors.util', () => {
       expect(parseNoteColors('"#ffffff"')).toEqual({});
     });
 
-    it('keeps #rrggbb colours and drops anything else', () => {
+    it('keeps #rrggbb and #rrggbbaa colours and drops anything else', () => {
       const raw = JSON.stringify({
         [PLAIN_DARK]: {
           bg: '#1e1e2e',
           fg: 'red; position: fixed',
-          codeBg: '#ABCDEF',
+          codeBg: '#ABCDEF33',
           extra: '#000000',
         },
-        [ZEN_LIGHT]: { bg: 'url(x)' },
+        [ZEN_LIGHT]: { bg: 'url(x)', fg: '#1234567', codeBg: '#12345' },
         [NORD_DARK]: null,
       });
       expect(parseNoteColors(raw)).toEqual({
-        [PLAIN_DARK]: { bg: '#1e1e2e', codeBg: '#ABCDEF' },
+        [PLAIN_DARK]: { bg: '#1e1e2e', codeBg: '#ABCDEF33' },
       });
     });
   });

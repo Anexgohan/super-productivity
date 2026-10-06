@@ -1,4 +1,7 @@
-/** Colour maths for the in-app picker: hue/saturation/value for the shade square and hue strip, `#rrggbb` everywhere else. */
+/**
+ * Colour maths for the in-app picker.
+ * Hue/saturation/value for the shade square and hue strip, `#rrggbb` (or `#rrggbbaa` with opacity) everywhere else.
+ */
 
 export interface Hsv {
   /** 0-360 */
@@ -9,21 +12,42 @@ export interface Hsv {
   v: number;
 }
 
-/** Accepts `#rgb`, `rgb`, `#rrggbb` or `rrggbb` in any case; returns lowercase `#rrggbb`, or null for anything else. */
-export const normalizeHex = (input: string): string | null => {
-  const raw = input.trim().replace(/^#/, '');
-  if (/^[0-9a-f]{3}$/i.test(raw)) {
-    return `#${raw
-      .split('')
-      .map((c) => c + c)
-      .join('')
-      .toLowerCase()}`;
-  }
-  return /^[0-9a-f]{6}$/i.test(raw) ? `#${raw.toLowerCase()}` : null;
+const expandShort = (raw: string): string =>
+  raw
+    .split('')
+    .map((c) => c + c)
+    .join('');
+
+/**
+ * Accepts `#rgb`, `rgb`, `#rrggbb` or `rrggbb` in any case; returns lowercase `#rrggbb`, or null for anything else.
+ * With `allowAlpha`, `#rgba` and `#rrggbbaa` are accepted too and kept as `#rrggbbaa`; a fully opaque one comes back as `#rrggbb`.
+ */
+export const normalizeHex = (input: string, allowAlpha = false): string | null => {
+  let raw = input.trim().replace(/^#/, '').toLowerCase();
+  if (raw.length === 3 || (allowAlpha && raw.length === 4)) raw = expandShort(raw);
+  const isValid =
+    /^[0-9a-f]+$/.test(raw) && (raw.length === 6 || (allowAlpha && raw.length === 8));
+  if (!isValid) return null;
+  return raw.endsWith('ff') && raw.length === 8 ? `#${raw.slice(0, 6)}` : `#${raw}`;
 };
 
+/** Splits `#rrggbb` or `#rrggbbaa` into the solid colour and its opacity, 0-1. */
+export const splitAlpha = (hex: string): { rgb: string; alpha: number } => ({
+  rgb: hex.slice(0, 7),
+  alpha: hex.length === 9 ? parseInt(hex.slice(7, 9), 16) / 255 : 1,
+});
+
+/** `#rrggbb` plus an opacity of 0-1; fully opaque stays `#rrggbb`. */
+export const withAlpha = (rgb: string, alpha: number): string => {
+  const byte = Math.round(Math.min(1, Math.max(0, alpha)) * 255);
+  return byte === 255
+    ? rgb.slice(0, 7)
+    : `${rgb.slice(0, 7)}${byte.toString(16).padStart(2, '0')}`;
+};
+
+/** Only the solid colour counts; any opacity is ignored. */
 export const hexToHsv = (hex: string): Hsv => {
-  const norm = normalizeHex(hex) ?? '#000000';
+  const norm = normalizeHex(hex, true)?.slice(0, 7) ?? '#000000';
   const r = parseInt(norm.slice(1, 3), 16) / 255;
   const g = parseInt(norm.slice(3, 5), 16) / 255;
   const b = parseInt(norm.slice(5, 7), 16) / 255;

@@ -33,8 +33,7 @@
 }
 
 :root.note-code-bg-set {
-  .markdown pre,
-  .markdown :not(pre) > code {
+  .markdown pre {
     background: var(--note-code-bg) !important;
     border-radius: 4px;
   }
@@ -42,4 +41,11 @@
   .markdown pre code {
     background: transparent !important;
   }
+}
+
+// `code` spans in running text, set apart from fenced blocks; the padding keeps the tint off the letters.
+:root.note-inline-code-bg-set .markdown :not(pre) > code {
+  background: var(--note-inline-code-bg) !important;
+  border-radius: 4px;
+  padding: 0 0.25em;
 }
