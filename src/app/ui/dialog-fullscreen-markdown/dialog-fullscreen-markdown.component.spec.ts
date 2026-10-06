@@ -97,7 +97,11 @@ describe('DialogFullscreenMarkdownComponent', () => {
 
     it('sends a checklist toggle to the code editor when it is showing', () => {
       const setValue = jasmine.createSpy('setValue');
-      component['_codeEditor'] = { setValue } as never;
+      // destroy too: with no editor element on screen, the component tears the editor down on the next change detection.
+      component['_codeEditor'] = {
+        setValue,
+        destroy: jasmine.createSpy('destroy'),
+      } as never;
       const wrapper = document.createElement('li');
       wrapper.className = 'checkbox-wrapper undone';
       const checkbox = document.createElement('span');
