@@ -6,6 +6,8 @@
  * That SVG is inserted after the note filter, because the filter refuses the `<style>` Mermaid needs.
  */
 
+import { loadMermaid } from './load-mermaid';
+
 type MermaidApi = typeof import('mermaid').default;
 
 export interface MermaidTheme {
@@ -20,9 +22,9 @@ let mermaidPromise: Promise<MermaidApi> | null = null;
 let queue: Promise<unknown> = Promise.resolve();
 let renderCount = 0;
 
-const loadMermaid = (): Promise<MermaidApi> => {
+const getMermaid = (): Promise<MermaidApi> => {
   if (!mermaidPromise) {
-    mermaidPromise = import('mermaid').then((m) => m.default);
+    mermaidPromise = loadMermaid();
   }
   return mermaidPromise;
 };
@@ -41,7 +43,7 @@ const drawSerially = (
   theme: MermaidTheme,
 ): Promise<{ svg: string } | { error: string }> => {
   const job = queue.then(async () => {
-    const mermaid = await loadMermaid();
+    const mermaid = await getMermaid();
     mermaid.initialize({
       startOnLoad: false,
       securityLevel: 'strict',

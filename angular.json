@@ -235,6 +235,12 @@
           "builder": "@angular-devkit/build-angular:karma",
           "options": {
             "main": "src/test.ts",
+            "fileReplacements": [
+              {
+                "replace": "src/app/ui/markdown-extras/load-mermaid.ts",
+                "with": "src/app/ui/markdown-extras/load-mermaid.stub.ts"
+              }
+            ],
             "polyfills": ["zone.js", "zone.js/testing", "src/polyfills.ts"],
             "tsConfig": "src/tsconfig.spec.json",
             "preserveSymlinks": true,
