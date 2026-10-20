@@ -10,9 +10,18 @@
 
 // While a project is selected the control has to read as active: it is hiding
 // things, and an unremarkable dropdown gives no cue that anything is filtered.
+// The project's own icon and colour carry that, so the label only goes bold.
 .scope-btn.isScoped {
-  color: var(--c-accent);
   font-weight: bold;
+}
+
+// Emoji project icons, set the way the header title draws them (see page-title.component).
+.scope-icon--emoji {
+  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+  font-feature-settings: normal;
+  font-variation-settings: normal;
+  text-transform: none;
+  letter-spacing: normal;
 }
 
 .scope-label {

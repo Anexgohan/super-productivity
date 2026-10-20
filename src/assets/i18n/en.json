@@ -1693,6 +1693,7 @@
         "TIMEOUT_ERROR": "Sync operation timed out. {{suggestion}}",
         "TOO_MANY_OPS_TO_DOWNLOAD": "Too many sync operations to download. Some changes may be missing.",
         "UNKNOWN_ERROR": "Unknown Sync Error: {{err}}",
+        "UPLOAD_BLOCKED": "Your changes are saved on this device but are not being uploaded: the server refused an earlier full data upload from it. Other devices will not see them until this is resolved.",
         "UPLOAD_ERROR": "Unknown Upload Error (Settings correct?): {{err}}",
         "UPLOAD_OPS_REJECTED": "{{count}} operation(s) were permanently rejected by the server and won't be synced.",
         "VECTOR_CLOCK_LIMIT_REACHED": "Sync tidied up old device entries ({{originalSize}} → {{maxSize}}). This is normal. To clear them for good: sync all devices, then export and re-import a backup (Settings → Import/Export).",

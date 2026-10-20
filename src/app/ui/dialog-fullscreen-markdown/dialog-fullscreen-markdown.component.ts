@@ -68,6 +68,11 @@ import { IS_IOS } from 'src/app/util/is-ios';
 import { Keyboard } from '@capacitor/keyboard';
 import { DialogMarkdownShortcutsComponent } from './dialog-markdown-shortcuts.component';
 import {
+  addSourceLineMarkers,
+  MarkdownScrollSync,
+  ScrollSyncEditor,
+} from './markdown-scroll-sync';
+import {
   isShortcutWithKey,
   MARKDOWN_SHORTCUTS,
   MarkdownShortcut,
@@ -119,6 +124,7 @@ export class DialogFullscreenMarkdownComponent implements OnInit, AfterViewInit 
   private _codeEditor: NoteCodeEditor | null = null;
   /** The caret to carry from the text box into CodeMirror when it takes over. */
   private _handoverSelection: { start: number; end: number } | undefined;
+  private readonly _scrollSync = new MarkdownScrollSync();
   readonly contentChanged = output<string>();
   private readonly _contentChanges$ = new Subject<string>();
   private _currentPastePlaceholder: string | null = null;
@@ -134,7 +140,7 @@ export class DialogFullscreenMarkdownComponent implements OnInit, AfterViewInit 
 
   constructor() {
     // Set initial content synchronously for immediate rendering
-    this.resolvedContentData = this.data.content || '';
+    this.resolvedContentData = addSourceLineMarkers(this.data.content || '');
 
     const lastViewMode = localStorage.getItem(LS.LAST_FULLSCREEN_EDIT_VIEW_MODE);
     if (
@@ -152,7 +158,8 @@ export class DialogFullscreenMarkdownComponent implements OnInit, AfterViewInit 
 
     // Sync signal to plain property for markdown component
     effect(() => {
-      this.resolvedContentData = this.resolvedContent();
+      // Tagged with source lines so scroll sync knows which block came from where; the tags render as nothing.
+      this.resolvedContentData = addSourceLineMarkers(this.resolvedContent());
       this._cdr.markForCheck();
     });
 
@@ -166,9 +173,18 @@ export class DialogFullscreenMarkdownComponent implements OnInit, AfterViewInit 
           this._codeEditor.destroy();
           this._codeEditor = null;
         }
+        this._updateScrollSync();
       });
     });
     this._destroyRef.onDestroy(() => this._codeEditor?.destroy());
+
+    // Scroll sync needs both halves on screen, and each comes and goes with the view mode.
+    effect(() => {
+      this.previewEl();
+      this.textareaEl();
+      untracked(() => this._updateScrollSync());
+    });
+    this._destroyRef.onDestroy(() => this._scrollSync.detach());
 
     // Auto-save with debounce
     this._contentChanges$
@@ -288,6 +304,28 @@ export class DialogFullscreenMarkdownComponent implements OnInit, AfterViewInit 
   /** Whichever editor is showing: CodeMirror once loaded, the plain text box before that. */
   private _editable(): EditableText | null {
     return this._codeEditor ?? this.textareaEl()?.nativeElement ?? null;
+  }
+
+  /** Keeps the preview and whichever editor is showing scrolling together, or stops when either half is off screen. */
+  private _updateScrollSync(): void {
+    const preview = this.previewEl()?.element.nativeElement as HTMLElement | undefined;
+    const codeEditor = this._codeEditor;
+    const textarea = this.textareaEl()?.nativeElement as HTMLTextAreaElement | undefined;
+    const editor: ScrollSyncEditor | undefined = codeEditor?.scrollElement
+      ? { el: codeEditor.scrollElement, lineTopPx: (line) => codeEditor.lineTopPx(line) }
+      : textarea
+        ? { el: textarea }
+        : undefined;
+    if (preview && editor) {
+      this._scrollSync.attach(editor, preview);
+    } else {
+      this._scrollSync.detach();
+    }
+  }
+
+  /** A re-render moves the preview's blocks, so it is put back level with the editor. */
+  onPreviewReady(): void {
+    this._scrollSync.syncFromEditor();
   }
 
   /** Puts new note text in the editor; CodeMirror reports the change back through its own listener. */

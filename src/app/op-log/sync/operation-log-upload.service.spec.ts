@@ -13,13 +13,17 @@ import { ActionType, OpType, OperationLogEntry } from '../core/operation.types';
 import { SnackService } from '../../core/snack/snack.service';
 import { provideMockStore } from '@ngrx/store/testing';
 import { StateSnapshotService } from '../backup/state-snapshot.service';
-import { IS_READ_ONLY_BOARD } from '../../imex/sync/container-authority.service';
+import {
+  ContainerAuthorityService,
+  IS_READ_ONLY_BOARD,
+} from '../../imex/sync/container-authority.service';
 
 describe('OperationLogUploadService', () => {
   let service: OperationLogUploadService;
   let mockOpLogStore: jasmine.SpyObj<OperationLogStoreService>;
   let mockLockService: jasmine.SpyObj<LockService>;
   let mockStateSnapshotService: jasmine.SpyObj<StateSnapshotService>;
+  let mockContainerAuthority: jasmine.SpyObj<ContainerAuthorityService>;
 
   const createMockEntry = (
     seq: number,
@@ -70,6 +74,10 @@ describe('OperationLogUploadService', () => {
     mockOpLogStore.getLatestRejectedFullStateOpEntry.and.resolveTo(undefined);
     mockOpLogStore.markSynced.and.returnValue(Promise.resolve());
     mockOpLogStore.deleteOpsWhere.and.returnValue(Promise.resolve());
+    mockContainerAuthority = jasmine.createSpyObj('ContainerAuthorityService', [
+      'isContainerManaged',
+    ]);
+    mockContainerAuthority.isContainerManaged.and.resolveTo(false);
 
     TestBed.configureTestingModule({
       providers: [
@@ -78,6 +86,7 @@ describe('OperationLogUploadService', () => {
         { provide: OperationLogStoreService, useValue: mockOpLogStore },
         { provide: LockService, useValue: mockLockService },
         { provide: StateSnapshotService, useValue: mockStateSnapshotService },
+        { provide: ContainerAuthorityService, useValue: mockContainerAuthority },
         {
           provide: SnackService,
           useValue: jasmine.createSpyObj('SnackService', ['open']),
@@ -1492,6 +1501,91 @@ describe('OperationLogUploadService', () => {
         expect(mockOpLogStore.getLatestRejectedFullStateOpEntry).toHaveBeenCalled();
         expect(result.uploadedCount).toBe(0);
         expect(result.blockedByRejectedFullState).toBe(true);
+      });
+
+      describe('rejected SYNC_IMPORT under container management', () => {
+        const rejectedSyncImport = (): OperationLogEntry => {
+          const entry = createFullStateEntry(
+            1,
+            'rejected-sync-import',
+            'client-1',
+            OpType.SyncImport,
+          );
+          entry.rejectedAt = Date.now();
+          return entry;
+        };
+
+        it('discards it and uploads the edits made since', async () => {
+          const rejectedImport = rejectedSyncImport();
+          const pendingEdit = createMockEntry(2, 'pending-edit', 'client-1');
+          mockContainerAuthority.isContainerManaged.and.resolveTo(true);
+          mockOpLogStore.getUnsynced.and.resolveTo([pendingEdit]);
+          mockOpLogStore.getLatestRejectedFullStateOpEntry.and.returnValues(
+            Promise.resolve(rejectedImport),
+            Promise.resolve(undefined),
+          );
+          mockApiProvider.uploadOps.and.resolveTo({
+            results: [{ opId: pendingEdit.op.id, accepted: true }],
+            latestSeq: 2,
+            newOps: [],
+          });
+
+          const result = await service.uploadPendingOps(mockApiProvider);
+
+          expect(mockOpLogStore.deleteOpsWhere).toHaveBeenCalledTimes(1);
+          const isDeleted = mockOpLogStore.deleteOpsWhere.calls.mostRecent().args[0];
+          expect(isDeleted(rejectedImport)).toBe(true);
+          expect(isDeleted(pendingEdit)).toBe(false);
+          expect(mockApiProvider.uploadOps).toHaveBeenCalled();
+          expect(result.uploadedCount).toBe(1);
+          expect(result.blockedByRejectedFullState).toBeUndefined();
+        });
+
+        it('stops rather than spins when the delete does not take', async () => {
+          const rejectedImport = rejectedSyncImport();
+          mockContainerAuthority.isContainerManaged.and.resolveTo(true);
+          mockOpLogStore.getLatestRejectedFullStateOpEntry.and.resolveTo(rejectedImport);
+
+          const result = await service.uploadPendingOps(mockApiProvider);
+
+          expect(mockOpLogStore.deleteOpsWhere).toHaveBeenCalledTimes(1);
+          expect(result.blockedByRejectedFullState).toBe(true);
+        });
+
+        it('keeps the barrier when the client is not container-managed', async () => {
+          const pendingEdit = createMockEntry(2, 'pending-edit', 'client-1');
+          mockOpLogStore.getUnsynced.and.resolveTo([pendingEdit]);
+          mockOpLogStore.getLatestRejectedFullStateOpEntry.and.resolveTo(
+            rejectedSyncImport(),
+          );
+
+          const result = await service.uploadPendingOps(mockApiProvider);
+
+          expect(mockOpLogStore.deleteOpsWhere).not.toHaveBeenCalled();
+          expect(mockApiProvider.uploadOps).not.toHaveBeenCalled();
+          expect(result.blockedByRejectedFullState).toBe(true);
+        });
+
+        it('keeps the barrier for a rejected BACKUP_IMPORT', async () => {
+          const rejectedBackup = createFullStateEntry(
+            1,
+            'rejected-backup',
+            'client-1',
+            OpType.BackupImport,
+          );
+          rejectedBackup.rejectedAt = Date.now();
+          mockContainerAuthority.isContainerManaged.and.resolveTo(true);
+          mockOpLogStore.getUnsynced.and.resolveTo([
+            createMockEntry(2, 'pending-edit', 'client-1'),
+          ]);
+          mockOpLogStore.getLatestRejectedFullStateOpEntry.and.resolveTo(rejectedBackup);
+
+          const result = await service.uploadPendingOps(mockApiProvider);
+
+          expect(mockOpLogStore.deleteOpsWhere).not.toHaveBeenCalled();
+          expect(mockApiProvider.uploadOps).not.toHaveBeenCalled();
+          expect(result.blockedByRejectedFullState).toBe(true);
+        });
       });
 
       it('should release the rejected-import barrier after a newer full-state upload succeeds', async () => {

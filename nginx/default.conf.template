@@ -44,6 +44,9 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         # The websocket is long-lived; the default 60s would tear it down.
         proxy_read_timeout 3600s;
+        # nginx's 1m default 413'd every snapshot upload and any large op batch before it reached the server, and clients treat 413 as a permanent rejection.
+        # The sync server enforces its own limits (40m raw for /snapshot, ~13m for /ops), so nginx only needs to stay out of the way.
+        client_max_body_size 40m;
     }
 
     # ── Auth + REST API (anex/container-parity) ─────────────────────────────

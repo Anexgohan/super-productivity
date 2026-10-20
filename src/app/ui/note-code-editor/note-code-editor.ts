@@ -34,6 +34,10 @@ export interface NoteCodeEditorOptions {
 export interface NoteCodeEditor extends EditableText {
   /** Replaces the text with `text`, touching only the part that differs so undo and the cursor stay sensible. */
   setValue(text: string, selection?: { start: number; end: number }): void;
+  /** The element that scrolls; the full-screen split view keeps the preview level with it. */
+  readonly scrollElement: HTMLElement;
+  /** Where 0-based `line` starts, in px from the top of the scrolled content. */
+  lineTopPx(line: number): number;
   destroy(): void;
 }
 
@@ -177,6 +181,21 @@ export const createNoteCodeEditor = (opts: NoteCodeEditorOptions): NoteCodeEdito
             : { from, to: toOld, insert: text.slice(from, toNew) },
         selection: sel(text, selection),
       });
+    },
+    scrollElement: view.scrollDOM,
+    lineTopPx: (line) => {
+      const doc = view.state.doc;
+      const block = view.lineBlockAt(
+        doc.line(Math.min(Math.max(line + 1, 1), doc.lines)).from,
+      );
+      // lineBlockAt measures from the top of the document, which starts below the scroller's own top padding.
+      const scroller = view.scrollDOM;
+      return (
+        block.top +
+        view.documentTop -
+        scroller.getBoundingClientRect().top +
+        scroller.scrollTop
+      );
     },
     destroy: () => view.destroy(),
   };

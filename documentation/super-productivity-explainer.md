@@ -431,6 +431,7 @@ A task's `notes` is a plain markdown string; the API and the bridge never render
 The browser renders it with `marked` plus code highlighting (highlight.js, a fixed set of languages), GitHub-style callouts, footnotes and Mermaid diagrams, all in `src/app/ui/markdown-extras/`.
 Rendering never rewrites the stored text, so none of this changes what the API reads back.
 The full-screen editor is CodeMirror (`src/app/ui/note-code-editor/`), with markdown and the code inside fenced blocks highlighted as you type, search, and bracket matching; it edits the same plain text, so it never reformats a note either.
+In the split view the editor and the preview scroll together, from either side: the preview's copy of the note is tagged with the source line of each block, list item and table row (`src/app/ui/dialog-fullscreen-markdown/markdown-scroll-sync.ts`), the tags render as nothing, and a note that cannot be tagged safely falls back to scrolling by proportion.
 `Alt+N` (Settings, Keyboard, the add-note shortcut) opens the focused or selected task's notes in that editor, board cards included, and the same key saves and closes it; with no task selected it adds a project note as before.
 CodeMirror, highlight.js and Mermaid are each loaded the first time they are needed, never at app start, and if CodeMirror cannot load (offline before it was ever cached) the plain text box edits the note instead.
 
@@ -479,7 +480,9 @@ and any array mixing `""` with real ids collapses to `[""]` on save.
 The header carries a project selector. On **All Projects** the app behaves as it
 always has. Pick a project and the board strip narrows to boards assigned to it -
 strictly, so an unassigned board shows only under All Projects. The scope also
-narrows what the panels contain, to tasks in that project.
+narrows what the panels contain, to tasks in that project. While a project is
+picked the selector shows that project's icon in its primary colour, and the
+menu lists each project with its own icon.
 
 A board is assigned from its own context menu — **Move to project**, **Copy to
 project**, or **Copy as empty template** — each picking one project or "No

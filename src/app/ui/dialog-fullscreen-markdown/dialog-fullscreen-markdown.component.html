@@ -213,6 +213,7 @@
       #previewEl
       noteMarkdownExtras
       (click)="clickPreview($event)"
+      (ready)="onPreviewReady()"
       [data]="resolvedContentData"
       class="markdown-preview markdown"
     ></markdown>

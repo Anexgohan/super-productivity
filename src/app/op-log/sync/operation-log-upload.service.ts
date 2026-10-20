@@ -45,7 +45,10 @@ import {
 } from '../../features/config/local-only-sync-settings.util';
 import { isLwwUpdateActionType } from '../core/lww-update-action-types';
 import { StateSnapshotService } from '../backup/state-snapshot.service';
-import { IS_READ_ONLY_BOARD } from '../../imex/sync/container-authority.service';
+import {
+  ContainerAuthorityService,
+  IS_READ_ONLY_BOARD,
+} from '../../imex/sync/container-authority.service';
 
 // Re-export for consumers that import from this service
 export type {
@@ -71,6 +74,7 @@ export class OperationLogUploadService {
   private encryptionService = inject(OperationEncryptionService);
   private stateSnapshotService = inject(StateSnapshotService);
   private providerManager = inject(SyncProviderManager);
+  private containerAuthority = inject(ContainerAuthorityService);
 
   async uploadPendingOps(
     syncProvider: OperationSyncCapable,
@@ -182,7 +186,28 @@ export class OperationLogUploadService {
       );
       selectedPendingOps = pendingOps;
 
-      const rejectedFullState = await this.opLogStore.getLatestRejectedFullStateOpEntry();
+      let rejectedFullState = await this.opLogStore.getLatestRejectedFullStateOpEntry();
+      // anex/container-parity: the server is the authority, so a SYNC_IMPORT it refused is never retried.
+      // As a barrier it stranded every later edit in this browser, for days when nginx 413'd the old automatic baseline.
+      // So it is discarded, and the edits made since upload as regular ops.
+      // BACKUP_IMPORT and REPAIR keep the barrier: later ops can depend on state that only they carry.
+      while (
+        rejectedFullState?.op.opType === OpType.SyncImport &&
+        (await this.containerAuthority.isContainerManaged())
+      ) {
+        const discardedOpId = rejectedFullState.op.id;
+        OpLog.warn(
+          `OperationLogUploadService: Discarding rejected SYNC_IMPORT ${discardedOpId} so pending edits can upload.`,
+        );
+        await this.opLogStore.deleteOpsWhere(
+          (logEntry) => logEntry.op.id === discardedOpId,
+        );
+        rejectedFullState = await this.opLogStore.getLatestRejectedFullStateOpEntry();
+        // A delete that did not take would otherwise spin here holding the upload lock.
+        if (rejectedFullState?.op.id === discardedOpId) {
+          break;
+        }
+      }
       const latestActiveFullState = rejectedFullState
         ? await this.opLogStore.getLatestFullStateOpEntry()
         : undefined;

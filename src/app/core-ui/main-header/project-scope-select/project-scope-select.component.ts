@@ -9,6 +9,9 @@ import { TranslatePipe } from '@ngx-translate/core';
 import { T } from '../../../t.const';
 import { selectUnarchivedVisibleProjects } from '../../../features/project/store/project.selectors';
 import { GlobalProjectScopeService } from '../../../features/project/global-project-scope.service';
+import { DEFAULT_PROJECT_ICON } from '../../../features/project/project.const';
+import { SelectOptionRowComponent } from '../../../ui/select-option-row/select-option-row.component';
+import { isSingleEmoji } from '../../../util/extract-first-emoji';
 
 /**
  * Global project scope: which project the app is limited to, or All Projects.
@@ -27,6 +30,7 @@ import { GlobalProjectScopeService } from '../../../features/project/global-proj
     MatMenuItem,
     MatMenuTrigger,
     MatTooltip,
+    SelectOptionRowComponent,
     TranslatePipe,
   ],
   templateUrl: './project-scope-select.component.html',
@@ -37,6 +41,7 @@ export class ProjectScopeSelectComponent {
   private _store = inject(Store);
   protected readonly scopeService = inject(GlobalProjectScopeService);
   protected readonly T = T;
+  protected readonly DEFAULT_PROJECT_ICON = DEFAULT_PROJECT_ICON;
 
   projects = toSignal(this._store.select(selectUnarchivedVisibleProjects), {
     initialValue: [],
@@ -64,6 +69,17 @@ export class ProjectScopeSelectComponent {
   label = computed(() => this.activeProject()?.title ?? null);
 
   isScoped = computed(() => !!this.activeProject());
+
+  /** The scoped project's own icon, as the side nav shows it; the filter icon while every project is shown. */
+  scopeIcon = computed(() => {
+    const project = this.activeProject();
+    return project ? project.icon || DEFAULT_PROJECT_ICON : 'filter_list';
+  });
+
+  isScopeIconEmoji = computed(() => isSingleEmoji(this.scopeIcon()));
+
+  /** Only the icon takes the project's colour; the label stays in the text colour, which a dark project colour could make unreadable. */
+  scopeIconColor = computed(() => this.activeProject()?.theme?.primary || null);
 
   setScope(projectId: string): void {
     this.scopeService.setScope(projectId);

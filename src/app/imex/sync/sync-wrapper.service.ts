@@ -76,7 +76,6 @@ import { IS_ELECTRON } from '../../app.constants';
 import { OperationLogStoreService } from '../../op-log/persistence/operation-log-store.service';
 import { OperationLogSyncService } from '../../op-log/sync/operation-log-sync.service';
 import { SyncSessionValidationService } from '../../op-log/sync/sync-session-validation.service';
-import { SyncBaselineService } from './sync-baseline.service';
 import { SyncCycleGuardService } from '../../op-log/sync/sync-cycle-guard.service';
 import { WrappedProviderService } from '../../op-log/sync-providers/wrapped-provider.service';
 import { isSuperSyncWebSocketAccess } from '@sp/sync-providers/super-sync';
@@ -128,7 +127,6 @@ export class SyncWrapperService {
   private _opLogSyncService = inject(OperationLogSyncService);
   private _sessionValidation = inject(SyncSessionValidationService);
   private _syncCycleGuard = inject(SyncCycleGuardService);
-  private _syncBaseline = inject(SyncBaselineService);
   private _wrappedProvider = inject(WrappedProviderService);
   private _hydrationState = inject(HydrationStateService);
 
@@ -216,6 +214,9 @@ export class SyncWrapperService {
    * Reset to 0 on any successful sync or any non-auth error.
    */
   private _consecutiveSuperSyncAuthFailures = 0;
+
+  /** The blocked-upload error is shown once per session; the sync icon carries it after that. */
+  private _hasShownUploadBlocked = false;
 
   /**
    * Observable for UI: true when all local changes have been uploaded.
@@ -366,13 +367,6 @@ export class SyncWrapperService {
         this._providerManager.setSyncStatus('UNKNOWN_OR_CHANGED');
       }
     });
-
-    // Deliberately AFTER the finally above, not at the IN_SYNC point inside _sync().
-    // The baseline upload takes the same cycle guard this sync still holds there, so it would skip itself every time.
-    // Fire-and-forget: background tidy-up, and nothing waits on it.
-    if (result !== 'HANDLED_ERROR') {
-      void this.publishBaselineIfNeeded();
-    }
 
     // After any successful sync, prompt for encryption if SuperSync is active
     // without it. This ensures data is downloaded and merged first, preventing
@@ -719,6 +713,11 @@ export class SyncWrapperService {
           'SyncWrapperService: Upload blocked because pending operations depend on a rejected full-state baseline.',
         );
         this._providerManager.setSyncStatus('ERROR');
+        // The icon alone let edits sit unuploaded for days unnoticed.
+        if (!this._hasShownUploadBlocked) {
+          this._hasShownUploadBlocked = true;
+          this._snackService.open({ msg: T.F.SYNC.S.UPLOAD_BLOCKED, type: 'ERROR' });
+        }
         return 'HANDLED_ERROR';
       }
       if (pendingLwwOps > 0) {
@@ -1175,16 +1174,6 @@ export class SyncWrapperService {
       triggerSource,
     });
 
-    await this._uploadLocalStateAsFullState();
-  }
-
-  /**
-   * The guarded full-state upload itself, without the confirmation prompt.
-   *
-   * Split out for SyncBaselineService, which republishes a long history so cold clients have something recent to skip to.
-   * That path is automatic and must not prompt: a user who never caused the problem should not be asked to approve its fix.
-   */
-  private async _uploadLocalStateAsFullState(): Promise<void> {
     // Block parallel syncs during force upload to prevent them from trying to
     // download/decrypt old data with a potentially different encryption key.
     // This is critical when forceUpload is triggered after password change.
@@ -1262,25 +1251,6 @@ export class SyncWrapperService {
         this._syncCycleGuard.end();
       }
     });
-  }
-
-  /**
-   * Republishes local state as a full-state op once remote history has grown long, so cold clients skip it instead of replaying it.
-   *
-   * Silent by design, including on failure: nothing breaks if it does not happen and the next sync reconsiders.
-   * Marked published BEFORE the upload, so a failure cannot retry in a loop for the rest of the session.
-   */
-  async publishBaselineIfNeeded(): Promise<void> {
-    try {
-      if (!(await this._syncBaseline.shouldPublish())) {
-        return;
-      }
-      this._syncBaseline.markPublished();
-      SyncLog.normal('SyncWrapperService: republishing local state as a new baseline');
-      await this._uploadLocalStateAsFullState();
-    } catch (error) {
-      SyncLog.err('SyncWrapperService: baseline republish failed, continuing', error);
-    }
   }
 
   async configuredAuthForSyncProviderIfNecessary(

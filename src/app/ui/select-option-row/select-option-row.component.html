@@ -3,9 +3,7 @@
   [class.has-checkbox]="showCheckbox()"
 >
   @if (showCheckbox()) {
-    <mat-icon class="check-ico">{{
-      isSelected() ? 'check_box' : 'check_box_outline_blank'
-    }}</mat-icon>
+    <mat-icon class="check-ico">{{ checkIcon() }}</mat-icon>
   }
 
   @if (isEmoji()) {
