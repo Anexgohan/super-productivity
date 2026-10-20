@@ -14,7 +14,8 @@ COPY packages/sp-bridge/package.json ./packages/sp-bridge/
 RUN npm ci --ignore-scripts --include-workspace-root=false \
     --workspace @sp/sync-core \
     --workspace @sp/shared-schema \
-    --workspace @sp/sp-bridge
+    --workspace @sp/sp-bridge \
+ && npm cache clean --force
 
 COPY packages/sync-core ./packages/sync-core
 COPY packages/shared-schema ./packages/shared-schema

@@ -44,7 +44,7 @@ COPY packages/shared-schema/tsup.config.ts ./packages/shared-schema/
 COPY packages/shared-schema/src ./packages/shared-schema/src
 COPY tsconfig.json ./
 COPY tools/ ./tools/
-RUN npm ci --ignore-scripts || npm i --ignore-scripts
+RUN (npm ci --ignore-scripts || npm i --ignore-scripts) && npm cache clean --force
 RUN npm run prepare
 
 # Copy source and build.

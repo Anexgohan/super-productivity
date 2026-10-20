@@ -13,7 +13,7 @@ COPY packages/super-sync-server/package.json ./packages/super-sync-server/
 
 # Install ALL dependencies for the monorepo
 # Use npm ci for reproducible builds; requires compatible lockfile
-RUN npm ci --ignore-scripts
+RUN npm ci --ignore-scripts && npm cache clean --force
 
 # Copy source code
 COPY packages/sync-core/ ./packages/sync-core/
