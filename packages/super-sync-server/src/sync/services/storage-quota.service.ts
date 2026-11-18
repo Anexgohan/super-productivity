@@ -18,6 +18,19 @@ import { CAUSAL_FULL_STATE_OPERATION_WHERE } from '../sync.types';
  * Default storage quota per user in bytes (100MB).
  */
 const DEFAULT_STORAGE_QUOTA_BYTES = 100 * 1024 * 1024;
+
+/**
+ * anex/self-hosted: STORAGE_QUOTA_BYTES, when set, is every account's quota and wins over the per-user column.
+ * The column holds the 100MB hosted-service default, and a self-hosted op log filled that in a month.
+ * Without the setting, raising it meant hand-editing the database.
+ */
+const effectiveQuotaBytes = (
+  storedQuotaBytes: bigint | number | null | undefined,
+): number => {
+  const configured = parsePositiveIntegerEnv('STORAGE_QUOTA_BYTES', 0);
+  if (configured > 0) return configured;
+  return Number(storedQuotaBytes ?? DEFAULT_STORAGE_QUOTA_BYTES);
+};
 const OLD_OPS_CLEANUP_DELETE_BATCH_SIZE = 5_000;
 const OLD_OPS_CLEANUP_MAX_DELETED_PER_RUN = 25_000;
 // Operator-DoS guardrail: a 1M `take:` materializes 1M ids in Node memory and
@@ -250,7 +263,7 @@ export class StorageQuotaService {
       select: { storageQuotaBytes: true, storageUsedBytes: true },
     });
 
-    const quota = Number(user?.storageQuotaBytes ?? DEFAULT_STORAGE_QUOTA_BYTES);
+    const quota = effectiveQuotaBytes(user?.storageQuotaBytes);
     const currentUsage = Number(user?.storageUsedBytes ?? 0);
 
     return {
@@ -878,7 +891,7 @@ export class StorageQuotaService {
 
     return {
       storageUsedBytes: Number(user?.storageUsedBytes ?? 0),
-      storageQuotaBytes: Number(user?.storageQuotaBytes ?? DEFAULT_STORAGE_QUOTA_BYTES),
+      storageQuotaBytes: effectiveQuotaBytes(user?.storageQuotaBytes),
     };
   }
 }

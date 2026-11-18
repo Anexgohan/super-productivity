@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { StorageQuotaService } from '../src/sync/services/storage-quota.service';
 
 // Mock prisma
@@ -642,6 +642,35 @@ describe('StorageQuotaService', () => {
         expect(prisma.$executeRaw).not.toHaveBeenCalled();
       },
     );
+  });
+
+  describe('STORAGE_QUOTA_BYTES', () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    it('is the quota for every account when set, over the stored one', async () => {
+      vi.stubEnv('STORAGE_QUOTA_BYTES', '268435456');
+      vi.mocked(prisma.user.findUnique).mockResolvedValue({
+        storageQuotaBytes: BigInt(104857600),
+        storageUsedBytes: BigInt(104835707),
+      } as any);
+
+      const check = await service.checkStorageQuota(1, 200000);
+      const info = await service.getStorageInfo(1);
+
+      expect(check).toEqual({ allowed: true, currentUsage: 104835707, quota: 268435456 });
+      expect(info.storageQuotaBytes).toBe(268435456);
+    });
+
+    it('leaves the stored quota in charge when unset or invalid', async () => {
+      vi.mocked(prisma.user.findUnique).mockResolvedValue({
+        storageQuotaBytes: BigInt(100000),
+        storageUsedBytes: BigInt(0),
+      } as any);
+
+      expect((await service.checkStorageQuota(1, 0)).quota).toBe(100000);
+      vi.stubEnv('STORAGE_QUOTA_BYTES', '256MB');
+      expect((await service.checkStorageQuota(1, 0)).quota).toBe(100000);
+    });
   });
 
   describe('getStorageInfo', () => {

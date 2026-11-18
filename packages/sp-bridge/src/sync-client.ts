@@ -36,6 +36,41 @@ export const mintSuperSyncToken = async (cfg: BridgeConfig): Promise<string> => 
   return body.token;
 };
 
+const MB = 1024 * 1024;
+
+/**
+ * The sync server's "account storage is full" refusal, as a 507 the REST API passes on.
+ * As an unlabelled upload error it reached API callers as a bare 500, which read as a request-size bug.
+ * nginx also answers 413 for an oversized body, so only the server's own error code counts.
+ */
+export const quotaFullError = (status: number, body: string): Error | null => {
+  if (status !== 413) return null;
+  let parsed: {
+    errorCode?: unknown;
+    storageUsedBytes?: unknown;
+    storageQuotaBytes?: unknown;
+  };
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (parsed?.errorCode !== 'STORAGE_QUOTA_EXCEEDED') return null;
+  const used = Number(parsed.storageUsedBytes);
+  const quota = Number(parsed.storageQuotaBytes);
+  const usage =
+    Number.isFinite(used) && Number.isFinite(quota)
+      ? ` (${(used / MB).toFixed(1)} of ${(quota / MB).toFixed(1)} MB used)`
+      : '';
+  return Object.assign(
+    new Error(
+      `Sync storage is full${usage}: the sync server refused this write and nothing was saved. ` +
+        'Raise STORAGE_QUOTA_BYTES on the sync server.',
+    ),
+    { statusCode: 507 },
+  );
+};
+
 export class SyncClient {
   private _token: string | null = null;
 
@@ -118,8 +153,9 @@ export class SyncClient {
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      throw new Error(
-        `sp-bridge: op upload failed (${res.status}) ${body.slice(0, 300)}`,
+      throw (
+        quotaFullError(res.status, body) ??
+        new Error(`sp-bridge: op upload failed (${res.status}) ${body.slice(0, 300)}`)
       );
     }
     const parsed = SuperSyncUploadOpsResponseSchema.parse(await res.json());

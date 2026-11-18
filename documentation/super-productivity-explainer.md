@@ -667,8 +667,11 @@ file via `env_file:`, so a value is written once and no service has an
 | `SUPERSYNC_MEM_LIMIT` / `SP_BRIDGE_MEM_LIMIT` / `POSTGRES_MEM_LIMIT` | `512m` / `256m` / `256m`                   |
 | `PG_SHARED_BUFFERS`                                                  | `64MB`, keep well under the postgres cap   |
 | `PG_MAX_CONNECTIONS`                                                 | `20`, ample for this stack's three clients |
+| `STORAGE_QUOTA_BYTES`                                                | unset: each account's stored quota, 100 MB |
 
 `SP_BRIDGE_MEM_LIMIT` is the one that grows with real use: the bridge holds the materialized board in memory, so it scales with task count.
+
+`STORAGE_QUOTA_BYTES` caps the sync history the server keeps per account, and when set it is every account's quota. The history only grows, and every save of a card's notes stores the whole notes again, so a few long cards edited often fill 100 MB in about a month. When it is full the server refuses every write that does not fit: browsers show a "Sync storage is full" alert and keep the changes on the device, and the API answers `507` and saves nothing.
 
 **Deliberately not in `.env.example`:** `SP_AUTH_ENABLED`. It disables the browser login gate entirely, which also unpublishes the per-session sync override and hands every browser the container account's token. It exists for local development only, and putting it in the file people copy would invite turning it off in a deployment where accounts are what issue the API keys.
 

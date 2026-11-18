@@ -32,6 +32,7 @@ body declared as JSON (`400 FST_ERR_CTP_EMPTY_JSON_BODY`).
 | `403` | authenticated but not allowed - read-only role, or somebody else's account |
 | `404` | entity not found                                                           |
 | `409` | refused by a safety guard (e.g. deleting a task that still has subtasks)   |
+| `507` | sync storage is full; nothing was saved (`STORAGE_QUOTA_BYTES`)            |
 
 **Freshness** - reads reflect the last op-log poll (default 15s). Call
 `POST /api/sync/refresh` first if you need guaranteed-current data. Writes
