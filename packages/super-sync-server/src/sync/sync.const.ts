@@ -38,6 +38,13 @@ export const isValidClientId = (cid: unknown): cid is string =>
 export const APPROX_BYTES_PER_OP = 1024;
 
 /**
+ * anex/self-hosted: payload budget for one download page, so a page of large ops cannot exhaust the server's memory.
+ * Building a page peaks at several times its payload size; 1000 ops of long card notes (~100MB) got the
+ * 512MB container OOM-killed. A page always carries at least one op, so paging still progresses.
+ */
+export const MAX_DOWNLOAD_PAGE_PAYLOAD_BYTES = 10 * 1024 * 1024;
+
+/**
  * Locally-computed approximation of how many bytes an operation's payload and
  * vector clock will occupy on disk. Used by both the route layer (for quota
  * gating and post-commit counter deltas) and the service layer (for the atomic

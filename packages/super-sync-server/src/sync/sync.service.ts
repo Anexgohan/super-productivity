@@ -529,6 +529,7 @@ export class SyncService {
     ops: ServerOperation[];
     latestSeq: number;
     gapDetected: boolean;
+    truncatedByBytes: boolean;
     latestSnapshotSeq?: number;
     snapshotVectorClock?: VectorClock;
   }> {

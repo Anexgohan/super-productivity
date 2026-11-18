@@ -210,6 +210,7 @@ describe('OperationDownloadService', () => {
         ops: [],
         latestSeq: 0,
         gapDetected: false,
+        truncatedByBytes: false,
         latestSnapshotSeq: undefined,
         snapshotVectorClock: undefined,
       });
@@ -651,8 +652,90 @@ describe('OperationDownloadService', () => {
       // $queryRaw should be called exactly once for clock aggregation, outside
       // the interactive transaction.
       expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
-      // findMany should be called exactly once (for ops after snapshot), NOT twice
-      expect(capturedTx.operation.findMany).toHaveBeenCalledTimes(1);
+      // Exactly one findMany loads payloads (the ops after the snapshot); the clock aggregate must not.
+      // The other findMany is the page-size probe, which selects sizes only.
+      const payloadQueries = capturedTx.operation.findMany.mock.calls.filter(
+        ([args]: [{ select?: Record<string, unknown> }]) =>
+          args?.select?.payload === true,
+      );
+      expect(payloadQueries).toHaveLength(1);
+      expect(capturedTx.operation.findMany).toHaveBeenCalledTimes(2);
+    });
+
+    // === Payload budget per page (anex/self-hosted) ===
+    describe('payload budget per page', () => {
+      const MB = 1024 * 1024;
+
+      const runWithSizes = async (
+        sizes: { serverSeq: number; payloadBytes: bigint }[],
+      ): Promise<{
+        result: Awaited<ReturnType<typeof service.getOpsSinceWithSeq>>;
+        findMany: any;
+      }> => {
+        let findMany: any;
+        vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+          findMany = vi.fn(
+            async (args: { select?: Record<string, unknown>; where?: any }) => {
+              if (args.select?.payloadBytes) return sizes;
+              const lte = args.where.serverSeq.lte;
+              return sizes
+                .filter((r) => r.serverSeq <= lte)
+                .map((r) => createMockOpRow(r.serverSeq));
+            },
+          );
+          return fn({
+            operation: { findFirst: vi.fn().mockResolvedValue(null), findMany },
+            userSyncState: { findUnique: vi.fn().mockResolvedValue({ lastSeq: 3 }) },
+          });
+        });
+        const result = await service.getOpsSinceWithSeq(1, 0, 'me', 500);
+        return { result, findMany };
+      };
+
+      it('stops the page before the op that would exceed the budget, and says more follow', async () => {
+        const { result } = await runWithSizes([
+          { serverSeq: 1, payloadBytes: BigInt(6 * MB) },
+          { serverSeq: 2, payloadBytes: BigInt(6 * MB) },
+          { serverSeq: 3, payloadBytes: 1000n },
+        ]);
+        expect(result.ops.map((o) => o.serverSeq)).toEqual([1]);
+        expect(result.truncatedByBytes).toBe(true);
+      });
+
+      it('still returns a single op larger than the budget, so paging progresses', async () => {
+        const { result } = await runWithSizes([
+          { serverSeq: 1, payloadBytes: BigInt(12 * MB) },
+          { serverSeq: 2, payloadBytes: 1000n },
+        ]);
+        expect(result.ops.map((o) => o.serverSeq)).toEqual([1]);
+        expect(result.truncatedByBytes).toBe(true);
+      });
+
+      it('leaves a page that fits untouched', async () => {
+        const { result, findMany } = await runWithSizes([
+          { serverSeq: 1, payloadBytes: 1000n },
+          { serverSeq: 2, payloadBytes: 2000n },
+          { serverSeq: 3, payloadBytes: 3000n },
+        ]);
+        expect(result.ops.map((o) => o.serverSeq)).toEqual([1, 2, 3]);
+        expect(result.truncatedByBytes).toBe(false);
+        const payloadQuery = findMany.mock.calls.find(
+          ([a]: [any]) => a.select?.payload,
+        )[0];
+        expect(payloadQuery.where.serverSeq).toEqual({ gt: 0, lte: 3 });
+      });
+
+      it('loads no payloads for ops past the budget', async () => {
+        const { findMany } = await runWithSizes([
+          { serverSeq: 1, payloadBytes: BigInt(8 * MB) },
+          { serverSeq: 2, payloadBytes: BigInt(8 * MB) },
+          { serverSeq: 3, payloadBytes: BigInt(8 * MB) },
+        ]);
+        const payloadQuery = findMany.mock.calls.find(
+          ([a]: [any]) => a.select?.payload,
+        )[0];
+        expect(payloadQuery.where.serverSeq.lte).toBe(1);
+      });
     });
 
     it('should optimize download when latest snapshot exists', async () => {

@@ -39,6 +39,12 @@ export const mintSuperSyncToken = async (cfg: BridgeConfig): Promise<string> => 
 const MB = 1024 * 1024;
 
 /**
+ * Ops per download page. Long card notes make an op ~100-200KB, so 1000 per page reached ~100MB and
+ * got the 512MB sync server OOM-killed during a full rebuild. The server also caps each page by size.
+ */
+export const DOWNLOAD_PAGE_SIZE = 200;
+
+/**
  * The sync server's "account storage is full" refusal, as a 507 the REST API passes on.
  * As an unlabelled upload error it reached API callers as a bare 500, which read as a request-size bug.
  * nginx also answers 413 for an oversized body, so only the server's own error code counts.
@@ -105,24 +111,30 @@ export class SyncClient {
   }
 
   /**
-   * Downloads all ops after sinceSeq, following hasMore pagination.
-   * Returns ops in server_seq order plus the latest seq seen.
+   * Downloads all ops after sinceSeq, following hasMore pagination, in server_seq order.
+   * With `onPage`, each page is handed over as it arrives and nothing is kept, so a full rebuild never
+   * holds the whole history (100MB+ with long notes) in the bridge's memory; `ops` is then empty.
    */
   async downloadOpsSince(
     sinceSeq: number,
+    onPage?: (ops: SuperSyncServerOperation[]) => Promise<void>,
   ): Promise<{ ops: SuperSyncServerOperation[]; latestSeq: number }> {
     const all: SuperSyncServerOperation[] = [];
     let cursor = sinceSeq;
     let latestSeq = sinceSeq;
 
     for (;;) {
-      const url = `${this.cfg.syncServerUrl}/api/sync/ops?sinceSeq=${cursor}&limit=1000`;
+      const url = `${this.cfg.syncServerUrl}/api/sync/ops?sinceSeq=${cursor}&limit=${DOWNLOAD_PAGE_SIZE}`;
       const res = await fetch(url, { headers: this._authHeaders() });
       if (!res.ok) {
         throw new Error(`sp-bridge: ops download failed (${res.status})`);
       }
       const parsed = SuperSyncDownloadOpsResponseSchema.parse(await res.json());
-      all.push(...parsed.ops);
+      if (onPage) {
+        await onPage(parsed.ops);
+      } else {
+        all.push(...parsed.ops);
+      }
       latestSeq = parsed.latestSeq;
       if (!parsed.hasMore || parsed.ops.length === 0) {
         break;

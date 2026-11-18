@@ -13,6 +13,8 @@ import {
   limitVectorClockSize,
 } from '../sync.types';
 import { Logger } from '../../logger';
+import { Prisma } from '@prisma/client';
+import { APPROX_BYTES_PER_OP, MAX_DOWNLOAD_PAGE_PAYLOAD_BYTES } from '../sync.const';
 
 const OPERATION_DOWNLOAD_SELECT = {
   id: true,
@@ -39,6 +41,8 @@ type OperationDownloadResult = {
   ops: ServerOperation[];
   latestSeq: number;
   gapDetected: boolean;
+  /** The page stopped short of `limit` to stay within the payload budget; more ops follow. */
+  truncatedByBytes: boolean;
   latestSnapshotSeq?: number;
   snapshotVectorClock?: VectorClock;
 };
@@ -156,6 +160,7 @@ export class OperationDownloadService {
             ops: [],
             latestSeq,
             gapDetected,
+            truncatedByBytes: false,
             latestSnapshotSeq: undefined,
             snapshotVectorClock: undefined,
             shouldComputeSnapshotVectorClock: false,
@@ -194,12 +199,19 @@ export class OperationDownloadService {
           shouldComputeSnapshotVectorClock = includeSnapshotMetadata;
         }
 
+        const pageWhere = {
+          userId,
+          serverSeq: { gt: effectiveSinceSeq, lte: latestSeq },
+          ...(excludeClient ? { clientId: { not: excludeClient } } : {}),
+        };
+        // Sizes first, payloads second: loading `limit` full payloads before trimming is the very allocation the budget exists to avoid.
+        const pageEndSeq = await this._pageEndSeqWithinBudget(tx, pageWhere, limit);
+        const truncatedByBytes = pageEndSeq !== undefined;
+
         const ops = await tx.operation.findMany({
-          where: {
-            userId,
-            serverSeq: { gt: effectiveSinceSeq, lte: latestSeq },
-            ...(excludeClient ? { clientId: { not: excludeClient } } : {}),
-          },
+          where: truncatedByBytes
+            ? { ...pageWhere, serverSeq: { gt: effectiveSinceSeq, lte: pageEndSeq } }
+            : pageWhere,
           orderBy: {
             serverSeq: 'asc',
           },
@@ -275,6 +287,7 @@ export class OperationDownloadService {
           ops: mappedOps,
           latestSeq,
           gapDetected,
+          truncatedByBytes,
           latestSnapshotSeq,
           snapshotVectorClock: undefined,
           shouldComputeSnapshotVectorClock,
@@ -310,9 +323,36 @@ export class OperationDownloadService {
       ops: result.ops,
       latestSeq: result.latestSeq,
       gapDetected: result.gapDetected,
+      truncatedByBytes: result.truncatedByBytes,
       latestSnapshotSeq: result.latestSnapshotSeq,
       snapshotVectorClock,
     };
+  }
+
+  /**
+   * Last serverSeq that keeps the page within MAX_DOWNLOAD_PAGE_PAYLOAD_BYTES, or undefined when
+   * the whole `limit` fits. The first op is always included, however large, so paging progresses.
+   * Rows not yet backfilled (payload_bytes = 0) count as APPROX_BYTES_PER_OP.
+   */
+  private async _pageEndSeqWithinBudget(
+    tx: Prisma.TransactionClient,
+    where: Prisma.OperationWhereInput,
+    limit: number,
+  ): Promise<number | undefined> {
+    const sizes = await tx.operation.findMany({
+      where,
+      orderBy: { serverSeq: 'asc' },
+      take: limit,
+      select: { serverSeq: true, payloadBytes: true },
+    });
+    let total = 0;
+    for (let i = 0; i < sizes.length; i++) {
+      total += Number(sizes[i].payloadBytes) || APPROX_BYTES_PER_OP;
+      if (i > 0 && total > MAX_DOWNLOAD_PAGE_PAYLOAD_BYTES) {
+        return sizes[i - 1].serverSeq;
+      }
+    }
+    return undefined;
   }
 
   private async _computeSnapshotVectorClock(

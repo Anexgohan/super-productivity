@@ -159,12 +159,17 @@ export class StateStore {
   private async _doRefresh(): Promise<void> {
     try {
       const since = this._materializer.lastServerSeq;
-      const { ops } = await this._client.downloadOpsSince(since);
-      if (ops.length > 0) {
-        await this._materializer.applyOps(ops);
+      let applied = 0;
+      // Applied and saved page by page: the cursor advances with each page, so an interrupted rebuild resumes where it stopped.
+      await this._client.downloadOpsSince(since, async (page) => {
+        if (page.length === 0) return;
+        await this._materializer.applyOps(page);
         this._persist();
+        applied += page.length;
+      });
+      if (applied > 0) {
         console.log(
-          `sp-bridge: applied ${ops.length} ops → seq ${this._materializer.lastServerSeq}`,
+          `sp-bridge: applied ${applied} ops → seq ${this._materializer.lastServerSeq}`,
         );
       }
       this.lastSyncAt = Date.now();

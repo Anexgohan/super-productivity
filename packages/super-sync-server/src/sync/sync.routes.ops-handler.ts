@@ -153,7 +153,7 @@ export const uploadOpsHandler = async (
           latestSeq = opsResult.latestSeq;
 
           // Check if there are more ops beyond what we piggybacked
-          if (newOps.length === PIGGYBACK_LIMIT) {
+          if (newOps.length === PIGGYBACK_LIMIT || opsResult.truncatedByBytes) {
             const lastPiggybackSeq = newOps[newOps.length - 1].serverSeq;
             hasMorePiggyback = lastPiggybackSeq < latestSeq;
           }
@@ -274,8 +274,8 @@ export const uploadOpsHandler = async (
       latestSeq = opsResult.latestSeq;
 
       // Check if there are more ops beyond what we piggybacked
-      // This happens when we hit the limit AND there are more ops on the server
-      if (newOps.length === PIGGYBACK_LIMIT) {
+      // This happens when we hit the limit (or the payload budget) AND there are more ops on the server
+      if (newOps.length === PIGGYBACK_LIMIT || opsResult.truncatedByBytes) {
         const lastPiggybackSeq = newOps[newOps.length - 1].serverSeq;
         hasMorePiggyback = lastPiggybackSeq < latestSeq;
         if (hasMorePiggyback) {

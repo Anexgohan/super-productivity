@@ -139,16 +139,24 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
 
         // Use atomic read to get ops and latestSeq in one transaction
         // This prevents race conditions where new ops arrive between the two reads
-        const { ops, latestSeq, gapDetected, latestSnapshotSeq, snapshotVectorClock } =
-          await syncService.getOpsSinceWithSeq(
-            userId,
-            sinceSeq,
-            excludeClient,
-            maxLimit + 1,
-          );
+        const {
+          ops,
+          latestSeq,
+          gapDetected,
+          truncatedByBytes,
+          latestSnapshotSeq,
+          snapshotVectorClock,
+        } = await syncService.getOpsSinceWithSeq(
+          userId,
+          sinceSeq,
+          excludeClient,
+          maxLimit + 1,
+        );
 
-        const hasMore = ops.length > maxLimit;
-        if (hasMore) ops.pop();
+        const isOverCount = ops.length > maxLimit;
+        if (isOverCount) ops.pop();
+        // A page cut short by the payload budget holds fewer than maxLimit ops but still has more behind it.
+        const hasMore = isOverCount || truncatedByBytes;
 
         if (gapDetected) {
           Logger.warn(

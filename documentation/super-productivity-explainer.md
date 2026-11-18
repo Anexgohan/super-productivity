@@ -794,6 +794,8 @@ If you genuinely want newer `FROM` bases - `node:24-alpine`, `node:22`, `nginx:1
 
 **A full rebuild keeps your data, and keeps more than you might want.** Persistence is bind-mounted at `docker-data/{postgres,bridge,supersync}`, which `down` never touches (only `down -v` would, and that would take the accounts and API keys with it). The bridge's materialized state cache under `docker-data/bridge` also survives, and it is restored on boot rather than replayed from the op log. So a materializer fix applies to new ops only; entities materialized wrongly before the fix stay wrong across any number of rebuilds. Clear that directory to force a full re-materialization.
 
+A re-materialization downloads the whole history again, and with long card notes that is 100 MB or more. The sync server therefore caps every download page at 10 MB of payload, whatever the client asks for, and the bridge asks for 200 ops at a time and applies each page as it arrives. Before that cap, the bridge's 1,000-op pages got the 512 MB sync server killed for running out of memory, over and over, and every device's sync failed until the bridge was stopped.
+
 ---
 
 ## Publishing images (GHCR) and deploying elsewhere
