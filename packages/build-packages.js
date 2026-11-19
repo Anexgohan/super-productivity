@@ -32,19 +32,23 @@ async function pathExists(p) {
   }
 }
 
-// Packages listed in the root package.json's workspaces get their dependencies
-// from the root install, which every build runs first. Running `npm install`
-// inside one redoes the install of the whole workspace (about 15s each), so
-// only packages outside the workspaces install their own (anex/build-memory).
-function isRootWorkspace(pluginPath) {
-  const rootDir = path.join(__dirname, '..');
-  const workspaces = require(path.join(rootDir, 'package.json')).workspaces || [];
-  const rel = path.relative(rootDir, pluginPath).split(path.sep).join('/');
-  return workspaces.some((pattern) =>
-    pattern.endsWith('/*')
-      ? path.posix.dirname(rel) === pattern.slice(0, -2)
-      : rel === pattern,
-  );
+// A package the root install has already linked into the root node_modules
+// gets its dependencies from there. Running `npm install` inside one redoes
+// the install of the whole workspace (about 15s each), so it is skipped.
+// A package the root install did not see (a Docker build copies in only some
+// manifests before installing) still installs here, which also links it for
+// the plugins that import it (anex/build-memory).
+async function isLinkedByRootInstall(pluginPath) {
+  try {
+    const { name } = JSON.parse(
+      await fs.readFile(path.join(pluginPath, 'package.json'), 'utf8'),
+    );
+    if (!name) return false;
+    const linked = path.join(__dirname, '..', 'node_modules', ...name.split('/'));
+    return (await fs.realpath(linked)) === (await fs.realpath(pluginPath));
+  } catch {
+    return false;
+  }
 }
 
 async function getPlugins() {
@@ -226,7 +230,7 @@ async function buildPlugin(plugin) {
         } catch {
           needsInstall = true;
         }
-        if (needsInstall && !isRootWorkspace(pluginPath)) {
+        if (needsInstall && !(await isLinkedByRootInstall(pluginPath))) {
           log(`  Installing dependencies...`, colors.yellow);
           await execAsync(`cd ${pluginPath} && npm install`);
         }
