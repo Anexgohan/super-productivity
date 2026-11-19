@@ -1108,7 +1108,9 @@ export class OperationLogSyncService {
         OpLog.normal(
           `OperationLogSyncService: Accepting incoming ${fullStateOp.opType} from client ` +
             `${fullStateOp.clientId} without conflict dialog; ` +
-            `${pendingOps.length} pending op(s), no meaningful pending user changes.`,
+            (incomingConflict.keepsPendingOnTop
+              ? `${pendingOps.length} pending op(s) kept on top of the checkpoint.`
+              : `${pendingOps.length} pending op(s), no meaningful pending user changes.`),
         );
       }
     }
@@ -1277,6 +1279,7 @@ export class OperationLogSyncService {
             ...(options?.fenceEpoch !== undefined
               ? { fenceEpoch: options.fenceEpoch }
               : {}),
+            getDiscardablePendingOpIds: () => [...startupOpIdsToDiscard],
           }),
       );
       if (

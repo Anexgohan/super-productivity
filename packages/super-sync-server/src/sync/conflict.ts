@@ -18,46 +18,70 @@ import {
 const TASK_TIME_DELTA_ACTION_TYPE = '[TimeTracking] Sync time spent';
 
 /**
- * The newest causal full-state op (a full import, or a REPAIR with its base: the bridge's checkpoints are these).
- * Its state contains every entity change stored before it (anex/checkpoints).
+ * A causal full-state op (a full import, or a REPAIR with its base: the bridge's checkpoints are these). Its state
+ * contains every entity change stored before it (anex/checkpoints).
  */
 export interface FullStateBoundary {
   serverSeq: number;
   authorId: string;
   /** The author's own entry in the full-state op's clock. */
   authorCounter: number;
+  /** A full import replaces the state outright; a checkpoint restates it. */
+  isFullImport: boolean;
 }
 
-const boundaryByTx = new WeakMap<
+/**
+ * How many of the newest full states a save is checked against. A device offline across more of them than this (at
+ * most one checkpoint an hour, after 1,000 changes) falls back to the plain clock comparison: refused, then resolved by
+ * its own conflict handling, as before anex/checkpoints.
+ */
+export const FULL_STATE_BOUNDARY_LIMIT = 100;
+
+const boundariesByTx = new WeakMap<
   Prisma.TransactionClient,
-  Map<number, Promise<FullStateBoundary | null>>
+  Map<number, Promise<readonly FullStateBoundary[]>>
 >();
 
 /**
- * Read once per transaction and user. A full-state op accepted later in the same transaction is not seen, which only
- * leaves the stricter check in place for the rest of that batch.
+ * The newest causal full states, newest first, up to and including the newest full import (older ones were replaced by
+ * it). Read once per transaction and user. A full-state op accepted later in the same transaction is not seen, which
+ * only leaves the stricter check in place for the rest of that batch.
  */
-export const getFullStateBoundary = (
+export const getFullStateBoundaries = (
   userId: number,
   tx: Prisma.TransactionClient,
-): Promise<FullStateBoundary | null> => {
-  let byUser = boundaryByTx.get(tx);
+): Promise<readonly FullStateBoundary[]> => {
+  let byUser = boundariesByTx.get(tx);
   if (!byUser) {
     byUser = new Map();
-    boundaryByTx.set(tx, byUser);
+    boundariesByTx.set(tx, byUser);
   }
   let pending = byUser.get(userId);
   if (!pending) {
     pending = (async () => {
-      const row = await tx.operation.findFirst({
+      const rows = await tx.operation.findMany({
         where: { userId, ...CAUSAL_FULL_STATE_OPERATION_WHERE },
         orderBy: { serverSeq: 'desc' },
-        select: { serverSeq: true, clientId: true, vectorClock: true },
+        take: FULL_STATE_BOUNDARY_LIMIT,
+        select: { serverSeq: true, clientId: true, vectorClock: true, opType: true },
       });
-      if (!row) return null;
-      const counter = (row.vectorClock as unknown as VectorClock | null)?.[row.clientId];
-      if (typeof counter !== 'number') return null;
-      return { serverSeq: row.serverSeq, authorId: row.clientId, authorCounter: counter };
+      const boundaries: FullStateBoundary[] = [];
+      for (const row of rows) {
+        const isFullImport = row.opType !== 'REPAIR';
+        const counter = (row.vectorClock as unknown as VectorClock | null)?.[
+          row.clientId
+        ];
+        if (typeof counter === 'number') {
+          boundaries.push({
+            serverSeq: row.serverSeq,
+            authorId: row.clientId,
+            authorCounter: counter,
+            isFullImport,
+          });
+        }
+        if (isFullImport) break;
+      }
+      return boundaries;
     })();
     byUser.set(userId, pending);
   }
@@ -65,22 +89,30 @@ export const getFullStateBoundary = (
 };
 
 /**
- * True when the incoming op was made on top of the newest full state and the stored op came before it: the full state
- * already contains the stored op, so the incoming one follows it, whatever their own clocks say (anex/checkpoints).
+ * True when the incoming op was made on top of a full state stored after the stored op: that full state already
+ * contains the stored op, so the incoming one follows it, whatever their own clocks say (anex/checkpoints). Any such
+ * full state counts, not only the newest: a browser that took checkpoint A and edited offline while checkpoint B was
+ * written still made its edits on top of A (dev, 2026-11-20: refused against a change A contained).
  *
  * Needed because a device that receives a full state keeps only the full state's author and itself in its clock, so its
  * next change compared on its own with an older entity change from another device reads as CONCURRENT. This is the
  * server's version of the receivers' own `knows-import-counter` rule in the import filter.
+ *
+ * @param boundaries newest first, as `getFullStateBoundaries` returns them
  */
 export const isCoveredByFullState = (
   op: Operation,
   existingOp: { serverSeq?: number },
-  boundary: FullStateBoundary | null | undefined,
-): boolean =>
-  !!boundary &&
-  typeof existingOp.serverSeq === 'number' &&
-  existingOp.serverSeq < boundary.serverSeq &&
-  (op.vectorClock[boundary.authorId] ?? 0) >= boundary.authorCounter;
+  boundaries: readonly FullStateBoundary[] | null | undefined,
+): boolean => {
+  const existingSeq = existingOp.serverSeq;
+  if (!boundaries || typeof existingSeq !== 'number') return false;
+  for (const boundary of boundaries) {
+    if (boundary.serverSeq <= existingSeq) return false;
+    if ((op.vectorClock[boundary.authorId] ?? 0) >= boundary.authorCounter) return true;
+  }
+  return false;
+};
 
 /**
  * Check if an incoming operation conflicts with existing operations.
@@ -180,7 +212,7 @@ export const detectConflictForEntities = async (
       latestOpByEntityId.set(latestOp.entityId, latestOp);
     }
 
-    const boundary = await getFullStateBoundary(userId, tx);
+    const boundaries = await getFullStateBoundaries(userId, tx);
     for (const entityId of batchEntityIds) {
       const existingOp = latestOpByEntityId.get(entityId);
       if (!existingOp) continue;
@@ -189,7 +221,7 @@ export const detectConflictForEntities = async (
         op,
         entityId,
         existingOp,
-        boundary,
+        boundaries,
       );
       if (conflictResult.hasConflict) {
         return conflictResult;
@@ -209,9 +241,9 @@ export const resolveConflictForExistingOp = (
     vectorClock: unknown;
     serverSeq?: number;
   },
-  boundary?: FullStateBoundary | null,
+  boundaries?: readonly FullStateBoundary[] | null,
 ): ConflictResult => {
-  if (isCoveredByFullState(op, existingOp, boundary)) {
+  if (isCoveredByFullState(op, existingOp, boundaries)) {
     return { hasConflict: false };
   }
 
@@ -365,7 +397,7 @@ export const detectConflictForEntity = async (
     op,
     entityId,
     latestExistingOp,
-    await getFullStateBoundary(userId, tx),
+    await getFullStateBoundaries(userId, tx),
   );
 };
 

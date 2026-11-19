@@ -8,10 +8,12 @@ import {
   EntityConflict,
   extractFullStateFromPayload,
   FULL_STATE_OP_TYPES,
+  isCheckpointFullStateOp,
   isWrappedFullStatePayload,
   Operation,
   VectorClock,
 } from '../core/operation.types';
+import { OperationLogSnapshotService } from '../persistence/operation-log-snapshot.service';
 import { OpLog } from '../../core/log';
 import { OperationApplierService } from '../apply/operation-applier.service';
 import { ConflictResolutionService } from './conflict-resolution.service';
@@ -115,6 +117,11 @@ export class RemoteOpsProcessingService {
        * apply old-epoch ops onto the fresh state.
        */
       fenceEpoch?: number;
+      /**
+       * Pending scaffolding writes the caller discards once the full state is committed (example cards, UI prefs).
+       * Read after `beforeFullStateApply`, which may add to them; never kept on top of a checkpoint.
+       */
+      getDiscardablePendingOpIds?: () => readonly string[];
     },
   ): Promise<{
     localWinOpsCreated: number;
@@ -289,6 +296,7 @@ export class RemoteOpsProcessingService {
       const applyAndValidateWithOperationLogLockHeld = async (): Promise<{
         committedFullStateOpIds: string[];
         blockedByLocalConflict: boolean;
+        keptOnTopCount: number;
       }> => {
         // #9074: asserted AFTER the lock wait — the highest-value fence site
         // for full-state ops (a stale SYNC_IMPORT applied wholesale after a
@@ -305,9 +313,11 @@ export class RemoteOpsProcessingService {
         const fullStateApplyResult: {
           committedFullStateOpIds: string[];
           blockedByLocalConflict: boolean;
+          keptOnTopCount: number;
         } = {
           committedFullStateOpIds: [],
           blockedByLocalConflict: false,
+          keptOnTopCount: 0,
         };
         let hasPrimaryError = false;
         try {
@@ -321,6 +331,12 @@ export class RemoteOpsProcessingService {
               await this.applyNonConflictingOps(validOps, true, {
                 skipDeferredActionDrain: true,
               });
+            fullStateApplyResult.keptOnTopCount =
+              await this._applyUnsentEditsOnTopOfCheckpoint(
+                validOps,
+                fullStateApplyResult.committedFullStateOpIds,
+                options?.getDiscardablePendingOpIds?.() ?? [],
+              );
           }
         } catch (error) {
           hasPrimaryError = true;
@@ -363,6 +379,17 @@ export class RemoteOpsProcessingService {
               applyAndValidateWithOperationLogLockHeld,
             ),
           );
+
+      if (fullStateApplyResult.keptOnTopCount > 0) {
+        // The startup rebuild would otherwise replay these edits before the checkpoint, which wipes them; the
+        // snapshot holds the state as shown. If saving it fails, the startup rebuild applies them after the
+        // checkpoint itself (OperationLogHydratorService).
+        await this.injector.get(OperationLogSnapshotService).saveCurrentStateAsSnapshot();
+        this.snackService.open({
+          msg: T.F.SYNC.S.CHECKPOINT_KEPT_UNSENT,
+          translateParams: { count: fullStateApplyResult.keptOnTopCount },
+        });
+      }
 
       return {
         localWinOpsCreated: 0,
@@ -574,6 +601,53 @@ export class RemoteOpsProcessingService {
    *        apply window and drains deferred actions after validation or abort.
    * @throws Re-throws if application fails (ops marked as failed first)
    */
+  /**
+   * Stage 6 (anex/checkpoints): after a checkpoint is committed, this browser's unsent edits are applied on top of it,
+   * so the state shown is the server's confirmed state plus the edits still on their way. They stay unsent in the
+   * change log and are uploaded as usual; other devices replay them after the checkpoint. Applied like received ops:
+   * reducers and archive side effects run, no effect re-fires and nothing is captured as a new op. Runs with the
+   * operation-log lock and the remote-apply hold, before validation.
+   *
+   * Only for checkpoints: a full import or a REPAIR without its base keeps clean-slate semantics.
+   */
+  private async _applyUnsentEditsOnTopOfCheckpoint(
+    validOps: Operation[],
+    committedFullStateOpIds: string[],
+    discardablePendingOpIds: readonly string[],
+  ): Promise<number> {
+    const committed = new Set(committedFullStateOpIds);
+    const committedFullStateOps = validOps.filter((op) => committed.has(op.id));
+    if (
+      committedFullStateOps.length === 0 ||
+      !committedFullStateOps.every(isCheckpointFullStateOp)
+    ) {
+      return 0;
+    }
+    const discardable = new Set(discardablePendingOpIds);
+    const unsent = (await this.opLogStore.getUnsynced()).filter(
+      (entry) =>
+        entry.source === 'local' &&
+        !discardable.has(entry.op.id) &&
+        !FULL_STATE_OP_TYPES.has(entry.op.opType),
+    );
+    if (unsent.length === 0) return 0;
+
+    const result = await this.operationApplier.applyOperations(
+      unsent.map((entry) => entry.op),
+      { skipDeferredLocalActions: true },
+    );
+    if (result.failedOp) {
+      OpLog.err(
+        'RemoteOpsProcessingService: an unsent edit failed to apply on top of the checkpoint',
+        { opId: result.failedOp.op.id },
+      );
+    }
+    OpLog.normal(
+      `RemoteOpsProcessingService: Kept ${result.appliedOps.length} unsent edit(s) on top of the checkpoint`,
+    );
+    return result.appliedOps.length;
+  }
+
   async applyNonConflictingOps(
     ops: Operation[],
     callerHoldsLock: boolean = false,

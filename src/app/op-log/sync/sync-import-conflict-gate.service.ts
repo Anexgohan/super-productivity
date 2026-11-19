@@ -4,6 +4,7 @@ import {
   ActionType,
   extractActionPayload,
   FULL_STATE_OP_TYPES,
+  isCheckpointFullStateOp,
   Operation,
   OperationLogEntry,
   OpType,
@@ -132,6 +133,11 @@ export interface IncomingFullStateConflictGateResult {
   hasMeaningfulPending: boolean;
   discardablePendingOpIds: string[];
   dialogData?: SyncImportConflictData;
+  /**
+   * The incoming full state is a checkpoint and the pending work is ordinary edits: no dialog. The browser takes the
+   * checkpoint and applies its unsent edits on top (anex/checkpoints, Stage 6).
+   */
+  keepsPendingOnTop?: boolean;
 }
 
 /**
@@ -282,6 +288,19 @@ export class SyncImportConflictGateService {
 
     if (!hasMeaningfulPending) {
       return result;
+    }
+
+    // A checkpoint contains every change the server had and keeps later edits on top, so ordinary unsent edits are
+    // not in conflict with it: they are applied on top after it. Two full states against each other (an unsent full
+    // state of this browser's own) still ask, as does any full import or REPAIR without its base in the download.
+    const incomingFullStateOps = incomingOps.filter((op) =>
+      FULL_STATE_OP_TYPES.has(op.opType),
+    );
+    if (
+      incomingFullStateOps.every(isCheckpointFullStateOp) &&
+      !pendingOps.some((entry) => FULL_STATE_OP_TYPES.has(entry.op.opType as OpType))
+    ) {
+      return { ...result, keepsPendingOnTop: true };
     }
 
     return {

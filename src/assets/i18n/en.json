@@ -1624,6 +1624,7 @@
         "BTN_CONFIGURE": "Configure",
         "BTN_FORCE_OVERWRITE": "Force Overwrite",
         "CHANGE_PASSWORD_FAILED": "Failed to change password: {{message}}",
+        "CHECKPOINT_KEPT_UNSENT": "Updated to the latest version from the server. Your {{count}} unsent change(s) were kept and will be sent.",
         "CLOCK_DRIFT_WARNING": "Your device clock appears to be off by {{minutes}} minutes. This may cause sync issues.",
         "COMPACTION_FAILED": "Database cleanup failed. App may slow down.",
         "CONFLICT_DIALOG_TIMEOUT": "Sync conflict dialog timed out and was cancelled. Sync will retry on next trigger.",

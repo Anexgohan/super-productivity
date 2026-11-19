@@ -350,6 +350,70 @@ describe('SyncImportConflictGateService', () => {
     expect(result.discardablePendingOpIds).toEqual(['local-example-task-create']);
   });
 
+  describe('checkpoints (anex/checkpoints, Stage 6)', () => {
+    const checkpoint = (): Operation =>
+      createOperation({
+        id: 'checkpoint',
+        opType: OpType.Repair,
+        clientId: 'spBridge',
+        vectorClock: { spBridge: 10 },
+        syncImportReason: 'REPAIR',
+        repairBaseServerSeq: 1106,
+      });
+    const pendingEdit = (): OperationLogEntry =>
+      createEntry(
+        createOperation({
+          id: 'local-task-update',
+          actionType: 'test' as ActionType,
+          opType: OpType.Update,
+          entityType: 'TASK',
+          entityId: 'task-1',
+          payload: { title: 'Local title' },
+          clientId: 'client-A',
+          vectorClock: { clientA: 1 },
+        }),
+      );
+
+    beforeEach(() => opLogStoreSpy.hasSyncedOps.and.resolveTo(true));
+
+    it('keeps ordinary unsent edits on top of a checkpoint without a dialog', async () => {
+      opLogStoreSpy.getUnsynced.and.resolveTo([pendingEdit()]);
+      const result = await service.checkIncomingFullStateConflict([checkpoint()]);
+      expect(result.hasMeaningfulPending).toBeTrue();
+      expect(result.keepsPendingOnTop).toBeTrue();
+      expect(result.dialogData).toBeUndefined();
+    });
+
+    it('still asks for a REPAIR without its base', async () => {
+      opLogStoreSpy.getUnsynced.and.resolveTo([pendingEdit()]);
+      const legacy = { ...checkpoint(), repairBaseServerSeq: undefined };
+      const result = await service.checkIncomingFullStateConflict([legacy]);
+      expect(result.keepsPendingOnTop).toBeUndefined();
+      expect(result.dialogData).toBeDefined();
+    });
+
+    it('still asks when the download also carries a full import', async () => {
+      opLogStoreSpy.getUnsynced.and.resolveTo([pendingEdit()]);
+      const result = await service.checkIncomingFullStateConflict([
+        checkpoint(),
+        createOperation({ id: 'import' }),
+      ]);
+      expect(result.dialogData).toBeDefined();
+    });
+
+    it('still asks when this browser has an unsent full state of its own', async () => {
+      opLogStoreSpy.getUnsynced.and.resolveTo([
+        pendingEdit(),
+        createEntry(createOperation({ id: 'own-import', clientId: 'client-A' }), {
+          seq: 2,
+        }),
+      ]);
+      const result = await service.checkIncomingFullStateConflict([checkpoint()]);
+      expect(result.keepsPendingOnTop).toBeUndefined();
+      expect(result.dialogData).toBeDefined();
+    });
+  });
+
   it('should treat pending full-state ops as meaningful', async () => {
     const incomingSyncImport = createOperation({
       id: 'incoming-sync-import',

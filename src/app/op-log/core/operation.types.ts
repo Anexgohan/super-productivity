@@ -38,6 +38,17 @@ export const FULL_STATE_OP_TYPES = fullStateOpTypeHelpers.FULL_STATE_OP_TYPES;
 export const isFullStateOpType = fullStateOpTypeHelpers.isFullStateOpType;
 
 /**
+ * A checkpoint (anex/checkpoints): a REPAIR tied to the server change it was built from. The server accepts it only
+ * while that change is the newest, so it contains everything stored before it, and later edits from other devices are
+ * replayed on top of it. A browser takes one quietly and keeps its own unsent edits on top (Stage 6). A REPAIR without
+ * a base, and the full imports, keep their old handling.
+ */
+export const isCheckpointFullStateOp = (op: {
+  opType: string;
+  repairBaseServerSeq?: number;
+}): boolean => op.opType === OpType.Repair && op.repairBaseServerSeq !== undefined;
+
+/**
  * Entity type — Super Productivity's domain set, sourced from `@sp/shared-schema`
  * so client and server agree on the union.
  */

@@ -25,6 +25,8 @@ type StoredRow = {
 
 const makeTx = (rows: StoredRow[]): any => ({
   operation: {
+    // No full states stored: the checkpoint boundaries play no part here.
+    findMany: async () => [],
     // Mirrors: where { userId, entityType, OR: [{entityId:X}, {entityIds:{has:X}}] }
     findFirst: async ({ where }: any) => {
       const target =

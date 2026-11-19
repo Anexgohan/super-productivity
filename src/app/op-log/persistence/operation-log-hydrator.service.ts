@@ -10,6 +10,7 @@ import {
   SchemaMigrationService,
 } from './schema-migration.service';
 import { OperationLogSnapshotService } from './operation-log-snapshot.service';
+import { withUnsentEditsAfterCheckpoint } from './unsent-after-checkpoint.util';
 import { OperationLogRecoveryService } from './operation-log-recovery.service';
 import { SyncHydrationService } from './sync-hydration.service';
 import { ArchiveMigrationService } from './archive-migration.service';
@@ -241,9 +242,13 @@ export class OperationLogHydratorService {
         // - reducerRejectedAt ops: conversion, schema migration, or reducer
         //   application could not produce state, so replay must not try them
         //   again on every startup.
-        const tailOps = (
-          await this.opLogStore.getOpsAfterSeq(snapshot.lastAppliedOpSeq)
-        ).filter((entry) => entry.reducerRejectedAt === undefined);
+        // Unsent edits logged before a checkpoint replay after it (anex/checkpoints).
+        const tailOps = withUnsentEditsAfterCheckpoint(
+          (await this.opLogStore.getOpsAfterSeq(snapshot.lastAppliedOpSeq)).filter(
+            (entry) => entry.reducerRejectedAt === undefined,
+          ),
+          await this.opLogStore.getUnsynced(),
+        );
 
         if (tailOps.length > 0) {
           // Optimization: If last op is SyncImport or Repair, skip replay and load directly
@@ -338,8 +343,12 @@ export class OperationLogHydratorService {
         // We must replay ALL operations from the beginning of the log.
         // Status-blind except for durable reducer rejections — see the replay
         // policy note in the snapshot branch above.
-        const allOps = (await this.opLogStore.getOpsAfterSeq(0)).filter(
-          (entry) => entry.reducerRejectedAt === undefined,
+        // Unsent edits logged before a checkpoint replay after it (anex/checkpoints).
+        const allOps = withUnsentEditsAfterCheckpoint(
+          (await this.opLogStore.getOpsAfterSeq(0)).filter(
+            (entry) => entry.reducerRejectedAt === undefined,
+          ),
+          await this.opLogStore.getUnsynced(),
         );
 
         if (allOps.length === 0) {

@@ -640,6 +640,8 @@ describe('Duplicate Operation Pre-check', () => {
               clientId: 'client-2',
               vectorClock: { 'client-2': 1 },
             }),
+          // No full states stored.
+          findMany: vi.fn().mockResolvedValue([]),
           createMany: vi.fn(),
         },
         userSyncState: {
