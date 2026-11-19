@@ -898,9 +898,10 @@ export class BridgeCore {
   /**
    * True when no board op has ever been applied to this account.
    *
-   * The materializer creates `state.BOARD` on the first board op of any kind, so an absent record and an empty `boardCfgs` mean different things.
-   * Absent is "untouched, the browser is drawing the starter boards"; empty is "the owner deleted them all".
-   * Only absent gets defaults, which is what keeps a deleted board deleted across a refresh and a re-login.
+   * The app's rules start every board with the starter boards (`initialBoardsState`), exactly as a browser does, so with
+   * them answering (anex/app-rules) the record is always present and this stays false. It guarded the bridge's former
+   * rewritten copy, which created `state.BOARD` only on the first board op; kept so a board state without the record is
+   * still read as "untouched" rather than "all deleted".
    */
   private _boardsUntouched(): boolean {
     return this.store.state.BOARD === undefined;
@@ -1111,16 +1112,20 @@ export class BridgeCore {
   }
 
   status(): Record<string, unknown> {
+    const appRules = this.store.appRulesStatus;
     const counts: Record<string, number> = {};
-    for (const [type, entities] of Object.entries(this.store.state)) {
-      if (type === 'BOARD') {
-        // Not an entity map: counting keys of the `{ boardCfgs }` wrapper
-        // reported 1 however many boards existed.
-        counts[type] = this._boardCfgs().length;
-        continue;
+    // Counts need the board; while the app rules cannot answer, status still reports why instead of failing itself.
+    if (appRules.state === 'ready') {
+      for (const [type, entities] of Object.entries(this.store.state)) {
+        if (type === 'BOARD') {
+          // Not an entity map: counting keys of the `{ boardCfgs }` wrapper
+          // reported 1 however many boards existed.
+          counts[type] = this._boardCfgs().length;
+          continue;
+        }
+        counts[type] =
+          entities && typeof entities === 'object' ? Object.keys(entities).length : 0;
       }
-      counts[type] =
-        entities && typeof entities === 'object' ? Object.keys(entities).length : 0;
     }
     return {
       lastServerSeq: this.store.lastServerSeq,
@@ -1129,8 +1134,8 @@ export class BridgeCore {
       // true = live websocket push; false = falling back to polling
       isLive: this.store.isLive,
       entityCounts: counts,
-      // State check only (anex/state-check): counts and seqs, never ids or values.
-      ...(this.store.stateCheckStatus ? { stateCheck: this.store.stateCheckStatus } : {}),
+      // The app's own rules compute this board (anex/app-rules): counts and seqs, never ids or values.
+      appRules,
     };
   }
 

@@ -17,6 +17,7 @@ import { BridgeCore } from './core';
 import { OpFactory } from './op-factory';
 import type { UserRow } from './auth/store';
 import type { SyncIdentityProvider } from './auth/sync-identity';
+import type { AppRulesWorker } from './app-rules-worker';
 
 export interface Board {
   core: BridgeCore;
@@ -42,6 +43,8 @@ export class UserBoards {
     private readonly _cfg: BridgeConfig,
     private readonly _identities: SyncIdentityProvider,
     private readonly _container: Board,
+    /** The one worker that runs the app's own rules for every board. */
+    private readonly _appRules: AppRulesWorker,
     private readonly _opts: { maxResident?: number; idleMs?: number } = {},
   ) {}
 
@@ -74,7 +77,7 @@ export class UserBoards {
     // One id per board: the server rejects an upload whose envelope clientId
     // disagrees with the ops inside it, so store and factory must agree.
     const clientId = `${this._cfg.clientId}-u${user.id}`;
-    const store = new StateStore(this._cfg, {
+    const store = new StateStore(this._cfg, this._appRules, {
       mintToken: () => this._identities.tokenForUser(user),
       cacheKey: `user-${user.id}`,
       clientId,

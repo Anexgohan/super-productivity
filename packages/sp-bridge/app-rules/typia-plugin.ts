@@ -1,5 +1,5 @@
 /**
- * Build-time typia transform for the app rules bundle (anex/state-check).
+ * Build-time typia transform for the app rules bundle (anex/app-rules).
  *
  * The app validates data with `typia.createValidate<T>()`, which only works after typia's TypeScript transform has rewritten
  * the call into generated validation code. The app's Angular build gets that transform through ts-patch; esbuild never runs

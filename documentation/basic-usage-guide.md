@@ -8,7 +8,7 @@ Two companion documents sit alongside this one. `api-reference.md` is the comple
 
 ## What you are talking to
 
-`sp-bridge` is a headless peer on the sync network. Rather than sitting in front of a database, it joins the same sync mesh your app clients use, replays the operation log, and builds its own copy of the application state. That copy is what the REST API serves.
+`sp-bridge` is a headless peer on the sync network. Rather than sitting in front of a database, it joins the same sync mesh your app clients use, replays the operation log, and computes the application state with the app's own code, exactly as a browser does. That state is what the REST API serves.
 
 The practical consequence is that the API is a first-class client, not a side door. It sees what your other devices see, changes made through it sync outward like any other client's would, and it keeps working whether or not anything else is running. There is no desktop app to keep open and no plugin to install.
 

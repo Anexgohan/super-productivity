@@ -4,7 +4,7 @@ import type { Plugin } from 'esbuild';
 import { typiaTransformPlugin } from './app-rules/typia-plugin';
 
 /**
- * App rules bundle (anex/state-check): the app's own reducers and archive code, built into one self-contained file.
+ * App rules bundle (anex/app-rules): the app's own reducers and archive code, built into one self-contained file.
  *
  * Built from the app's source with the app's compiler settings, so it needs the repo root's packages at build time (the image's
  * build stage installs them) and none at runtime. Runs after the bridge's own build: separate configs, so neither cleans the other's output.

@@ -1,68 +1,79 @@
 /**
- * App rules worker entry (anex/state-check).
+ * App rules worker entry (anex/app-rules).
  *
  * Runs in its own thread with its own globals and heap cap: a failure here ends this worker, never the bridge.
- * Requests are handled strictly in arrival order, one at a time, so a snapshot always reflects every page sent before it.
+ * Holds one set of app rules per resident board, each with its own cache file. Requests are handled strictly in arrival
+ * order, one at a time, so a snapshot always reflects every page sent before it for that board.
  */
 import './globals';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { parentPort } from 'node:worker_threads';
-import type { StateCheckRequest, StateCheckResponse } from '../src/state-check-protocol';
+import type { AppRulesRequest, AppRulesResponse } from '../src/app-rules-protocol';
 import { AppRules, APP_RULES_CACHE_VERSION, type AppRulesCache } from './app-rules';
 
 if (!parentPort) throw new Error('app rules: must run as a worker thread');
 const port = parentPort;
 
-let rules: AppRules | undefined;
-let cachePath = '';
+const boards = new Map<string, { rules: AppRules; cachePath: string }>();
 
-const persist = (): void => {
-  if (!rules) return;
-  const tmp = `${cachePath}.tmp`;
-  writeFileSync(tmp, JSON.stringify(rules.toCache()));
-  renameSync(tmp, cachePath);
+const persist = (board: { rules: AppRules; cachePath: string }): void => {
+  const tmp = `${board.cachePath}.tmp`;
+  writeFileSync(tmp, JSON.stringify(board.rules.toCache()));
+  renameSync(tmp, board.cachePath);
 };
 
-const handle = async (req: StateCheckRequest): Promise<StateCheckResponse> => {
+const handle = async (req: AppRulesRequest): Promise<AppRulesResponse> => {
   if (req.kind === 'init') {
-    cachePath = req.init.cachePath;
-    rules = new AppRules(req.init.clientId);
+    const { cachePath, clientId } = req.init;
+    const rules = new AppRules(clientId);
     if (existsSync(cachePath)) {
       try {
         const cache = JSON.parse(readFileSync(cachePath, 'utf-8')) as AppRulesCache;
         if (cache.version === APP_RULES_CACHE_VERSION) rules.restore(cache);
         else
           console.warn(
-            'sp-bridge state check: app rules cache from another version; rebuilding from seq 0',
+            `sp-bridge app rules: ${req.board}: cache from another version; rebuilding from seq 0`,
           );
       } catch {
         console.warn(
-          'sp-bridge state check: app rules cache unreadable; rebuilding from seq 0',
+          `sp-bridge app rules: ${req.board}: cache unreadable; rebuilding from seq 0`,
         );
       }
     }
+    boards.set(req.board, { rules, cachePath });
     return {
       id: req.id,
       ok: true,
       kind: 'init',
       seq: rules.seq,
       sawArchiveOp: rules.sawArchiveOp,
+      mergedClock: rules.mergedClock,
     };
   }
-  if (!rules) throw new Error('not initialized');
+  if (req.kind === 'close') {
+    boards.delete(req.board);
+    return { id: req.id, ok: true, kind: 'close' };
+  }
+  const board = boards.get(req.board);
+  if (!board) throw new Error(`board ${req.board} is not open`);
   if (req.kind === 'apply') {
-    const before = rules.seq;
-    const result = await rules.applyRows(req.rows);
-    if (rules.seq !== before) persist();
+    const before = board.rules.seq;
+    const result = await board.rules.applyRows(req.rows);
+    if (board.rules.seq !== before) persist(board);
     return { id: req.id, ok: true, kind: 'apply', result };
   }
-  return { id: req.id, ok: true, kind: 'snapshot', snapshot: await rules.snapshot() };
+  return {
+    id: req.id,
+    ok: true,
+    kind: 'snapshot',
+    snapshot: await board.rules.snapshot(),
+  };
 };
 
 let queue: Promise<void> = Promise.resolve();
-port.on('message', (req: StateCheckRequest) => {
+port.on('message', (req: AppRulesRequest) => {
   queue = queue.then(async () => {
-    let res: StateCheckResponse;
+    let res: AppRulesResponse;
     try {
       res = await handle(req);
     } catch (err) {

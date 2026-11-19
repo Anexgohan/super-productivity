@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { randomBytes, scrypt } from 'node:crypto';
-import { hashPassword, verifyPassword } from '../src/auth/passwords';
+import { hashPassword, needsRehash, verifyPassword } from '../src/auth/passwords';
 
-// Builds a stored hash at caller-chosen cost, which hashPassword cannot do (its parameters are fixed).
+// Builds a scrypt hash, as stored before the switch to Argon2id, at caller-chosen cost.
 const hashAt = (password: string, N: number, r: number, p: number): Promise<string> => {
   const salt = randomBytes(16);
   return new Promise((resolve, reject) => {
@@ -19,15 +19,13 @@ const hashAt = (password: string, N: number, r: number, p: number): Promise<stri
 };
 
 describe('hashPassword', () => {
-  it('produces the documented scrypt$N$r$p$salt$hash shape', async () => {
+  it('stores Argon2id at OWASP 19 MiB, 2 passes, in the standard self-describing format', async () => {
     const stored = await hashPassword('correct horse');
-    const parts = stored.split('$');
-    expect(parts).toHaveLength(6);
-    expect(parts[0]).toBe('scrypt');
     // Parameters travel with the hash so they can be raised later without invalidating old accounts.
-    expect(Number(parts[1])).toBe(131072);
-    expect(Number(parts[2])).toBe(8);
-    expect(Number(parts[3])).toBe(1);
+    expect(stored).toMatch(
+      /^\$argon2id\$v=19\$m=19456,t=2,p=1\$[A-Za-z0-9+/]{22}\$[A-Za-z0-9+/]{43}$/,
+    );
+    expect(needsRehash(stored)).toBe(false);
   });
 
   it('salts, so the same password hashes differently every time', async () => {
@@ -52,11 +50,26 @@ describe('verifyPassword', () => {
     expect(await verifyPassword('', stored)).toBe(false);
   });
 
-  it('verifies a hash stored at different cost parameters', async () => {
-    // The forward-compatibility promise: raising SCRYPT_N later must not lock existing accounts out.
-    const cheap = await hashAt('legacy pw', 16384, 8, 1);
-    expect(await verifyPassword('legacy pw', cheap)).toBe(true);
-    expect(await verifyPassword('wrong', cheap)).toBe(false);
+  it('still verifies a scrypt hash made before the switch, and asks for it to be replaced', async () => {
+    // Existing accounts must keep signing in; the matching password is then rehashed with Argon2id.
+    const legacy = await hashAt('legacy pw', 16384, 8, 1);
+    expect(await verifyPassword('legacy pw', legacy)).toBe(true);
+    expect(await verifyPassword('wrong', legacy)).toBe(false);
+    expect(needsRehash(legacy)).toBe(true);
+  });
+
+  it('asks for a rehash when an Argon2id hash was made at another setting', async () => {
+    const stored = await hashPassword('pw');
+    const older = stored.replace('m=19456,t=2', 'm=9216,t=4');
+    expect(needsRehash(older)).toBe(true);
+  });
+
+  it('refuses a stored hash whose cost was tampered upward, instead of allocating it', async () => {
+    const stored = await hashPassword('pw');
+    expect(await verifyPassword('pw', stored.replace('m=19456', 'm=4194304'))).toBe(
+      false,
+    );
+    expect(await verifyPassword('pw', stored.replace('t=2', 't=99'))).toBe(false);
   });
 
   it('rejects malformed stored values instead of throwing', async () => {
@@ -68,6 +81,9 @@ describe('verifyPassword', () => {
       'bcrypt$131072$8$1$c2FsdA==$aGFzaA==',
       'scrypt$notanumber$8$1$c2FsdA==$aGFzaA==',
       'scrypt$131072$notanumber$1$c2FsdA==$aGFzaA==',
+      '$argon2id$v=19$m=19456,t=2,p=1$onlysalt',
+      '$argon2id$v=19$m=19456,t=2$c2FsdA$aGFzaA',
+      '$argon2i$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA',
     ];
     for (const stored of malformed) {
       expect(await verifyPassword('anything', stored)).toBe(false);

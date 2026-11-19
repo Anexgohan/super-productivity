@@ -1,5 +1,5 @@
 /**
- * The few browser globals the app's code reads while loading (anex/state-check).
+ * The few browser globals the app's code reads while loading (anex/app-rules).
  *
  * Imported first by the worker, so these exist before any app module evaluates. They live only in the worker's own global scope:
  * the bridge's main thread never sees a `window`, so Fastify and pg can't mistake themselves for running in a browser.

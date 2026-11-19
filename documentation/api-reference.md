@@ -25,14 +25,15 @@ body declared as JSON (`400 FST_ERR_CTP_EMPTY_JSON_BODY`).
 
 **Errors** - a uniform shape: `{"error": "<message>"}` with the status code.
 
-| Code  | Meaning                                                                    |
-| ----- | -------------------------------------------------------------------------- |
-| `400` | bad input - missing/invalid field, unwritable field, unknown reference     |
-| `401` | missing or invalid credential                                              |
-| `403` | authenticated but not allowed - read-only role, or somebody else's account |
-| `404` | entity not found                                                           |
-| `409` | refused by a safety guard (e.g. deleting a task that still has subtasks)   |
-| `507` | sync storage is full; nothing was saved (`SYNC_STORAGE_LIMIT`)             |
+| Code  | Meaning                                                                               |
+| ----- | ------------------------------------------------------------------------------------- |
+| `400` | bad input - missing/invalid field, unwritable field, unknown reference                |
+| `401` | missing or invalid credential                                                         |
+| `403` | authenticated but not allowed - read-only role, or somebody else's account            |
+| `404` | entity not found                                                                      |
+| `409` | refused by a safety guard (e.g. deleting a task that still has subtasks)              |
+| `503` | the board cannot answer right now; the message says why (`appRules` in `/api/status`) |
+| `507` | sync storage is full; nothing was saved (`SYNC_STORAGE_LIMIT`)                        |
 
 **Freshness** - reads reflect the last op-log poll (default 15s). Call
 `POST /api/sync/refresh` first if you need guaranteed-current data. Writes
@@ -214,7 +215,7 @@ curl -H "X-Api-Key: $KEY" http://host:18230/api/status
 }
 ```
 
-With the state check on (`SP_STATE_CHECK=on`, container account only), the body also carries a `stateCheck` block: `state` (`starting`, `catching-up`, `running` or `stopped`), how far it has got (`appRulesSeq`), the seq and time of the last comparison, `differences` counted by kind, `droppedOps`, `reducerFailures`, `archiveFailures`, its memory use (`heapUsedMb`), and `error` when it stopped. Counts and seqs only, never ids or content. A `new` count above zero is a difference no known gap explains.
+The body also carries an `appRules` block for the board: `state` (`starting`, `loading`, `ready` or `unavailable`), `seq` (the last server change applied), `droppedOps` (changes a browser drops as outdated by a full import), `reducerFailures`, `archiveFailures`, the worker's memory (`heapUsedMb`), and `error` when the board cannot answer. While `state` is not `ready`, every other route on that board answers `503` with the same reason, and `entityCounts` is empty.
 
 ### `POST /api/sync/refresh`
 
@@ -314,7 +315,7 @@ Global configuration, keyed by section.
 
 ### `GET /api/entities`
 
-Lists every materialized entity type available for raw access.
+Lists every entity type available for raw access.
 
 ### `GET /api/entities/:type`
 

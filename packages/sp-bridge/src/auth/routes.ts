@@ -8,7 +8,7 @@
  * Gating that config behind a session is the point.
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { hashPassword, verifyPassword } from './passwords';
+import { hashPassword, needsRehash, verifyPassword } from './passwords';
 import { AuthStore, ROLES, isRole, type ApiKeyRow, type Role } from './store';
 import { formatApiKey, materialFor, mintSalt } from './api-key';
 import { SessionManager, SESSION_COOKIE, parseCookies } from './session';
@@ -151,6 +151,22 @@ export const registerAuthRoutes = (
   const callerOf = (req: FastifyRequest): Principal | undefined => principalOf(req);
 
   /**
+   * Checks a typed password and, when it matches a hash made before the switch to Argon2id (anex/argon2id-passwords),
+   * stores a fresh one. The password is only ever available here, so this is how each old account moves over.
+   */
+  const checkPassword = async (
+    user: { id: number; username: string; passwordHash: string },
+    password: string,
+  ): Promise<boolean> => {
+    if (!(await verifyPassword(password, user.passwordHash))) return false;
+    if (needsRehash(user.passwordHash)) {
+      await store.setPassword(user.id, await hashPassword(password));
+      console.log(`sp-bridge: password hash upgraded to Argon2id: ${user.username}`);
+    }
+    return true;
+  };
+
+  /**
    * Refuses a credential-widening call made with a key unless the caller also proves the password.
    *
    * A key that can mint another key survives its own revocation, so this is what keeps "revoke the leaked key" a complete answer.
@@ -172,7 +188,7 @@ export const registerAuthRoutes = (
       });
       return false;
     }
-    if (!(await verifyPassword(given, caller.user.passwordHash))) {
+    if (!(await checkPassword(caller.user, given))) {
       await sleep(FAIL_DELAY_MS);
       await reply.status(403).send({ error: 'That password is not correct.' });
       return false;
@@ -255,7 +271,7 @@ export const registerAuthRoutes = (
         return reply.status(400).send({ error: 'Username and password required' });
       }
       const user = await store.findUser(username);
-      const ok = user ? await verifyPassword(password, user.passwordHash) : false;
+      const ok = user ? await checkPassword(user, password) : false;
       if (!user || !ok) {
         limiter.fail(ip);
         await sleep(FAIL_DELAY_MS);

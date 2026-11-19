@@ -10,7 +10,11 @@ import { fileURLToPath } from 'node:url';
 import { setDeploymentEncryptSalt } from '@sp/sync-core';
 import { loadConfig } from './config';
 import { SyncClient, mintSuperSyncToken } from './sync-client';
-import { Materializer } from './materializer';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { AppRulesWorker } from './app-rules-worker';
+import { AppRulesBoard } from './app-rules-board';
 import type { AuthWiring, InternalWiring } from './rest';
 import type { UserBoards } from './user-boards';
 
@@ -44,15 +48,31 @@ const runDump = async (): Promise<void> => {
   await client.authenticate();
   console.log('sp-bridge: authenticated');
 
-  const { ops, latestSeq } = await client.downloadOpsSince(0);
-  console.log(`sp-bridge: downloaded ${ops.length} ops (latestSeq=${latestSeq})`);
-
-  const materializer = new Materializer(cfg.encryptionPassword);
-  await materializer.applyOps(ops);
-  console.log(`sp-bridge: materialized to seq ${materializer.lastServerSeq}`);
-
-  summarize(materializer.state);
+  // The app's own rules, as in serve, on a throwaway cache so a dump never touches a running bridge's files.
+  const appRules = new AppRulesWorker(appRulesWorkerPath());
+  appRules.start();
+  const dir = mkdtempSync(join(tmpdir(), 'sp-bridge-dump-'));
+  try {
+    const board = new AppRulesBoard(appRules, {
+      board: 'dump',
+      clientId: cfg.clientId,
+      cachePath: join(dir, 'app-rules-cache.json'),
+      encryptionPassword: cfg.encryptionPassword,
+    });
+    await board.open();
+    const { latestSeq } = await client.downloadOpsSince(0, (page) => board.apply(page));
+    await board.updateView();
+    console.log(`sp-bridge: applied to seq ${board.seq} (latestSeq=${latestSeq})`);
+    summarize(board.view);
+  } finally {
+    appRules.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
 };
+
+/** Built beside this file by tsup.app-rules.config.ts. */
+const appRulesWorkerPath = (): string =>
+  fileURLToPath(new URL('./app-rules-worker.js', import.meta.url));
 
 const runServe = async (): Promise<void> => {
   const cfg = loadConfig();
@@ -62,24 +82,12 @@ const runServe = async (): Promise<void> => {
 
   const { OpFactory } = await import('./op-factory');
 
-  const store = new StateStore(cfg);
-  await store.start(cfg.pollIntervalSec * 1000);
+  // One worker runs the app's own rules for every board (anex/app-rules). It restarts by itself if it fails.
+  const appRules = new AppRulesWorker(appRulesWorkerPath());
+  appRules.start();
 
-  if (cfg.stateCheck) {
-    const { StateCheck } = await import('./state-check');
-    const stateCheck = new StateCheck({
-      dataDir: cfg.dataDir,
-      clientId: cfg.clientId,
-      encryptionPassword: cfg.encryptionPassword,
-      // Built beside this file by tsup.app-rules.config.ts.
-      workerPath: fileURLToPath(new URL('./app-rules-worker.js', import.meta.url)),
-      bridge: () => ({ state: store.state, seq: store.lastServerSeq }),
-      download: (sinceSeq, onPage) => store.downloadPages(sinceSeq, onPage),
-    });
-    store.attachStateCheck(stateCheck);
-    // Never throws: a state check that cannot start logs why and stays stopped.
-    await stateCheck.start();
-  }
+  const store = new StateStore(cfg, appRules);
+  await store.start(cfg.pollIntervalSec * 1000);
 
   // Postgres backs two independent things - browser accounts and the durable
   // web-app sync token - so it is opened once here rather than by either.
@@ -176,7 +184,7 @@ const runServe = async (): Promise<void> => {
   let boards: UserBoards | undefined;
   if (auth?.override) {
     const { UserBoards } = await import('./user-boards');
-    boards = new UserBoards(cfg, auth.override.identities, { core, store });
+    boards = new UserBoards(cfg, auth.override.identities, { core, store }, appRules);
   }
 
   const app = createRestServer(core, store, auth, internal, boards);
@@ -188,6 +196,7 @@ const runServe = async (): Promise<void> => {
   const shutdown = async (): Promise<void> => {
     boards?.stopAll();
     store.stop();
+    appRules.stop();
     await app.close();
     process.exit(0);
   };

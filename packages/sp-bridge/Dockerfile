@@ -29,7 +29,7 @@ RUN npm run build --workspace @sp/sync-core \
  && npm run build --workspace @sp/shared-schema \
  && npm run build:bridge --workspace @sp/sp-bridge
 
-# ── App rules for the state check (anex/state-check) ───────────────────────
+# ── App rules (anex/app-rules) ──────────────────────────────────────────────
 # The app's own reducers and archive code, built from the app's source with the app's packages into one self-contained
 # file. This stage needs the whole root install; the runtime image gets only the built file.
 # Plain JavaScript, the same on every platform, so it builds on the build host's own (as the web image's build stage does).
@@ -70,7 +70,7 @@ ENV NODE_ENV=production
 # Whole workspace tree: node_modules/@sp/* are symlinks into packages/, so
 # both must travel together.
 COPY --from=builder /repo /app
-# One self-contained file, loaded only when SP_STATE_CHECK is on.
+# One self-contained file: the app's own rules, which compute every board the API answers from.
 COPY --from=app-rules /repo/packages/sp-bridge/dist/app-rules-worker.js /app/packages/sp-bridge/dist/app-rules-worker.js
 
 EXPOSE 1902

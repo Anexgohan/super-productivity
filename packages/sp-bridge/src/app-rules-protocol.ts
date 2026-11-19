@@ -1,33 +1,37 @@
 /**
- * Messages between the bridge and its app-rules worker (anex/state-check).
+ * Messages between the bridge and its app-rules worker (anex/app-rules).
  *
+ * One worker holds the app rules of every resident board; each request names its board.
  * Types only, no runtime code: the worker bundle imports this file, and nothing here may pull bridge or app modules across the thread boundary.
  */
+
 /**
  * A downloaded op, decrypted on the bridge's main thread before it crosses to the worker.
  * The main thread already holds the derived key; a worker deriving its own would keep another 64 MB Argon2id buffer alive for good.
  * `wasEncrypted` tells the worker to run the integrity checks a browser runs on every op it decrypts.
  */
-export interface StateCheckRow {
+export interface AppRulesRow {
   serverSeq: number;
   op: Record<string, unknown>;
   wasEncrypted: boolean;
 }
 
-export interface StateCheckInit {
-  /** The bridge's own sync identity, so its round-tripped writes count as its own ops, as a browser's do. */
+export interface AppRulesInit {
+  /** The board's own sync identity, so its round-tripped writes count as its own ops, as a browser's do. */
   clientId: string;
   cachePath: string;
 }
 
-/** Bridge → worker. Every request carries an id; the worker answers each one, in order. */
-export type StateCheckRequest =
-  | { id: number; kind: 'init'; init: StateCheckInit }
-  | { id: number; kind: 'apply'; rows: StateCheckRow[] }
-  | { id: number; kind: 'snapshot' };
+/** Bridge → worker. Every request carries an id and a board; the worker answers each one, in arrival order. */
+export type AppRulesRequest =
+  | { id: number; board: string; kind: 'init'; init: AppRulesInit }
+  | { id: number; board: string; kind: 'apply'; rows: AppRulesRow[] }
+  | { id: number; board: string; kind: 'snapshot' }
+  /** Drops the board from memory; its cache file stays for the next start. */
+  | { id: number; board: string; kind: 'close' };
 
 /** What one applied page did. Ids and action types only: never titles, notes or other content. */
-export interface StateCheckApplyResult {
+export interface AppRulesApplyResult {
   seq: number;
   applied: number;
   /** Ops a browser would have dropped because a full import superseded them. */
@@ -39,21 +43,31 @@ export interface StateCheckApplyResult {
   /** An op this app version cannot read (newer schema): a browser stops here, and so do the app rules. */
   blocked?: { opId: string; reason: string };
   sawArchiveOp: boolean;
+  /** Component-wise max of every vector clock handled so far: the basis for this board's own write clocks. */
+  mergedClock: Record<string, number>;
 }
 
-export interface StateCheckSnapshot {
+export interface AppRulesSnapshot {
   seq: number;
   /** AppDataComplete-shaped, the same shape a browser uploads in a full import, archives included. */
   appData: Record<string, unknown>;
-  /** The worker's own V8 heap in use, in MB: what the app rules cost, apart from the bridge. */
+  /** The worker's own V8 heap in use, in MB, for all its boards together. */
   heapUsedMb: number;
   /** Every entity id touched by an op the app rules dropped as superseded, kept across restarts in their cache. */
   filteredEntityIds: string[];
   sawArchiveOp: boolean;
 }
 
-export type StateCheckResponse =
-  | { id: number; ok: true; kind: 'init'; seq: number; sawArchiveOp: boolean }
-  | { id: number; ok: true; kind: 'apply'; result: StateCheckApplyResult }
-  | { id: number; ok: true; kind: 'snapshot'; snapshot: StateCheckSnapshot }
+export type AppRulesResponse =
+  | {
+      id: number;
+      ok: true;
+      kind: 'init';
+      seq: number;
+      sawArchiveOp: boolean;
+      mergedClock: Record<string, number>;
+    }
+  | { id: number; ok: true; kind: 'apply'; result: AppRulesApplyResult }
+  | { id: number; ok: true; kind: 'snapshot'; snapshot: AppRulesSnapshot }
+  | { id: number; ok: true; kind: 'close' }
   | { id: number; ok: false; error: string };

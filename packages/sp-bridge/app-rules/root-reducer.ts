@@ -1,5 +1,5 @@
 /**
- * The app's root reducer, assembled the way the app's store assembles it (anex/state-check).
+ * The app's root reducer, assembled the way the app's store assembles it (anex/app-rules).
  *
  * Keep in step with src/app/root-store/feature-stores.module.ts (every StoreModule.forFeature there) and with META_REDUCERS.
  * tests/app-rules-features.spec.ts fails when a feature is registered there but not here.

@@ -160,7 +160,7 @@ How it fits together:
 - **The login page and session endpoints are proxied under the app's own
   origin**, so the cookie, the login page and the app all share one origin and
   `?next=` stays a plain same-origin path.
-- **Passwords** are hashed with scrypt (N=2¹⁷); **sessions** are HS256 JWTs in
+- **Passwords** are hashed with Argon2id at OWASP's headline setting (19 MiB, 2 passes), which takes about 19 MB per sign-in where the former scrypt (N=2¹⁷) took 128 MB; an account still on scrypt moves over at its next sign-in. **Sessions** are HS256 JWTs in
   `httpOnly` cookies with the algorithm pinned on verify, renewed on a sliding
   window. Repeated failures lock an address out for 15 minutes.
 - **Accounts live in Postgres** - the same database the stack already runs,
@@ -465,11 +465,11 @@ Two practical consequences when you build a column rather than move a card throu
 
 ### Board rules live in one place
 
-The browser and the bridge both write board ops, so every rule about how a board changes lives once in `packages/shared-schema/src/boards-state.ts`: new-board and new-column defaults, the cleanup applied on every add and update, the load repairs, and one pure function per board action. The browser's boards reducer and the bridge's materializer only call those functions, which keeps a board identical whichever side edited it. The one browser-only rule is the duplicate-panel-id repair, because it mints random ids that are never synced and the bridge must not invent ids no browser has.
+The browser and the bridge both write board ops, so every rule about how a board changes lives once in `packages/shared-schema/src/boards-state.ts`: new-board and new-column defaults, the cleanup applied on every add and update, the load repairs, and one pure function per board action. The browser's boards reducer calls those functions, and the bridge both builds its board ops with them and computes boards with the browser's own reducer, which keeps a board identical whichever side edited it. The duplicate-panel-id repair stays out of the shared rules, because it mints random ids that are never synced.
 
 ### New tasks, tags and projects use the app's own defaults
 
-`packages/shared-schema/src/entity-defaults.ts` holds the defaults the app uses for a new task, tag or project, and the recipe the app's tag service uses. The browser re-types them against its models and the bridge builds API entities from them, so a tag or project made over the API has the same fields, theme and random preset colour as one made in the app. How changes to tasks, tags and projects are applied is still written twice, once in the app's reducers and once in the bridge's materializer; unlike boards, that has not been merged.
+`packages/shared-schema/src/entity-defaults.ts` holds the defaults the app uses for a new task, tag or project, and the recipe the app's tag service uses. The browser re-types them against its models and the bridge builds API entities from them, so a tag or project made over the API has the same fields, theme and random preset colour as one made in the app. How changes to tasks, tags and projects are applied is written once: the bridge computes every board with the app's own reducers (see "The API's cards come from the app's own rules" under the settings).
 
 ### Boards have a project scope
 
@@ -552,7 +552,7 @@ That used to mean the browser and the bridge disagreed about reality. A browser 
 
 `DEFAULT_BOARDS` now lives in `@sp/shared-schema` so both sides read one definition, and the bridge treats an account with no board record as holding the defaults. The first write of any kind stores the whole default set before applying the change, so an edit to a starter board has something real to land on.
 
-The distinction that makes this safe is between an **absent** board record and a **stored empty** one. The materializer creates `state.BOARD` on the first board op of any kind, so absent means untouched and empty means the owner deleted everything. Only absent gets defaults. Delete every board and it stays deleted through a refresh, a re-login, and a bridge restart.
+The distinction that makes this safe is between an **absent** board record and a **stored empty** one: absent means untouched and empty means the owner deleted everything, and only absent gets defaults. With the app's own rules computing the board, the record starts as the starter boards exactly as in a browser, so it is never absent; delete every board and it stays deleted through a refresh, a re-login, and a bridge restart.
 
 The seed is also gated on a completed `refresh()`, because a store that is merely behind on ops looks identical to a fresh one, and seeding on that misread would duplicate boards another client had already edited.
 
@@ -657,7 +657,6 @@ file via `env_file:`, so a value is written once and no service has an
 | `ALLOW_INSECURE_HTTP`         | `true` for plain HTTP on a LAN; `false` behind a TLS proxy  |
 | `SP_BRIDGE_POLL_INTERVAL_SEC` | websocket-fallback poll interval (default 15)               |
 | `SP_AUTH_SESSION_TTL_H`       | session lifetime in hours, sliding (default 720)            |
-| `SP_STATE_CHECK`              | `on` runs the state check, see below (default off)          |
 | `POSTGRES_USER` / `_DB`       | database name and role                                      |
 | `POSTGRES_HOST` / `_PORT`     | point these at an external server to drop the bundled one   |
 
@@ -670,15 +669,14 @@ file via `env_file:`, so a value is written once and no service has an
 | `PG_MAX_CONNECTIONS`                                                 | `20`, ample for this stack's three clients |
 | `SYNC_STORAGE_LIMIT`                                                 | unset: each account's stored quota, 100 MB |
 
-`SP_BRIDGE_MEM_LIMIT` is the one that grows with real use: the bridge holds the materialized board in memory, so it scales with task count.
+`SP_BRIDGE_MEM_LIMIT` is the one that grows with real use: the bridge holds every resident account's board in memory, so it scales with the number of cards and accounts.
 
-**State check** (`SP_STATE_CHECK=on`) is a temporary check, run on dev and left out of `.env.example`. It is the first step of making the container the authority over your cards. The API works out each card's current state from the sync history with its own copy of the app's rules, and that copy has drifted: a card marked done keeps its In Progress tag, `doneOn` stays empty, tag task lists fall out of step, archived cards stay live, and changes every browser throws away as outdated by a full import are still applied. Before the container may hand its state to the browsers, it has to compute exactly what they compute. The state check runs the app's real rules (built from the app's source into `app-rules-worker.js`) beside the API's copy, feeds both the same history, and records every card where they differ. Nothing changes for anyone: the API keeps answering from its own copy.
+**The API's cards come from the app's own rules.** The server is the one source of truth for every board: the bridge computes each board with the app's own code (its reducers, its archive handling and its filter for changes made outdated by a full import, built from the app's source into `app-rules-worker.js`), so the API answers exactly what every browser shows. Before this the bridge had its own rewritten copy of those rules, which had drifted: done cards kept their In Progress tag, `doneOn` stayed empty, tag task lists fell out of step and archived cards stayed live.
 
-- **What it logs:** a line whenever the differences change, then each one that appeared (`+`) or went away (`-`), with its kind: `in-progress-on-done`, `done-on`, `tag-task-lists`, `menu-tree`, `settings`, `archive` and `import-filter` are the known gaps above, and **`new` is anything else, the one to look at**. Lines carry ids and field names, never titles or notes. The full record is `state-check-differences.jsonl` in the bridge's data folder, capped at 5 MB.
-- **Where to watch it:** `GET /api/status` gains a `stateCheck` block with the counts per kind, how far the check has got, its memory use and any error.
-- **What it costs:** it runs in its own thread with a 128 MB memory cap. On the production copy (about 1,100 changes, 126 cards) it held at about 45 MB and caught up from scratch in 6 seconds. Set `SP_BRIDGE_MEM_LIMIT` to `384m` while it runs.
-- **When it fails:** an error, a hang, running out of its memory, or a change from a newer app version stops the check, logs why, and leaves the API exactly as it was. A restart starts it again.
-- **State:** `app-rules-cache.json` in the bridge's data folder, so a restart resumes where it stopped; delete it to start the check over from the beginning of the history. Only the container account's board is checked.
+- **One worker for every board:** a single worker thread holds the app's rules for every resident account's board, each with its own cache file (`app-rules-cache.json` for the container account, `app-rules-cache.user-<id>.json` for the others). Boards sync through it one at a time, so only one downloaded page is held at once. An idle account's board is dropped from memory and reopens from its cache.
+- **When it cannot answer:** if the worker fails, runs out of its memory or hangs, every board answers `503` with the reason until it is back; it restarts by itself, waiting longer after each failure. A board that reaches a change from a newer app version stops there, as a browser does, and answers `503` until the bridge is updated. There is no second copy to fall back to.
+- **Where to watch it:** `GET /api/status` has an `appRules` block: the board's state, how far it has synced, dropped and failed changes, the worker's memory and any error.
+- **What it costs:** on the production copy (about 1,100 changes, 126 cards) the worker's heap held at about 35 to 45 MB.
 
 `SYNC_STORAGE_LIMIT` caps the sync history the server keeps per account, and when set it is every account's quota. Write it like the memory limits, `256m` or `1g`; a number without a unit stops the server at start rather than being guessed at. The older `STORAGE_QUOTA_BYTES`, in plain bytes, still works. The history only grows, and every save of a card's notes stores the whole notes again, so a few long cards edited often fill 100 MB in about a month. When it is full the server refuses every write that does not fit: browsers show a "Sync storage is full" alert and keep the changes on the device, and the API answers `507` and saves nothing.
 
@@ -801,9 +799,9 @@ docker compose up -d --force-recreate
 
 If you genuinely want newer `FROM` bases - `node:24-alpine`, `node:22`, `nginx:1`, all moving tags that upstream repatches - use `docker compose build --pull`, which refreshes the bases _during_ the build instead of replacing the artifacts after it. Keep that as a deliberate occasional act rather than part of a routine rebuild: it changes the build environment underneath you, so a build that worked yesterday can fail today for reasons that have nothing to do with your code.
 
-**A full rebuild keeps your data, and keeps more than you might want.** Persistence is bind-mounted at `docker-data/{postgres,bridge,supersync}`, which `down` never touches (only `down -v` would, and that would take the accounts and API keys with it). The bridge's materialized state cache under `docker-data/bridge` also survives, and it is restored on boot rather than replayed from the op log. So a materializer fix applies to new ops only; entities materialized wrongly before the fix stay wrong across any number of rebuilds. Clear that directory to force a full re-materialization.
+**A full rebuild keeps your data, and keeps more than you might want.** Persistence is bind-mounted at `docker-data/{postgres,bridge,supersync}`, which `down` never touches (only `down -v` would, and that would take the accounts and API keys with it). The app rules' cache files under `docker-data/bridge` (`app-rules-cache*.json`) also survive, and are restored on boot rather than replayed from the op log, so a fix in the app's rules applies to new changes only. Delete those files to rebuild every board from the full history; a bridge release that changes the cache's shape does this by itself.
 
-A re-materialization downloads the whole history again, and with long card notes that is 100 MB or more. The sync server therefore caps every download page at 10 MB of payload, whatever the client asks for, and the bridge asks for 200 ops at a time and applies each page as it arrives. Before that cap, the bridge's 1,000-op pages got the 512 MB sync server killed for running out of memory, over and over, and every device's sync failed until the bridge was stopped.
+A rebuild downloads the whole history again, and with long card notes that is 100 MB or more. The sync server therefore caps every download page at 10 MB of payload, whatever the client asks for, and the bridge asks for 200 ops at a time and applies each page as it arrives. Before that cap, the bridge's 1,000-op pages got the 512 MB sync server killed for running out of memory, over and over, and every device's sync failed until the bridge was stopped.
 
 ---
 

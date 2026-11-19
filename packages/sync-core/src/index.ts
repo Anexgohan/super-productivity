@@ -67,6 +67,10 @@ export {
 } from './encryption';
 export type { DerivedKey, KeyCacheStore } from './encryption';
 
+// Argon2id for stored password hashes (anex/argon2id-passwords).
+export { deriveArgon2idPasswordHash } from './password-hash';
+export type { Argon2idPasswordParams } from './password-hash';
+
 // Generic error helpers.
 export { extractErrorMessage } from './error.util';
 export { WebCryptoNotAvailableError } from './web-crypto-error';

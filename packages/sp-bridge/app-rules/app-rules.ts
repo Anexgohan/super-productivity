@@ -1,9 +1,9 @@
 /**
- * The app's own state rules, headless (anex/state-check).
+ * The app's own state rules, headless (anex/app-rules).
  *
  * Applies downloaded ops the way a browser does, using the app's own code at every step:
  *  1. integrity-check what was decrypted (the checks OperationEncryptionService runs), then convert (syncOpToOperation);
- *     decryption itself happens on the bridge's main thread, which already holds the derived key (see StateCheckRow);
+ *     decryption itself happens on the bridge's main thread, which already holds the derived key (see AppRulesRow);
  *  2. receive-side schema migration (SchemaMigrationService), stopping at an op too new to read;
  *  3. drop ops a full import superseded (SyncImportFilterService);
  *  4. one bulk reducer pass, then archive side effects op by op (replayOperationBatch with ArchiveOperationHandler).
@@ -59,14 +59,14 @@ import {
   type OperationLogEntry,
 } from '../../../src/app/op-log/core/operation.types';
 import type {
-  StateCheckApplyResult,
-  StateCheckRow,
-  StateCheckSnapshot,
-} from '../src/state-check-protocol';
+  AppRulesApplyResult,
+  AppRulesRow,
+  AppRulesSnapshot,
+} from '../src/app-rules-protocol';
 import { buildRootReducer, type RootState } from './root-reducer';
 
 /** Bump when the cache shape changes; an older cache is then discarded and the app rules rebuild from seq 0. */
-export const APP_RULES_CACHE_VERSION = 1;
+export const APP_RULES_CACHE_VERSION = 2;
 
 export interface AppRulesCache {
   version: number;
@@ -78,6 +78,8 @@ export interface AppRulesCache {
   latestFullStateOp?: Operation;
   sawArchiveOp: boolean;
   filteredEntityIds: string[];
+  /** Component-wise max of every handled op's vector clock: the basis for the API's own write clocks. */
+  mergedClock: Record<string, number>;
 }
 
 /** The one stand-in for IndexedDB. Clones on the way in and out, as a database round trip would. */
@@ -122,6 +124,7 @@ export class AppRules {
   private _seq = 0;
   private _latestFullStateOp: Operation | undefined;
   private _sawArchiveOp = false;
+  private _mergedClock: Record<string, number> = {};
   private _filteredEntityIds = new Set<string>();
   private readonly _archive = new MemoryArchiveStore();
 
@@ -179,6 +182,10 @@ export class AppRules {
     return this._seq;
   }
 
+  get mergedClock(): Record<string, number> {
+    return { ...this._mergedClock };
+  }
+
   get sawArchiveOp(): boolean {
     return this._sawArchiveOp;
   }
@@ -190,6 +197,7 @@ export class AppRules {
     this._archive.old = cache.archiveOld;
     this._latestFullStateOp = cache.latestFullStateOp;
     this._sawArchiveOp = cache.sawArchiveOp;
+    this._mergedClock = cache.mergedClock ?? {};
     this._filteredEntityIds = new Set(cache.filteredEntityIds ?? []);
   }
 
@@ -202,6 +210,7 @@ export class AppRules {
       archiveOld: this._archive.old,
       latestFullStateOp: this._latestFullStateOp,
       sawArchiveOp: this._sawArchiveOp,
+      mergedClock: this._mergedClock,
       filteredEntityIds: [...this._filteredEntityIds],
     };
   }
@@ -210,15 +219,16 @@ export class AppRules {
    * Applies one downloaded page. Rows at or below the app rules' seq were applied already and are skipped.
    * The seq advances past every row handled, dropped ones included, as a browser's cursor does; it stops before a blocked op.
    */
-  async applyRows(rows: StateCheckRow[]): Promise<StateCheckApplyResult> {
+  async applyRows(rows: AppRulesRow[]): Promise<AppRulesApplyResult> {
     const fresh = rows.filter((r) => r.serverSeq > this._seq);
-    const result: StateCheckApplyResult = {
+    const result: AppRulesApplyResult = {
       seq: this._seq,
       applied: 0,
       filteredOpIds: [],
       filteredEntityIds: [],
       reducerFailures: [],
       sawArchiveOp: this._sawArchiveOp,
+      mergedClock: { ...this._mergedClock },
     };
     if (fresh.length === 0) return result;
 
@@ -320,13 +330,30 @@ export class AppRules {
     }
 
     if (handled > 0) this._seq = fresh[handled - 1].serverSeq;
+    // Every handled op counts, dropped ones too: a write clock must dominate everything the server has seen from us.
+    for (const row of fresh.slice(0, handled)) {
+      const clock = (row.op as { vectorClock?: unknown }).vectorClock;
+      if (!clock || typeof clock !== 'object') continue;
+      for (const [component, value] of Object.entries(clock as Record<string, unknown>)) {
+        if (
+          typeof value !== 'number' ||
+          component === '__proto__' ||
+          component === 'constructor' ||
+          component === 'prototype'
+        )
+          continue;
+        if ((this._mergedClock[component] ?? 0) < value)
+          this._mergedClock[component] = value;
+      }
+    }
+    result.mergedClock = { ...this._mergedClock };
     result.seq = this._seq;
     result.sawArchiveOp = this._sawArchiveOp;
     return result;
   }
 
   /** The state as a browser would upload it in a full import: the app's own snapshot service, archives included. */
-  async snapshot(): Promise<StateCheckSnapshot> {
+  async snapshot(): Promise<AppRulesSnapshot> {
     const appData = (await this._snapshot.getStateSnapshotAsync()) as unknown as Record<
       string,
       unknown

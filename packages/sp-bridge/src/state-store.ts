@@ -1,17 +1,20 @@
 /**
- * Long-running state store: keeps the materialized state current against the
- * SuperSync op-log and persists a cache (state + cursor) for fast restarts.
+ * Long-running state store for one board: keeps the board current against the SuperSync op-log.
+ *
+ * The board is computed by the app's own rules (anex/app-rules), the same code a browser runs, so the API answers exactly
+ * what every browser shows. They are the one source: when they cannot answer, the API says so (503) rather than answering
+ * from anything else. Their cache file (in the worker) holds the board and the sync cursor for fast restarts.
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BridgeConfig } from './config';
 import { SyncClient } from './sync-client';
-import { Materializer, type EntityMap } from './materializer';
 import { SyncWebSocket } from './ws-client';
-import type { SuperSyncOperation, SuperSyncServerOperation } from '@sp/shared-schema';
-import type { StateCheck, StateCheckStatus } from './state-check';
+import type { SuperSyncOperation } from '@sp/shared-schema';
+import type { AppRulesWorker } from './app-rules-worker';
+import { AppRulesBoard, type AppRulesBoardStatus } from './app-rules-board';
+import type { EntityMap } from './state-view';
 
-const CACHE_FILE = 'bridge-state-cache.json';
 /**
  * Poll interval once the websocket is carrying live pushes. The poll becomes a
  * safety net for missed/dropped sockets rather than the primary mechanism, so a
@@ -19,13 +22,15 @@ const CACHE_FILE = 'bridge-state-cache.json';
  */
 const WS_FALLBACK_POLL_MS = 5 * 60_000;
 
+/** The cache of the bridge's former rewritten copy of the app's rules; nothing reads it any more. */
+const FORMER_CACHE_FILE = 'bridge-state-cache';
+
 export class StateStore {
   private readonly _client: SyncClient;
-  private readonly _materializer: Materializer;
+  private readonly _board: AppRulesBoard;
   private _timer: NodeJS.Timeout | null = null;
   private _refreshInFlight: Promise<void> | null = null;
   private _ws: SyncWebSocket | null = null;
-  private _stateCheck: StateCheck | null = null;
   lastSyncAt = 0;
   lastError: string | null = null;
 
@@ -36,6 +41,7 @@ export class StateStore {
    */
   constructor(
     private readonly cfg: BridgeConfig,
+    private readonly _worker: AppRulesWorker,
     private readonly opts?: {
       mintToken?: (cfg: BridgeConfig) => Promise<string>;
       cacheKey?: string;
@@ -44,7 +50,17 @@ export class StateStore {
     },
   ) {
     this._client = new SyncClient(cfg, opts?.mintToken, opts?.clientId);
-    this._materializer = new Materializer(cfg.encryptionPassword);
+    const key = opts?.cacheKey;
+    this._board = new AppRulesBoard(_worker, {
+      board: key ?? 'container',
+      clientId: this._clientId,
+      cachePath: join(
+        cfg.dataDir,
+        key ? `app-rules-cache.${key}.json` : 'app-rules-cache.json',
+      ),
+      encryptionPassword: cfg.encryptionPassword,
+      onReopened: () => void this.refresh().catch(() => undefined),
+    });
   }
 
   /** True while live push is active (see /api/status). */
@@ -52,39 +68,22 @@ export class StateStore {
     return this._ws?.isConnected ?? false;
   }
 
+  /** The board as the app's own rules computed it. Throws a 503 when they cannot answer. */
   get state(): EntityMap {
-    return this._materializer.state;
+    return this._board.view;
   }
 
   get lastServerSeq(): number {
-    return this._materializer.lastServerSeq;
+    return this._board.seq;
   }
 
-  /** State check (anex/state-check): fed every page this store applies. Only the container board ever has one. */
-  attachStateCheck(stateCheck: StateCheck): void {
-    this._stateCheck = stateCheck;
-  }
-
-  get stateCheckStatus(): StateCheckStatus | null {
-    return this._stateCheck?.status ?? null;
-  }
-
-  /** Pages after `sinceSeq` for the state check's catch-up, through this store's own authenticated client. */
-  downloadPages(
-    sinceSeq: number,
-    onPage: (rows: SuperSyncServerOperation[]) => Promise<void>,
-  ): Promise<unknown> {
-    return this._client.downloadOpsSince(sinceSeq, onPage);
+  get appRulesStatus(): AppRulesBoardStatus {
+    return this._board.status;
   }
 
   /** This board's sync identity: its own for a per-user board, the container's otherwise. */
   private get _clientId(): string {
     return this.opts?.clientId ?? this.cfg.clientId;
-  }
-
-  private get _cachePath(): string {
-    const key = this.opts?.cacheKey;
-    return join(this.cfg.dataDir, key ? `bridge-state-cache.${key}.json` : CACHE_FILE);
   }
 
   /**
@@ -111,16 +110,17 @@ export class StateStore {
 
   async start(pollIntervalMs: number): Promise<void> {
     mkdirSync(this.cfg.dataDir, { recursive: true });
-    if (existsSync(this._cachePath)) {
-      try {
-        const cache = JSON.parse(readFileSync(this._cachePath, 'utf-8'));
-        this._materializer.restoreFromCache(cache);
-        console.log(
-          `sp-bridge: restored cache at seq ${this._materializer.lastServerSeq}`,
-        );
-      } catch {
-        console.warn('sp-bridge: cache unreadable; full replay from seq 0');
-      }
+    this._removeFormerCache();
+    try {
+      await this._board.open();
+      console.log(
+        `sp-bridge: ${this._boardName}: app rules open at seq ${this._board.seq}`,
+      );
+    } catch (err) {
+      // The worker is down or restarting; the board reopens and syncs when it is back.
+      console.error(
+        `sp-bridge: ${this._boardName}: app rules not available yet: ${(err as Error).message}`,
+      );
     }
 
     // The sync server may still be coming up - `depends_on: service_healthy`
@@ -129,7 +129,7 @@ export class StateStore {
     // exits, and the container crash-loops (recovering, but printing alarming
     // "fetch failed" lines) until the sync server is ready.
     await this._connectWithRetry();
-    await this.refresh();
+    await this.refresh().catch(() => undefined);
 
     // Live push; the poll below stays on as a fallback.
     this._ws = new SyncWebSocket({
@@ -159,12 +159,12 @@ export class StateStore {
   stop(): void {
     if (this._timer) clearInterval(this._timer);
     this._ws?.stop();
-    this._stateCheck?.stop();
+    void this._board.close();
   }
 
   /**
    * Pulls ops after the current cursor and applies them. Serialized: concurrent
-   * calls await the in-flight refresh instead of racing the materializer.
+   * calls await the in-flight refresh instead of racing the app rules.
    */
   async refresh(): Promise<void> {
     if (this._refreshInFlight) {
@@ -176,28 +176,29 @@ export class StateStore {
     return this._refreshInFlight;
   }
 
+  private get _boardName(): string {
+    return this.opts?.cacheKey ?? 'container';
+  }
+
   private async _doRefresh(): Promise<void> {
+    // Stopped at a change only a newer build can read: syncing again would only stop there again.
+    if (this._board.blocked) return;
     try {
-      const since = this._materializer.lastServerSeq;
-      let applied = 0;
-      // Applied and saved page by page: the cursor advances with each page, so an interrupted rebuild resumes where it stopped.
-      await this._client.downloadOpsSince(since, async (page) => {
-        if (page.length === 0) return;
-        const pageSince = this._materializer.lastServerSeq;
-        await this._materializer.applyOps(page);
-        this._persist();
-        applied += page.length;
-        // Never throws: a failing state check stops itself and the bridge carries on.
-        await this._stateCheck?.applyPage(pageSince, page);
+      const since = this._board.seq;
+      // One board at a time through the worker, so at most one downloaded page is held, however many boards are resident.
+      await this._worker.exclusive(async () => {
+        // Applied and saved page by page: the cursor advances with each page, so an interrupted rebuild resumes where it stopped.
+        await this._client.downloadOpsSince(since, (page) => this._board.apply(page));
+        // Reads after this see every change just applied, including the caller's own write.
+        await this._board.updateView();
       });
-      if (applied > 0) {
+      if (this._board.seq > since) {
         console.log(
-          `sp-bridge: applied ${applied} ops → seq ${this._materializer.lastServerSeq}`,
+          `sp-bridge: ${this._boardName}: applied ops ${since + 1}-${this._board.seq}`,
         );
       }
       this.lastSyncAt = Date.now();
       this.lastError = null;
-      this._stateCheck?.afterRefresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.lastError = message;
@@ -205,15 +206,9 @@ export class StateStore {
       if (message.includes('(401)')) {
         await this._client.authenticate().catch(() => undefined);
       }
-      console.error(`sp-bridge: refresh failed: ${message}`);
+      console.error(`sp-bridge: ${this._boardName}: refresh failed: ${message}`);
       throw err;
     }
-  }
-
-  private _persist(): void {
-    const tmp = `${this._cachePath}.tmp`;
-    writeFileSync(tmp, JSON.stringify(this._materializer.toCache()));
-    renameSync(tmp, this._cachePath);
   }
 
   private _ownClockFloor = 0;
@@ -224,7 +219,7 @@ export class StateStore {
    * against reusing a value before our own ops round-trip back from the server.
    */
   nextWriteClock(): Record<string, number> {
-    const clock = this._materializer.mergedClock;
+    const clock = this._board.mergedClock;
     const own = Math.max(clock[this._clientId] ?? 0, this._ownClockFloor) + 1;
     this._ownClockFloor = own;
     clock[this._clientId] = own;
@@ -233,10 +228,27 @@ export class StateStore {
 
   /**
    * Uploads ops, then refreshes so the write round-trips through the server
-   * and materializes exactly as every other client will see it.
+   * and comes back through the app rules exactly as every other client will see it.
+   * Refused while the app rules cannot answer: a write the server cannot then read back would be blind.
    */
   async submitOps(ops: SuperSyncOperation[]): Promise<void> {
-    await this._client.uploadOps(ops, this._materializer.lastServerSeq);
+    void this._board.view;
+    await this._client.uploadOps(ops, this._board.seq);
     await this.refresh();
+  }
+
+  /** The former rewritten copy's cache: dead data now, removed so it cannot mislead anyone reading the data folder. */
+  private _removeFormerCache(): void {
+    const key = this.opts?.cacheKey;
+    const path = join(
+      this.cfg.dataDir,
+      key ? `${FORMER_CACHE_FILE}.${key}.json` : `${FORMER_CACHE_FILE}.json`,
+    );
+    if (existsSync(path)) {
+      rmSync(path, { force: true });
+      console.log(
+        `sp-bridge: ${this._boardName}: removed the former bridge cache ${path}`,
+      );
+    }
   }
 }
