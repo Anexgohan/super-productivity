@@ -293,6 +293,25 @@ describe('app rules board', () => {
     expect(() => b.view).toThrow(AppRulesUnavailableError);
   }, 60_000);
 
+  it('builds a checkpoint as a browser would put it in a REPAIR, and the app validates it', async () => {
+    const worker = newWorker();
+    const log = new Log();
+    const b = board(worker, 'container', tempDir());
+    await b.open();
+    await log.importInitialState();
+    const task = buildTaskEntity({ title: 'in the checkpoint' });
+    log.push(await browser.addTask(task, afterImport()));
+    await sync(b, log);
+
+    const cp = await b.checkpoint();
+    expect(cp.seq).toBe(2);
+    expect(cp.validation).toEqual({ isValid: true, errors: [] });
+    const tasks = cp.appData.task as { ids: string[] };
+    expect(tasks.ids).toContain(task.id);
+    expect(cp.appData.archiveYoung).toBeDefined();
+    expect(cp.appData.archiveOld).toBeDefined();
+  }, 60_000);
+
   it('answers 503 when the worker cannot start at all', async () => {
     const dir = tempDir();
     const worker = newWorker(join(dir, 'missing-worker.js'));

@@ -53,6 +53,8 @@ import {
 import { syncOpToOperation } from '../../../src/app/op-log/sync/operation-sync.util';
 import type { SyncOperation } from '../../../src/app/op-log/sync-providers/provider.interface';
 import { StateSnapshotService } from '../../../src/app/op-log/backup/state-snapshot.service';
+import { validateFull } from '../../../src/app/op-log/validation/validation-fn';
+import type { AppDataComplete } from '../../../src/app/op-log/model/model-config';
 import {
   isFullStateOpType,
   type Operation,
@@ -61,6 +63,7 @@ import {
 import type {
   AppRulesApplyResult,
   AppRulesRow,
+  AppRulesCheckpoint,
   AppRulesSnapshot,
 } from '../src/app-rules-protocol';
 import { buildRootReducer, type RootState } from './root-reducer';
@@ -350,6 +353,23 @@ export class AppRules {
     result.seq = this._seq;
     result.sawArchiveOp = this._sawArchiveOp;
     return result;
+  }
+
+  /**
+   * A checkpoint's state (anex/checkpoints): the snapshot a browser puts in a REPAIR, run through the app's own
+   * validateFull, which every browser runs on the state it receives. Errors carry paths and expected types, not values.
+   */
+  async checkpoint(): Promise<AppRulesCheckpoint> {
+    const { seq, appData } = await this.snapshot();
+    const result = validateFull(appData as unknown as AppDataComplete);
+    const errors: string[] = [];
+    if (!result.typiaResult.success) {
+      for (const e of result.typiaResult.errors.slice(0, 20))
+        errors.push(`${e.path}: expected ${e.expected}`);
+    }
+    if (result.crossModelError)
+      errors.push(`cross-model: ${result.crossModelError.slice(0, 300)}`);
+    return { seq, appData, validation: { isValid: result.isValid, errors } };
   }
 
   /** The state as a browser would upload it in a full import: the app's own snapshot service, archives included. */

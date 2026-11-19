@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { setDeploymentEncryptSalt } from '@sp/sync-core';
 import { loadConfig } from './config';
 import { SyncClient, mintSuperSyncToken } from './sync-client';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AppRulesWorker } from './app-rules-worker';
@@ -63,6 +63,25 @@ const runDump = async (): Promise<void> => {
     const { latestSeq } = await client.downloadOpsSince(0, (page) => board.apply(page));
     await board.updateView();
     console.log(`sp-bridge: applied to seq ${board.seq} (latestSeq=${latestSeq})`);
+    // `dump --out <file>`: the checkpoint the bridge would write, as a REPAIR payload, without uploading it
+    // (anex/checkpoints dry run). Counts only on the console: the file holds the user's data.
+    const outIndex = process.argv.indexOf('--out');
+    if (outIndex !== -1) {
+      const out = process.argv[outIndex + 1];
+      if (!out) throw new Error('--out needs a file path');
+      const { seq, appData, validation } = await board.checkpoint();
+      writeFileSync(
+        out,
+        JSON.stringify({ repairBaseServerSeq: seq, appDataComplete: appData }),
+        { mode: 0o600 },
+      );
+      console.log(`sp-bridge: checkpoint as of seq ${seq} written to ${out}`);
+      console.log(
+        `sp-bridge: the app's validation: ${validation.isValid ? 'valid' : 'INVALID'}`,
+      );
+      for (const e of validation.errors) console.log(`  ${e}`);
+      return;
+    }
     summarize(board.view);
   } finally {
     appRules.stop();

@@ -27,6 +27,8 @@ export type AppRulesRequest =
   | { id: number; board: string; kind: 'init'; init: AppRulesInit }
   | { id: number; board: string; kind: 'apply'; rows: AppRulesRow[] }
   | { id: number; board: string; kind: 'snapshot' }
+  /** The full state for a checkpoint, checked by the app's own validation as a browser checks what it receives. */
+  | { id: number; board: string; kind: 'checkpoint' }
   /** Drops the board from memory; its cache file stays for the next start. */
   | { id: number; board: string; kind: 'close' };
 
@@ -58,6 +60,14 @@ export interface AppRulesSnapshot {
   sawArchiveOp: boolean;
 }
 
+/** A checkpoint's state (anex/checkpoints): what a browser puts in a REPAIR, and whether the app would accept it as is. */
+export interface AppRulesCheckpoint {
+  seq: number;
+  appData: Record<string, unknown>;
+  /** The app's validateFull. Errors are paths and expected types only, never the values. */
+  validation: { isValid: boolean; errors: string[] };
+}
+
 export type AppRulesResponse =
   | {
       id: number;
@@ -69,5 +79,6 @@ export type AppRulesResponse =
     }
   | { id: number; ok: true; kind: 'apply'; result: AppRulesApplyResult }
   | { id: number; ok: true; kind: 'snapshot'; snapshot: AppRulesSnapshot }
+  | { id: number; ok: true; kind: 'checkpoint'; checkpoint: AppRulesCheckpoint }
   | { id: number; ok: true; kind: 'close' }
   | { id: number; ok: false; error: string };

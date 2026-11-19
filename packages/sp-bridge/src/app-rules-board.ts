@@ -11,7 +11,11 @@
  */
 import { decrypt } from '@sp/sync-core';
 import type { SuperSyncServerOperation } from '@sp/shared-schema';
-import type { AppRulesApplyResult, AppRulesRow } from './app-rules-protocol';
+import type {
+  AppRulesApplyResult,
+  AppRulesCheckpoint,
+  AppRulesRow,
+} from './app-rules-protocol';
 import type { AppRulesWorker } from './app-rules-worker';
 import { normalizeFullState, type EntityMap } from './state-view';
 
@@ -170,6 +174,20 @@ export class AppRulesBoard {
     this._viewSeq = res.snapshot.seq;
     this._status.heapUsedMb = res.snapshot.heapUsedMb;
     this._refreshState();
+  }
+
+  /**
+   * The full state as of the applied seq, as the app's own snapshot service builds it, with the app's own validation of
+   * it: what a browser puts in a REPAIR (anex/checkpoints). Throws a 503 when the app rules cannot answer.
+   */
+  async checkpoint(): Promise<AppRulesCheckpoint> {
+    void this.view;
+    const res = await this._worker.request({
+      kind: 'checkpoint',
+      board: this._opts.board,
+    });
+    if (res.kind !== 'checkpoint') throw new Error('unexpected checkpoint reply');
+    return res.checkpoint;
   }
 
   /** Drops the board from the worker's memory; its cache file stays for the next start. */

@@ -62,6 +62,14 @@ const handle = async (req: AppRulesRequest): Promise<AppRulesResponse> => {
     if (board.rules.seq !== before) persist(board);
     return { id: req.id, ok: true, kind: 'apply', result };
   }
+  if (req.kind === 'checkpoint') {
+    return {
+      id: req.id,
+      ok: true,
+      kind: 'checkpoint',
+      checkpoint: await board.rules.checkpoint(),
+    };
+  }
   return {
     id: req.id,
     ok: true,
