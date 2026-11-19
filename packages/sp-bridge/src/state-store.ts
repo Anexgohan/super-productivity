@@ -11,9 +11,12 @@ import type { BridgeConfig } from './config';
 import { SyncClient } from './sync-client';
 import { SyncWebSocket } from './ws-client';
 import type { SuperSyncOperation } from '@sp/shared-schema';
+import { encrypt } from '@sp/sync-core';
 import type { AppRulesWorker } from './app-rules-worker';
 import { AppRulesBoard, type AppRulesBoardStatus } from './app-rules-board';
 import type { EntityMap } from './state-view';
+import { CheckpointTracker, type CheckpointState } from './checkpoints';
+import { CURRENT_SCHEMA_VERSION, uuidv7 } from './op-factory';
 
 /**
  * Poll interval once the websocket is carrying live pushes. The poll becomes a
@@ -28,6 +31,7 @@ const FORMER_CACHE_FILE = 'bridge-state-cache';
 export class StateStore {
   private readonly _client: SyncClient;
   private readonly _board: AppRulesBoard;
+  private readonly _checkpoints: CheckpointTracker;
   private _timer: NodeJS.Timeout | null = null;
   private _refreshInFlight: Promise<void> | null = null;
   private _ws: SyncWebSocket | null = null;
@@ -61,6 +65,9 @@ export class StateStore {
       encryptionPassword: cfg.encryptionPassword,
       onReopened: () => void this.refresh().catch(() => undefined),
     });
+    this._checkpoints = new CheckpointTracker(
+      join(cfg.dataDir, key ? `checkpoint-state.${key}.json` : 'checkpoint-state.json'),
+    );
   }
 
   /** True while live push is active (see /api/status). */
@@ -79,6 +86,11 @@ export class StateStore {
 
   get appRulesStatus(): AppRulesBoardStatus {
     return this._board.status;
+  }
+
+  /** Counters and the last outcome of this board's checkpoints (anex/checkpoints): seqs, counts, times, no content. */
+  get checkpointStatus(): CheckpointState {
+    return this._checkpoints.state;
   }
 
   /** This board's sync identity: its own for a per-user board, the container's otherwise. */
@@ -183,12 +195,16 @@ export class StateStore {
   private async _doRefresh(): Promise<void> {
     // Stopped at a change only a newer build can read: syncing again would only stop there again.
     if (this._board.blocked) return;
+    let latestSeq = 0;
     try {
       const since = this._board.seq;
       // One board at a time through the worker, so at most one downloaded page is held, however many boards are resident.
       await this._worker.exclusive(async () => {
         // Applied and saved page by page: the cursor advances with each page, so an interrupted rebuild resumes where it stopped.
-        await this._client.downloadOpsSince(since, (page) => this._board.apply(page));
+        ({ latestSeq } = await this._client.downloadOpsSince(since, async (page) => {
+          await this._board.apply(page);
+          this._checkpoints.observe(page);
+        }));
         // Reads after this see every change just applied, including the caller's own write.
         await this._board.updateView();
       });
@@ -208,6 +224,73 @@ export class StateStore {
       }
       console.error(`sp-bridge: ${this._boardName}: refresh failed: ${message}`);
       throw err;
+    }
+    await this._maybeWriteCheckpoint(latestSeq);
+  }
+
+  /**
+   * Writes a checkpoint when one is due (anex/checkpoints): the board's full state as the app's rules computed it,
+   * encrypted like every op and uploaded as a REPAIR based on the newest change. Only when the board has caught up and
+   * the app's rules are healthy, and only a state the app's own validation accepts. Never fails the refresh.
+   */
+  private async _maybeWriteCheckpoint(latestSeq: number): Promise<void> {
+    const now = Date.now();
+    if (!this._checkpoints.isDue(now)) return;
+    const status = this._board.status;
+    if (
+      status.state !== 'ready' ||
+      this._board.blocked ||
+      status.reducerFailures > 0 ||
+      status.archiveFailures > 0 ||
+      this._board.seq !== latestSeq
+    ) {
+      return;
+    }
+    const tag = `sp-bridge: ${this._boardName}: checkpoint`;
+    try {
+      await this._worker.exclusive(async () => {
+        const cp = await this._board.checkpoint();
+        if (cp.seq !== latestSeq) return;
+        if (!cp.validation.isValid) {
+          const reason = `the app's validation refused it: ${cp.validation.errors.join('; ')}`;
+          this._checkpoints.markAttempt(now, reason);
+          console.error(`${tag} not written: ${reason}`);
+          return;
+        }
+        const state = await encrypt(
+          JSON.stringify(cp.appData),
+          this.cfg.encryptionPassword,
+        );
+        const res = await this._client.uploadSnapshot({
+          state,
+          clientId: this._clientId,
+          reason: 'recovery',
+          vectorClock: this.nextWriteClock(),
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          isPayloadEncrypted: true,
+          syncImportReason: 'REPAIR',
+          opId: uuidv7(),
+          snapshotOpType: 'REPAIR',
+          repairBaseServerSeq: cp.seq,
+        });
+        if (res.accepted) {
+          this._checkpoints.markAttempt(now, null);
+          console.log(
+            `${tag} written as of change ${cp.seq} (server seq ${res.serverSeq ?? '?'}, ` +
+              `${(state.length / 1048576).toFixed(1)} MB encrypted)`,
+          );
+          // Pull it back, as every browser will, once this refresh has finished.
+          setTimeout(() => void this.refresh().catch(() => undefined), 0);
+        } else {
+          const reason = `${res.errorCode ?? 'refused'}: ${res.error ?? ''}`.trim();
+          this._checkpoints.markAttempt(now, reason);
+          console.warn(`${tag} refused by the server (${reason}); tried again later`);
+        }
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this._checkpoints.markAttempt(now, reason);
+      console.error(`${tag} failed: ${reason}; tried again later`);
     }
   }
 

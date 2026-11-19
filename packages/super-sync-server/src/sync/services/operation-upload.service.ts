@@ -33,6 +33,7 @@ import {
   getEntityConflictKey,
   isSameDuplicateOperation,
   isSameIncomingOperation,
+  getFullStateBoundary,
   prefetchLatestEntityOpsForBatch,
   pruneVectorClockForStorage,
   resolveConflictForExistingOp,
@@ -564,6 +565,8 @@ export class OperationUploadService {
       entityPairs,
       tx,
     );
+    const boundary =
+      latestOpByEntity.size > 0 ? await getFullStateBoundary(userId, tx) : null;
 
     const accepted: AcceptedBatchOperation[] = [];
     let acceptedDeltaBytes = 0;
@@ -579,7 +582,12 @@ export class OperationUploadService {
           );
           if (!existingOp) continue;
 
-          const conflictResult = resolveConflictForExistingOp(op, entityId, existingOp);
+          const conflictResult = resolveConflictForExistingOp(
+            op,
+            entityId,
+            existingOp,
+            boundary,
+          );
           if (conflictResult.hasConflict) {
             conflict = conflictResult;
             break;

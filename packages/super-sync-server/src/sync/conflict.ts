@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { Logger } from '../logger';
 import {
   BatchUploadCandidate,
+  CAUSAL_FULL_STATE_OPERATION_WHERE,
   CONFLICT_DETECTION_ENTITY_BATCH_SIZE,
   ConflictResult,
   DuplicateOperationCandidate,
@@ -15,6 +16,71 @@ import {
 } from './sync.types';
 
 const TASK_TIME_DELTA_ACTION_TYPE = '[TimeTracking] Sync time spent';
+
+/**
+ * The newest causal full-state op (a full import, or a REPAIR with its base: the bridge's checkpoints are these).
+ * Its state contains every entity change stored before it (anex/checkpoints).
+ */
+export interface FullStateBoundary {
+  serverSeq: number;
+  authorId: string;
+  /** The author's own entry in the full-state op's clock. */
+  authorCounter: number;
+}
+
+const boundaryByTx = new WeakMap<
+  Prisma.TransactionClient,
+  Map<number, Promise<FullStateBoundary | null>>
+>();
+
+/**
+ * Read once per transaction and user. A full-state op accepted later in the same transaction is not seen, which only
+ * leaves the stricter check in place for the rest of that batch.
+ */
+export const getFullStateBoundary = (
+  userId: number,
+  tx: Prisma.TransactionClient,
+): Promise<FullStateBoundary | null> => {
+  let byUser = boundaryByTx.get(tx);
+  if (!byUser) {
+    byUser = new Map();
+    boundaryByTx.set(tx, byUser);
+  }
+  let pending = byUser.get(userId);
+  if (!pending) {
+    pending = (async () => {
+      const row = await tx.operation.findFirst({
+        where: { userId, ...CAUSAL_FULL_STATE_OPERATION_WHERE },
+        orderBy: { serverSeq: 'desc' },
+        select: { serverSeq: true, clientId: true, vectorClock: true },
+      });
+      if (!row) return null;
+      const counter = (row.vectorClock as unknown as VectorClock | null)?.[row.clientId];
+      if (typeof counter !== 'number') return null;
+      return { serverSeq: row.serverSeq, authorId: row.clientId, authorCounter: counter };
+    })();
+    byUser.set(userId, pending);
+  }
+  return pending;
+};
+
+/**
+ * True when the incoming op was made on top of the newest full state and the stored op came before it: the full state
+ * already contains the stored op, so the incoming one follows it, whatever their own clocks say (anex/checkpoints).
+ *
+ * Needed because a device that receives a full state keeps only the full state's author and itself in its clock, so its
+ * next change compared on its own with an older entity change from another device reads as CONCURRENT. This is the
+ * server's version of the receivers' own `knows-import-counter` rule in the import filter.
+ */
+export const isCoveredByFullState = (
+  op: Operation,
+  existingOp: { serverSeq?: number },
+  boundary: FullStateBoundary | null | undefined,
+): boolean =>
+  !!boundary &&
+  typeof existingOp.serverSeq === 'number' &&
+  existingOp.serverSeq < boundary.serverSeq &&
+  (op.vectorClock[boundary.authorId] ?? 0) >= boundary.authorCounter;
 
 /**
  * Check if an incoming operation conflicts with existing operations.
@@ -96,7 +162,8 @@ export const detectConflictForEntities = async (
         eid AS "entityId",
         o.client_id AS "clientId",
         o.action_type AS "actionType",
-        o.vector_clock AS "vectorClock"
+        o.vector_clock AS "vectorClock",
+        o.server_seq AS "serverSeq"
       FROM operations o
       CROSS JOIN LATERAL unnest(
         o.entity_ids || CASE WHEN o.entity_id IS NULL THEN '{}'::text[] ELSE ARRAY[o.entity_id] END
@@ -113,11 +180,17 @@ export const detectConflictForEntities = async (
       latestOpByEntityId.set(latestOp.entityId, latestOp);
     }
 
+    const boundary = await getFullStateBoundary(userId, tx);
     for (const entityId of batchEntityIds) {
       const existingOp = latestOpByEntityId.get(entityId);
       if (!existingOp) continue;
 
-      const conflictResult = resolveConflictForExistingOp(op, entityId, existingOp);
+      const conflictResult = resolveConflictForExistingOp(
+        op,
+        entityId,
+        existingOp,
+        boundary,
+      );
       if (conflictResult.hasConflict) {
         return conflictResult;
       }
@@ -130,8 +203,18 @@ export const detectConflictForEntities = async (
 export const resolveConflictForExistingOp = (
   op: Operation,
   entityId: string,
-  existingOp: { actionType?: string; clientId: string; vectorClock: unknown },
+  existingOp: {
+    actionType?: string;
+    clientId: string;
+    vectorClock: unknown;
+    serverSeq?: number;
+  },
+  boundary?: FullStateBoundary | null,
 ): ConflictResult => {
+  if (isCoveredByFullState(op, existingOp, boundary)) {
+    return { hasConflict: false };
+  }
+
   // Stored JSON/vector_clock values arrive as unknown from both Prisma model
   // reads and raw SQL rows; cast only at the vector-clock comparison boundary.
   const existingClock = existingOp.vectorClock as unknown as VectorClock;
@@ -278,7 +361,12 @@ export const detectConflictForEntity = async (
     return { hasConflict: false };
   }
 
-  return resolveConflictForExistingOp(op, entityId, latestExistingOp);
+  return resolveConflictForExistingOp(
+    op,
+    entityId,
+    latestExistingOp,
+    await getFullStateBoundary(userId, tx),
+  );
 };
 
 export const isSameDuplicateOperation = (

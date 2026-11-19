@@ -217,6 +217,8 @@ curl -H "X-Api-Key: $KEY" http://host:18230/api/status
 
 The body also carries an `appRules` block for the board: `state` (`starting`, `loading`, `ready` or `unavailable`), `seq` (the last server change applied), `droppedOps` (changes a browser drops as outdated by a full import), `reducerFailures`, `archiveFailures`, the worker's memory (`heapUsedMb`), and `error` when the board cannot answer. While `state` is not `ready`, every other route on that board answers `503` with the same reason, and `entityCounts` is empty.
 
+A `checkpoint` block says when the bridge last checkpointed the board: `lastFullStateSeq` (the newest full state in its history), `changesSince` and `bytesSince`, `lastWrittenAt` and `lastAttemptAt` (ms since epoch, `0` if never), `lastError` (why the last attempt was refused, or `null`) and `countsComplete` (`false` until the counters reach back to a full state).
+
 ### `POST /api/sync/refresh`
 
 Forces an immediate op-log pull instead of waiting for the next poll. Returns the

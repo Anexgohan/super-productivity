@@ -54,9 +54,17 @@ import { syncOpToOperation } from '../../../src/app/op-log/sync/operation-sync.u
 import type { SyncOperation } from '../../../src/app/op-log/sync-providers/provider.interface';
 import { StateSnapshotService } from '../../../src/app/op-log/backup/state-snapshot.service';
 import { validateFull } from '../../../src/app/op-log/validation/validation-fn';
+import {
+  applyLocalOnlySyncSettingsToAppData,
+  stripLocalOnlySyncSettingsFromAppData,
+  type LocalOnlySyncSettings,
+} from '../../../src/app/features/config/local-only-sync-settings.util';
+import { selectSyncConfig } from '../../../src/app/features/config/store/global-config.reducer';
 import type { AppDataComplete } from '../../../src/app/op-log/model/model-config';
 import {
+  extractFullStateFromPayload,
   isFullStateOpType,
+  isWrappedFullStatePayload,
   type Operation,
   type OperationLogEntry,
 } from '../../../src/app/op-log/core/operation.types';
@@ -286,7 +294,7 @@ export class AppRules {
     if (validOps.length > 0) {
       const failures: BulkReplayReducerFailure[] = [];
       const replay = await replayOperationBatch({
-        ops: validOps,
+        ops: this._withOwnSyncSettings(validOps),
         dispatcher: {
           dispatch: (action: Action) =>
             runWithBulkReplayFailureCollector(
@@ -356,12 +364,47 @@ export class AppRules {
   }
 
   /**
+   * A full state keeps this board's own device-only sync settings, as RemoteOpsProcessingService does for a browser
+   * (`_withLocalOnlySyncSettingsForFullStateOps`): full states travel without them, the bridge's checkpoints included.
+   */
+  private _withOwnSyncSettings(ops: Operation[]): Operation[] {
+    if (!ops.some((op) => isFullStateOpType(op.opType))) return ops;
+    const current = selectSyncConfig(this._state as never);
+    const own: LocalOnlySyncSettings = {
+      isEnabled: current.isEnabled,
+      isEncryptionEnabled: current.isEncryptionEnabled,
+      syncProvider: current.syncProvider,
+      syncInterval: current.syncInterval,
+      isManualSyncOnly: current.isManualSyncOnly,
+    };
+    return ops.map((op) => {
+      if (!isFullStateOpType(op.opType)) return op;
+      const fullState = extractFullStateFromPayload(op.payload);
+      const withOwn = applyLocalOnlySyncSettingsToAppData(fullState, own);
+      if (withOwn === fullState) return op;
+      return {
+        ...op,
+        payload: isWrappedFullStatePayload(op.payload)
+          ? { ...op.payload, appDataComplete: withOwn }
+          : withOwn,
+      };
+    });
+  }
+
+  /**
    * A checkpoint's state (anex/checkpoints): the snapshot a browser puts in a REPAIR, run through the app's own
    * validateFull, which every browser runs on the state it receives. Errors carry paths and expected types, not values.
    */
   async checkpoint(): Promise<AppRulesCheckpoint> {
-    const { seq, appData } = await this.snapshot();
-    const result = validateFull(appData as unknown as AppDataComplete);
+    const snap = await this.snapshot();
+    const seq = snap.seq;
+    // Validated as a browser holds it, with its device-only sync settings; uploaded without them, as a browser
+    // strips them before uploading a full state and every receiver puts its own back before validating.
+    const result = validateFull(snap.appData as unknown as AppDataComplete);
+    const appData = stripLocalOnlySyncSettingsFromAppData(snap.appData) as Record<
+      string,
+      unknown
+    >;
     const errors: string[] = [];
     if (!result.typiaResult.success) {
       for (const e of result.typiaResult.errors.slice(0, 20))

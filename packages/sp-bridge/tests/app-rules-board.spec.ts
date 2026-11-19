@@ -312,6 +312,51 @@ describe('app rules board', () => {
     expect(cp.appData.archiveOld).toBeDefined();
   }, 60_000);
 
+  it('takes its own checkpoint back as a REPAIR: the same board, and a later change made without it still applies', async () => {
+    const worker = newWorker();
+    const log = new Log();
+    const b = board(worker, 'container', tempDir());
+    await b.open();
+    await log.importInitialState();
+    const task = buildTaskEntity({ title: 'before the checkpoint' });
+    log.push(await browser.addTask(task, afterImport()));
+    await sync(b, log);
+
+    // As the server stores an upload through the snapshot endpoint: the state itself, encrypted, as a REPAIR.
+    const cp = await b.checkpoint();
+    log.push({
+      id: uuidv7(),
+      clientId: 'sp-bridge',
+      actionType: '[SP_ALL] Load(import) all data',
+      opType: 'REPAIR',
+      entityType: 'ALL',
+      payload: await encrypt(JSON.stringify(cp.appData), PASSWORD),
+      isPayloadEncrypted: true,
+      vectorClock: {
+        ...b.mergedClock,
+        'sp-bridge': (b.mergedClock['sp-bridge'] ?? 0) + 1,
+      },
+      timestamp: Date.now(),
+      schemaVersion: 4,
+      syncImportReason: 'REPAIR',
+      repairBaseServerSeq: cp.seq,
+    } as SuperSyncOperation);
+    // A browser that had not seen the checkpoint yet: its change comes after it and is kept, as REPAIR promises.
+    log.push(
+      await browser.updateTask(
+        task.id as string,
+        { title: 'after the checkpoint' },
+        afterImport(),
+      ),
+    );
+    await sync(b, log);
+
+    expect(b.status).toMatchObject({ state: 'ready', seq: 4, droppedOps: 0 });
+    expect(taskOf(b, task.id as string)?.title).toBe('after the checkpoint');
+    // The checkpoint travelled without device-only sync settings; the board keeps its own, so the next one is valid too.
+    expect((await b.checkpoint()).validation).toEqual({ isValid: true, errors: [] });
+  }, 60_000);
+
   it('answers 503 when the worker cannot start at all', async () => {
     const dir = tempDir();
     const worker = newWorker(join(dir, 'missing-worker.js'));

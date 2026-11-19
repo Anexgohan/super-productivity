@@ -1136,6 +1136,8 @@ export class BridgeCore {
       entityCounts: counts,
       // The app's own rules compute this board (anex/app-rules): counts and seqs, never ids or values.
       appRules,
+      // When this board was last checkpointed and what is counted since (anex/checkpoints).
+      checkpoint: this.store.checkpointStatus,
     };
   }
 

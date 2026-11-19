@@ -2,11 +2,14 @@
  * Minimal SuperSync HTTP client for the bridge (download side, M1).
  * Speaks the contract defined in @sp/shared-schema/supersync-http-contract.
  */
+import { gzipSync } from 'node:zlib';
 import {
   SuperSyncDownloadOpsResponseSchema,
+  SuperSyncSnapshotUploadResponseSchema,
   SuperSyncUploadOpsResponseSchema,
   type SuperSyncOperation,
   type SuperSyncServerOperation,
+  type SuperSyncUploadSnapshotRequest,
 } from '@sp/shared-schema';
 import type { BridgeConfig } from './config';
 
@@ -180,5 +183,39 @@ export class SyncClient {
       );
     }
     return { latestSeq: (parsed as { latestSeq?: number }).latestSeq ?? 0 };
+  }
+
+  /**
+   * Uploads a full state through the snapshot endpoint, gzipped as browsers send it (anex/checkpoints). A refusal the
+   * server explains (a stale REPAIR, for one) comes back as `accepted: false`, not as an error.
+   */
+  async uploadSnapshot(body: SuperSyncUploadSnapshotRequest): Promise<{
+    accepted: boolean;
+    serverSeq?: number;
+    error?: string;
+    errorCode?: string;
+  }> {
+    const res = await fetch(`${this.cfg.syncServerUrl}/api/sync/snapshot`, {
+      method: 'POST',
+      headers: {
+        ...this._authHeaders(),
+        'Content-Type': 'application/json',
+        'Content-Encoding': 'gzip',
+      },
+      body: gzipSync(JSON.stringify(body)),
+    });
+    const text = await res.text().catch(() => '');
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = null;
+    }
+    const result = SuperSyncSnapshotUploadResponseSchema.safeParse(parsed);
+    if (result.success) return result.data;
+    throw (
+      quotaFullError(res.status, text) ??
+      new Error(`sp-bridge: snapshot upload failed (${res.status}) ${text.slice(0, 300)}`)
+    );
   }
 }
