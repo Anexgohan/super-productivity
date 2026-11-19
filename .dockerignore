@@ -12,3 +12,8 @@ backup
 coverage
 e2e-results
 tmp
+# anex/build-memory: never sent to the builder. Every node_modules comes from the image's own installs (a local one
+# copied in would overwrite them), and docker-data is the dev stack's live database and the bridge's board caches.
+**/node_modules
+docker/deployment/docker-data
+.tmp

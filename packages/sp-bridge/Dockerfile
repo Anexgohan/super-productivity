@@ -14,11 +14,12 @@ COPY packages/shared-schema/package.json ./packages/shared-schema/
 COPY packages/sp-bridge/package.json ./packages/sp-bridge/
 
 # Only the three needed workspaces — skips the Angular root install entirely
-RUN npm ci --ignore-scripts --include-workspace-root=false \
+# Package downloads come from one cache shared by every image's build (anex/build-memory), so a package is
+# downloaded once rather than once per install. The cache lives with the builder, never in the image.
+RUN --mount=type=cache,id=sp-npm,target=/root/.npm npm ci --ignore-scripts --include-workspace-root=false \
     --workspace @sp/sync-core \
     --workspace @sp/shared-schema \
-    --workspace @sp/sp-bridge \
- && npm cache clean --force
+    --workspace @sp/sp-bridge
 
 COPY packages/sync-core ./packages/sync-core
 COPY packages/shared-schema ./packages/shared-schema
@@ -36,6 +37,10 @@ RUN npm run build --workspace @sp/sync-core \
 FROM --platform=$BUILDPLATFORM node:24 AS app-rules
 WORKDIR /repo
 
+# Waits for the builder stage to finish, so the two installs never run at once (anex/build-memory): each one takes up to
+# about 1 GB. The copied file is never used, and since its content rarely changes, this stage keeps its cache.
+COPY --from=builder /repo/packages/sp-bridge/package.json /tmp/after-builder.json
+
 # Every workspace manifest: a root `npm ci` refuses to run with any of them missing.
 COPY package.json package-lock.json ./
 COPY packages/plugin-api/package.json ./packages/plugin-api/
@@ -46,7 +51,8 @@ COPY packages/super-sync-server/package.json ./packages/super-sync-server/
 COPY packages/sync-core/package.json ./packages/sync-core/
 COPY packages/sync-providers/package.json ./packages/sync-providers/
 COPY packages/vite-plugin/package.json ./packages/vite-plugin/
-RUN npm ci --ignore-scripts && npm cache clean --force
+# Same shared download cache as the builder stage above.
+RUN --mount=type=cache,id=sp-npm,target=/root/.npm npm ci --ignore-scripts
 
 # Sources only, listed explicitly: deployment config (docker/, .env) never enters this stage, and local node_modules or
 # dist folders never overwrite what `npm ci` installed.
@@ -74,4 +80,7 @@ COPY --from=builder /repo /app
 COPY --from=app-rules /repo/packages/sp-bridge/dist/app-rules-worker.js /app/packages/sp-bridge/dist/app-rules-worker.js
 
 EXPOSE 1902
-CMD ["node", "packages/sp-bridge/dist/index.js", "serve"]
+# The main thread's heap limit, set explicitly. Without it Node sizes the heap from the container's cap (about 259 MB at
+# 256m) and lets garbage pile up until near it; with the app-rules worker (its own 96 MB limit) and the encryption key
+# beside it, a rebuild from scratch then reached the cap. Live data on the main thread is far below this.
+CMD ["node", "--max-old-space-size=96", "packages/sp-bridge/dist/index.js", "serve"]

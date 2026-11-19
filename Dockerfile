@@ -44,7 +44,9 @@ COPY packages/shared-schema/tsup.config.ts ./packages/shared-schema/
 COPY packages/shared-schema/src ./packages/shared-schema/src
 COPY tsconfig.json ./
 COPY tools/ ./tools/
-RUN (npm ci --ignore-scripts || npm i --ignore-scripts) && npm cache clean --force
+# Package downloads come from one cache shared by every image's build (anex/build-memory), so a package is
+# downloaded once rather than once per install. The cache lives with the builder, never in the image.
+RUN --mount=type=cache,id=sp-npm,target=/root/.npm npm ci --ignore-scripts || npm i --ignore-scripts
 RUN npm run prepare
 
 # Copy source and build.
@@ -66,7 +68,19 @@ COPY --exclude=nginx \
 # the expensive layers instead of before them. The gate lives in
 # .github/workflows/publish-containers.yml, where it blocks all six image builds
 # up front and costs a local build nothing.
-RUN UNSPLASH_KEY=$UNSPLASH_KEY UNSPLASH_CLIENT_ID=$UNSPLASH_CLIENT_ID npm run env && npm run buildFrontend:prodWeb
+#
+# Heap limit for the Angular build (anex/build-memory). Without one, Node sizes
+# its heap from the host's memory (about 4 GB here) and lets garbage pile up
+# until near it: measured at 4.4 GB for ng build, plus 1.7 GB for its esbuild
+# process, leaving 1.1 GB free on an 11 GB build host. If the build ever stops
+# with "JavaScript heap out of memory", it needs more than this: raise it.
+#
+# The build also installs each bundled plugin's packages (build-packages.js,
+# for every plugin without a node_modules folder, which the build context never
+# carries); those downloads use the same shared cache as the install above.
+RUN --mount=type=cache,id=sp-npm,target=/root/.npm \
+    UNSPLASH_KEY=$UNSPLASH_KEY UNSPLASH_CLIENT_ID=$UNSPLASH_CLIENT_ID npm run env \
+ && NODE_OPTIONS=--max-old-space-size=3072 npm run buildFrontend:prodWeb
 
 # Production stage
 FROM nginx:1

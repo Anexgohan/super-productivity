@@ -32,6 +32,21 @@ async function pathExists(p) {
   }
 }
 
+// Packages listed in the root package.json's workspaces get their dependencies
+// from the root install, which every build runs first. Running `npm install`
+// inside one redoes the install of the whole workspace (about 15s each), so
+// only packages outside the workspaces install their own (anex/build-memory).
+function isRootWorkspace(pluginPath) {
+  const rootDir = path.join(__dirname, '..');
+  const workspaces = require(path.join(rootDir, 'package.json')).workspaces || [];
+  const rel = path.relative(rootDir, pluginPath).split(path.sep).join('/');
+  return workspaces.some((pattern) =>
+    pattern.endsWith('/*')
+      ? path.posix.dirname(rel) === pattern.slice(0, -2)
+      : rel === pattern,
+  );
+}
+
 async function getPlugins() {
   const pluginDevDir = path.join(__dirname, 'plugin-dev');
   const entries = await fs.readdir(pluginDevDir, { withFileTypes: true });
@@ -211,7 +226,7 @@ async function buildPlugin(plugin) {
         } catch {
           needsInstall = true;
         }
-        if (needsInstall) {
+        if (needsInstall && !isRootWorkspace(pluginPath)) {
           log(`  Installing dependencies...`, colors.yellow);
           await execAsync(`cd ${pluginPath} && npm install`);
         }

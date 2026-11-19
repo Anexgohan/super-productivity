@@ -13,7 +13,9 @@ COPY packages/super-sync-server/package.json ./packages/super-sync-server/
 
 # Install ALL dependencies for the monorepo
 # Use npm ci for reproducible builds; requires compatible lockfile
-RUN npm ci --ignore-scripts && npm cache clean --force
+# Package downloads come from one cache shared by every image's build (anex/build-memory), so a package is
+# downloaded once rather than once per install. The cache lives with the builder, never in the image.
+RUN --mount=type=cache,id=sp-npm,target=/root/.npm npm ci --ignore-scripts
 
 # Copy source code
 COPY packages/sync-core/ ./packages/sync-core/
@@ -62,12 +64,12 @@ COPY --from=builder --chown=supersync:nodejs /repo/packages/shared-schema/sp-sha
 # Install dependencies and generate Prisma client in single layer
 # Note: prisma CLI installed explicitly for runtime migrate deploy
 # IMPORTANT: prisma version must match @prisma/client in package.json
-RUN npm install ./sync-core.tgz ./shared-schema.tgz --ignore-scripts --omit=dev && \
+# Same shared download cache as the builder stage above.
+RUN --mount=type=cache,id=sp-npm,target=/root/.npm npm install ./sync-core.tgz ./shared-schema.tgz --ignore-scripts --omit=dev && \
     npm install --ignore-scripts --omit=dev && \
     npm install prisma@5.22.0 --ignore-scripts --omit=dev && \
     npx prisma generate && \
-    rm -f sync-core.tgz shared-schema.tgz && \
-    npm cache clean --force
+    rm -f sync-core.tgz shared-schema.tgz
 
 USER supersync
 
