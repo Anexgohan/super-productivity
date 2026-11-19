@@ -71,7 +71,7 @@ export const quotaFullError = (status: number, body: string): Error | null => {
   return Object.assign(
     new Error(
       `Sync storage is full${usage}: the sync server refused this write and nothing was saved. ` +
-        'Raise STORAGE_QUOTA_BYTES on the sync server.',
+        "Raise SYNC_STORAGE_LIMIT in the server's .env.",
     ),
     { statusCode: 507 },
   );

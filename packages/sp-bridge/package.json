@@ -6,10 +6,12 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsup",
+    "build": "npm run build:bridge && npm run build:app-rules",
+    "build:bridge": "tsup",
+    "build:app-rules": "tsup --config tsup.app-rules.config.ts",
     "dev": "tsx src/index.ts",
     "dump": "tsx src/index.ts dump",
-    "test": "npm run test:typecheck && vitest run",
+    "test": "npm run test:typecheck && npm run build:app-rules && vitest run",
     "test:typecheck": "tsc --noEmit -p tsconfig.spec.json",
     "test:watch": "vitest"
   },

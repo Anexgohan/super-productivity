@@ -8,7 +8,8 @@ import type { BridgeConfig } from './config';
 import { SyncClient } from './sync-client';
 import { Materializer, type EntityMap } from './materializer';
 import { SyncWebSocket } from './ws-client';
-import type { SuperSyncOperation } from '@sp/shared-schema';
+import type { SuperSyncOperation, SuperSyncServerOperation } from '@sp/shared-schema';
+import type { StateCheck, StateCheckStatus } from './state-check';
 
 const CACHE_FILE = 'bridge-state-cache.json';
 /**
@@ -24,6 +25,7 @@ export class StateStore {
   private _timer: NodeJS.Timeout | null = null;
   private _refreshInFlight: Promise<void> | null = null;
   private _ws: SyncWebSocket | null = null;
+  private _stateCheck: StateCheck | null = null;
   lastSyncAt = 0;
   lastError: string | null = null;
 
@@ -56,6 +58,23 @@ export class StateStore {
 
   get lastServerSeq(): number {
     return this._materializer.lastServerSeq;
+  }
+
+  /** State check (anex/state-check): fed every page this store applies. Only the container board ever has one. */
+  attachStateCheck(stateCheck: StateCheck): void {
+    this._stateCheck = stateCheck;
+  }
+
+  get stateCheckStatus(): StateCheckStatus | null {
+    return this._stateCheck?.status ?? null;
+  }
+
+  /** Pages after `sinceSeq` for the state check's catch-up, through this store's own authenticated client. */
+  downloadPages(
+    sinceSeq: number,
+    onPage: (rows: SuperSyncServerOperation[]) => Promise<void>,
+  ): Promise<unknown> {
+    return this._client.downloadOpsSince(sinceSeq, onPage);
   }
 
   /** This board's sync identity: its own for a per-user board, the container's otherwise. */
@@ -140,6 +159,7 @@ export class StateStore {
   stop(): void {
     if (this._timer) clearInterval(this._timer);
     this._ws?.stop();
+    this._stateCheck?.stop();
   }
 
   /**
@@ -163,9 +183,12 @@ export class StateStore {
       // Applied and saved page by page: the cursor advances with each page, so an interrupted rebuild resumes where it stopped.
       await this._client.downloadOpsSince(since, async (page) => {
         if (page.length === 0) return;
+        const pageSince = this._materializer.lastServerSeq;
         await this._materializer.applyOps(page);
         this._persist();
         applied += page.length;
+        // Never throws: a failing state check stops itself and the bridge carries on.
+        await this._stateCheck?.applyPage(pageSince, page);
       });
       if (applied > 0) {
         console.log(
@@ -174,6 +197,7 @@ export class StateStore {
       }
       this.lastSyncAt = Date.now();
       this.lastError = null;
+      this._stateCheck?.afterRefresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.lastError = message;

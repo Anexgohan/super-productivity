@@ -367,3 +367,25 @@ describe('DEFAULT_CORS_ORIGINS', () => {
     );
   });
 });
+
+describe('loadConfigFromEnv - SYNC_STORAGE_LIMIT', () => {
+  beforeEach(() => {
+    resetEnv();
+  });
+
+  afterEach(() => {
+    resetEnv();
+  });
+
+  it('starts with a size that has a unit', async () => {
+    process.env.SYNC_STORAGE_LIMIT = '256m';
+    const { loadConfigFromEnv } = await importConfig();
+    expect(() => loadConfigFromEnv()).not.toThrow();
+  });
+
+  it('refuses to start on a bare number, which could mean bytes or megabytes', async () => {
+    process.env.SYNC_STORAGE_LIMIT = '256';
+    const { loadConfigFromEnv } = await importConfig();
+    expect(() => loadConfigFromEnv()).toThrow('use a size with a unit');
+  });
+});

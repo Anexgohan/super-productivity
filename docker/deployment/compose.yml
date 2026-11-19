@@ -1,4 +1,4 @@
-# Super Productivity. Config lives in .env — copy example.env first.
+# Super Productivity. Config lives in .env — copy .env.example to .env first.
 #   docker compose pull && docker compose up -d
 
 services:

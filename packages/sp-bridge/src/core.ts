@@ -1129,6 +1129,8 @@ export class BridgeCore {
       // true = live websocket push; false = falling back to polling
       isLive: this.store.isLive,
       entityCounts: counts,
+      // State check only (anex/state-check): counts and seqs, never ids or values.
+      ...(this.store.stateCheckStatus ? { stateCheck: this.store.stateCheckStatus } : {}),
     };
   }
 

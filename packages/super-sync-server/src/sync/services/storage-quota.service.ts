@@ -10,7 +10,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { prisma } from '../../db';
 import { Logger } from '../../logger';
-import { parsePositiveIntegerEnv } from '../../util/env';
+import { parsePositiveIntegerEnv, storageLimitFromEnv } from '../../util/env';
 import { APPROX_BYTES_PER_OP } from '../sync.const';
 import { CAUSAL_FULL_STATE_OPERATION_WHERE } from '../sync.types';
 
@@ -20,14 +20,14 @@ import { CAUSAL_FULL_STATE_OPERATION_WHERE } from '../sync.types';
 const DEFAULT_STORAGE_QUOTA_BYTES = 100 * 1024 * 1024;
 
 /**
- * anex/self-hosted: STORAGE_QUOTA_BYTES, when set, is every account's quota and wins over the per-user column.
- * The column holds the 100MB hosted-service default, and a self-hosted op log filled that in a month.
- * Without the setting, raising it meant hand-editing the database.
+ * anex/self-hosted: SYNC_STORAGE_LIMIT (or the older STORAGE_QUOTA_BYTES), when set, is every account's quota and wins
+ * over the per-user column. The column holds the 100MB hosted-service default, and a self-hosted op log filled that in a
+ * month. Without the setting, raising it meant hand-editing the database.
  */
 const effectiveQuotaBytes = (
   storedQuotaBytes: bigint | number | null | undefined,
 ): number => {
-  const configured = parsePositiveIntegerEnv('STORAGE_QUOTA_BYTES', 0);
+  const configured = storageLimitFromEnv();
   if (configured > 0) return configured;
   return Number(storedQuotaBytes ?? DEFAULT_STORAGE_QUOTA_BYTES);
 };

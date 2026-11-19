@@ -32,7 +32,7 @@ body declared as JSON (`400 FST_ERR_CTP_EMPTY_JSON_BODY`).
 | `403` | authenticated but not allowed - read-only role, or somebody else's account |
 | `404` | entity not found                                                           |
 | `409` | refused by a safety guard (e.g. deleting a task that still has subtasks)   |
-| `507` | sync storage is full; nothing was saved (`STORAGE_QUOTA_BYTES`)            |
+| `507` | sync storage is full; nothing was saved (`SYNC_STORAGE_LIMIT`)             |
 
 **Freshness** - reads reflect the last op-log poll (default 15s). Call
 `POST /api/sync/refresh` first if you need guaranteed-current data. Writes
@@ -213,6 +213,8 @@ curl -H "X-Api-Key: $KEY" http://host:18230/api/status
   "entityCounts": { "TASK": 26, "PROJECT": 2, "TAG": 14, "...": 0 }
 }
 ```
+
+With the state check on (`SP_STATE_CHECK=on`, container account only), the body also carries a `stateCheck` block: `state` (`starting`, `catching-up`, `running` or `stopped`), how far it has got (`appRulesSeq`), the seq and time of the last comparison, `differences` counted by kind, `droppedOps`, `reducerFailures`, `archiveFailures`, its memory use (`heapUsedMb`), and `error` when it stopped. Counts and seqs only, never ids or content. A `new` count above zero is a difference no known gap explains.
 
 ### `POST /api/sync/refresh`
 

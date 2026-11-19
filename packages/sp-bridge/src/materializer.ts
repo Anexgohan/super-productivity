@@ -79,7 +79,7 @@ const isUnsafeKey = (key: string): boolean =>
  * `state.TASK[id]`, identical to how incremental ops build state); singleton
  * sections (globalConfig, boards, planner, menuTree, …) are stored whole.
  */
-const normalizeFullState = (fullState: Record<string, unknown>): EntityMap => {
+export const normalizeFullState = (fullState: Record<string, unknown>): EntityMap => {
   const out: EntityMap = {};
   for (const [sectionKey, value] of Object.entries(fullState)) {
     if (isUnsafeKey(sectionKey)) continue;

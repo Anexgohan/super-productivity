@@ -1,5 +1,6 @@
 import * as path from 'path';
 import { Logger } from './logger';
+import { storageLimitFromEnv } from './util/env';
 
 /** CORS origin can be a string or RegExp for pattern matching (e.g., localhost with any port) */
 export type CorsOrigin = string | RegExp;
@@ -198,6 +199,9 @@ export const loadConfigFromEnv = (
   } else if (process.env.SUPERSYNC_BATCH_UPLOAD !== undefined) {
     config.batchUpload = false;
   }
+
+  // anex/self-hosted: read once here so an unreadable SYNC_STORAGE_LIMIT stops the server at start, not on the first upload.
+  storageLimitFromEnv();
 
   // Public URL (for email links)
   if (process.env.PUBLIC_URL) {

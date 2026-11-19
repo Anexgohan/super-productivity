@@ -661,6 +661,19 @@ describe('StorageQuotaService', () => {
       expect(info.storageQuotaBytes).toBe(268435456);
     });
 
+    it('takes SYNC_STORAGE_LIMIT in plain units, over the older byte setting', async () => {
+      vi.mocked(prisma.user.findUnique).mockResolvedValue({
+        storageQuotaBytes: BigInt(104857600),
+        storageUsedBytes: BigInt(0),
+      } as any);
+      vi.stubEnv('STORAGE_QUOTA_BYTES', '1000');
+
+      vi.stubEnv('SYNC_STORAGE_LIMIT', '256m');
+      expect((await service.checkStorageQuota(1, 0)).quota).toBe(256 * 1024 * 1024);
+      vi.stubEnv('SYNC_STORAGE_LIMIT', '1GB');
+      expect((await service.checkStorageQuota(1, 0)).quota).toBe(1024 * 1024 * 1024);
+    });
+
     it('leaves the stored quota in charge when unset or invalid', async () => {
       vi.mocked(prisma.user.findUnique).mockResolvedValue({
         storageQuotaBytes: BigInt(100000),

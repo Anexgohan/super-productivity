@@ -6,6 +6,7 @@
  * end-to-end before any server/API work builds on it.
  */
 import { randomBytes, randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { setDeploymentEncryptSalt } from '@sp/sync-core';
 import { loadConfig } from './config';
 import { SyncClient, mintSuperSyncToken } from './sync-client';
@@ -63,6 +64,22 @@ const runServe = async (): Promise<void> => {
 
   const store = new StateStore(cfg);
   await store.start(cfg.pollIntervalSec * 1000);
+
+  if (cfg.stateCheck) {
+    const { StateCheck } = await import('./state-check');
+    const stateCheck = new StateCheck({
+      dataDir: cfg.dataDir,
+      clientId: cfg.clientId,
+      encryptionPassword: cfg.encryptionPassword,
+      // Built beside this file by tsup.app-rules.config.ts.
+      workerPath: fileURLToPath(new URL('./app-rules-worker.js', import.meta.url)),
+      bridge: () => ({ state: store.state, seq: store.lastServerSeq }),
+      download: (sinceSeq, onPage) => store.downloadPages(sinceSeq, onPage),
+    });
+    store.attachStateCheck(stateCheck);
+    // Never throws: a state check that cannot start logs why and stays stopped.
+    await stateCheck.start();
+  }
 
   // Postgres backs two independent things - browser accounts and the durable
   // web-app sync token - so it is opened once here rather than by either.

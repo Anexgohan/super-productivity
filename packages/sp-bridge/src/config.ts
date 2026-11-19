@@ -48,6 +48,11 @@ export interface BridgeConfig {
    * it quietly insecure because nobody remembered a separate switch.
    */
   authSecureCookie: boolean;
+  /**
+   * State check (anex/state-check): also run the app's own rules beside the materializer and log where they differ.
+   * Container board only; the API keeps reading the materializer. Off unless SP_STATE_CHECK is on.
+   */
+  stateCheck: boolean;
 }
 
 /** Explicit DATABASE_URL wins; else assembled from POSTGRES_*. Percent-encoded so `@` or `:` in a password can't corrupt the URL. */
@@ -96,4 +101,7 @@ export const loadConfig = (): BridgeConfig => ({
   // Same default and same var the web entrypoint uses, so both agree on the URL.
   publicSyncUrl: (process.env.SP_SYNC_SERVER_URL ?? '/sync').replace(/\/+$/, ''),
   authSecureCookie: process.env.ALLOW_INSECURE_HTTP !== 'true',
+  stateCheck: ['on', 'true', '1'].includes(
+    (process.env.SP_STATE_CHECK ?? '').trim().toLowerCase(),
+  ),
 });

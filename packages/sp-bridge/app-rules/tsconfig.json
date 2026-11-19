@@ -1,0 +1,17 @@
+// The app rules compile the app's own source, so it takes the app's compiler settings
+// (legacy decorators, class-field mode, DOM types), not the bridge's.
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": "../../..",
+    "noEmit": true,
+    "types": ["node"],
+    "allowSyntheticDefaultImports": true,
+    "plugins": []
+  },
+  "include": [
+    "./**/*.ts",
+    "../src/state-check-protocol.ts",
+    "../../../src/app/core/window-ea.d.ts"
+  ]
+}

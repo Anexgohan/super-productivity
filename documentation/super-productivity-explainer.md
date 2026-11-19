@@ -657,6 +657,7 @@ file via `env_file:`, so a value is written once and no service has an
 | `ALLOW_INSECURE_HTTP`         | `true` for plain HTTP on a LAN; `false` behind a TLS proxy  |
 | `SP_BRIDGE_POLL_INTERVAL_SEC` | websocket-fallback poll interval (default 15)               |
 | `SP_AUTH_SESSION_TTL_H`       | session lifetime in hours, sliding (default 720)            |
+| `SP_STATE_CHECK`              | `on` runs the state check, see below (default off)          |
 | `POSTGRES_USER` / `_DB`       | database name and role                                      |
 | `POSTGRES_HOST` / `_PORT`     | point these at an external server to drop the bundled one   |
 
@@ -667,11 +668,19 @@ file via `env_file:`, so a value is written once and no service has an
 | `SUPERSYNC_MEM_LIMIT` / `SP_BRIDGE_MEM_LIMIT` / `POSTGRES_MEM_LIMIT` | `512m` / `256m` / `256m`                   |
 | `PG_SHARED_BUFFERS`                                                  | `64MB`, keep well under the postgres cap   |
 | `PG_MAX_CONNECTIONS`                                                 | `20`, ample for this stack's three clients |
-| `STORAGE_QUOTA_BYTES`                                                | unset: each account's stored quota, 100 MB |
+| `SYNC_STORAGE_LIMIT`                                                 | unset: each account's stored quota, 100 MB |
 
 `SP_BRIDGE_MEM_LIMIT` is the one that grows with real use: the bridge holds the materialized board in memory, so it scales with task count.
 
-`STORAGE_QUOTA_BYTES` caps the sync history the server keeps per account, and when set it is every account's quota. The history only grows, and every save of a card's notes stores the whole notes again, so a few long cards edited often fill 100 MB in about a month. When it is full the server refuses every write that does not fit: browsers show a "Sync storage is full" alert and keep the changes on the device, and the API answers `507` and saves nothing.
+**State check** (`SP_STATE_CHECK=on`) is a temporary check, run on dev and left out of `.env.example`. It is the first step of making the container the authority over your cards. The API works out each card's current state from the sync history with its own copy of the app's rules, and that copy has drifted: a card marked done keeps its In Progress tag, `doneOn` stays empty, tag task lists fall out of step, archived cards stay live, and changes every browser throws away as outdated by a full import are still applied. Before the container may hand its state to the browsers, it has to compute exactly what they compute. The state check runs the app's real rules (built from the app's source into `app-rules-worker.js`) beside the API's copy, feeds both the same history, and records every card where they differ. Nothing changes for anyone: the API keeps answering from its own copy.
+
+- **What it logs:** a line whenever the differences change, then each one that appeared (`+`) or went away (`-`), with its kind: `in-progress-on-done`, `done-on`, `tag-task-lists`, `menu-tree`, `settings`, `archive` and `import-filter` are the known gaps above, and **`new` is anything else, the one to look at**. Lines carry ids and field names, never titles or notes. The full record is `state-check-differences.jsonl` in the bridge's data folder, capped at 5 MB.
+- **Where to watch it:** `GET /api/status` gains a `stateCheck` block with the counts per kind, how far the check has got, its memory use and any error.
+- **What it costs:** it runs in its own thread with a 128 MB memory cap. On the production copy (about 1,100 changes, 126 cards) it held at about 45 MB and caught up from scratch in 6 seconds. Set `SP_BRIDGE_MEM_LIMIT` to `384m` while it runs.
+- **When it fails:** an error, a hang, running out of its memory, or a change from a newer app version stops the check, logs why, and leaves the API exactly as it was. A restart starts it again.
+- **State:** `app-rules-cache.json` in the bridge's data folder, so a restart resumes where it stopped; delete it to start the check over from the beginning of the history. Only the container account's board is checked.
+
+`SYNC_STORAGE_LIMIT` caps the sync history the server keeps per account, and when set it is every account's quota. Write it like the memory limits, `256m` or `1g`; a number without a unit stops the server at start rather than being guessed at. The older `STORAGE_QUOTA_BYTES`, in plain bytes, still works. The history only grows, and every save of a card's notes stores the whole notes again, so a few long cards edited often fill 100 MB in about a month. When it is full the server refuses every write that does not fit: browsers show a "Sync storage is full" alert and keep the changes on the device, and the API answers `507` and saves nothing.
 
 **Deliberately not in `.env.example`:** `SP_AUTH_ENABLED`. It disables the browser login gate entirely, which also unpublishes the per-session sync override and hands every browser the container account's token. It exists for local development only, and putting it in the file people copy would invite turning it off in a deployment where accounts are what issue the API keys.
 

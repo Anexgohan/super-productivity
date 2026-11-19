@@ -4,10 +4,10 @@
 import { alertDialog } from '../../util/native-dialogs';
 
 // anex/self-hosted: archiving frees nothing on the server and there is no plan to upgrade.
-// The quota is the server's STORAGE_QUOTA_BYTES setting.
+// The quota is the server's SYNC_STORAGE_LIMIT setting.
 const STORAGE_QUOTA_ALERT =
   'Sync storage is full! Your changes are saved on this device but are NOT syncing to the server. ' +
-  'Raise the storage quota on the sync server (STORAGE_QUOTA_BYTES) to resume syncing.';
+  "Raise SYNC_STORAGE_LIMIT in the server's .env to resume syncing.";
 
 export const handleStorageQuotaError = (message: string | undefined): boolean => {
   if (!message) {
