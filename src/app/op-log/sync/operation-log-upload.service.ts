@@ -24,6 +24,7 @@ import {
   SyncOperation,
 } from '../sync-providers/provider.interface';
 import { syncOpToOperation } from './operation-sync.util';
+import { ServerOrderService } from './server-order.service';
 import { OperationEncryptionService } from './operation-encryption.service';
 import { SyncProviderManager } from '../sync-providers/provider-manager.service';
 import {
@@ -75,6 +76,7 @@ export class OperationLogUploadService {
   private stateSnapshotService = inject(StateSnapshotService);
   private providerManager = inject(SyncProviderManager);
   private containerAuthority = inject(ContainerAuthorityService);
+  private serverOrder = inject(ServerOrderService);
 
   async uploadPendingOps(
     syncProvider: OperationSyncCapable,
@@ -335,6 +337,8 @@ export class OperationLogUploadService {
         if (result.accepted) {
           await acknowledge([entry.seq]);
           uploadedCount++;
+          // Stage 9 (anex): what the replay held belongs to the state before this full-state save.
+          this.serverOrder.reset('full-state save accepted');
           if (result.serverSeq !== undefined) {
             await syncProvider.setLastServerSeq(result.serverSeq);
             lastKnownServerSeq = result.serverSeq;
@@ -514,6 +518,11 @@ export class OperationLogUploadService {
           await acknowledge(acceptedSeqs);
           uploadedCount += acceptedSeqs.length;
         }
+        // Stage 9 (anex): the server's numbers for this browser's saves place them in its order.
+        this.serverOrder.recordAccepted(
+          entries.map((entry) => entry.op),
+          response.results,
+        );
 
         // Collect piggybacked new ops from other clients
         // SKIP if skipPiggybackProcessing is set - used for force upload scenarios
@@ -568,6 +577,7 @@ export class OperationLogUploadService {
 
           const ops = piggybackSyncOps.map((op) => syncOpToOperation(op));
           piggybackedOps.push(...ops);
+          this.serverOrder.recordServerSeqs(response.newOps);
           // These ops are returned to the caller for processRemoteOps; defer the seq
           // persist so it cannot advance past ops that are not yet applied. (#8304)
           deferSeqPersistToCaller = true;

@@ -15,9 +15,14 @@ import {
 } from '../core/operation.types';
 import { OperationLogSnapshotService } from '../persistence/operation-log-snapshot.service';
 import { OpLog } from '../../core/log';
-import { OperationApplierService } from '../apply/operation-applier.service';
+import {
+  ApplyOperationsOptions,
+  OperationApplierService,
+} from '../apply/operation-applier.service';
 import { ConflictResolutionService } from './conflict-resolution.service';
 import { UnsentEditOnTopService } from './unsent-edit-on-top.service';
+import { ServerOrderService } from './server-order.service';
+import { getDeferredActions } from '../capture/operation-capture.meta-reducer';
 import { ValidateStateService } from '../validation/validate-state.service';
 import { SyncSessionValidationService } from './sync-session-validation.service';
 import { VectorClockService } from './vector-clock.service';
@@ -77,6 +82,7 @@ export class RemoteOpsProcessingService {
   private providerManager = inject(SyncProviderManager);
   private injector = inject(Injector);
   private unsentEditOnTop = inject(UnsentEditOnTopService);
+  private serverOrder = inject(ServerOrderService);
 
   /** Flag to show version-incompatibility warnings only once per session */
   private _hasWarnedVersionBlockThisSession = false;
@@ -382,6 +388,11 @@ export class RemoteOpsProcessingService {
             ),
           );
 
+      // Stage 9 (anex): what the replay held belongs to the state before the full-state change.
+      if (fullStateApplyResult.committedFullStateOpIds.length > 0) {
+        this.serverOrder.reset('full-state change applied');
+      }
+
       if (fullStateApplyResult.keptOnTopCount > 0) {
         // The startup rebuild would otherwise replay these edits before the checkpoint, which wipes them; the
         // snapshot holds the state as shown. If saving it fails, the startup rebuild applies them after the
@@ -430,6 +441,7 @@ export class RemoteOpsProcessingService {
           `Applying ${validOps.length} ops directly.`,
       );
       this.providerManager.assertSyncEpochUnchanged(options?.fenceEpoch, 'direct apply');
+      this.serverOrder.reset('server state accepted as is');
       await this.applyNonConflictingOps(
         validOps,
         options.callerHoldsOperationLogLock ?? false,
@@ -442,6 +454,34 @@ export class RemoteOpsProcessingService {
         isLocalUnsyncedImport: false,
         blockedByIncompatibleOp,
       };
+    }
+
+    // Stage 9 (anex): SuperSync numbers every change, so the batch follows the server's order instead of being compared
+    // by clocks. Without a number for every change the order is unknown and today's handling below stays.
+    if (
+      validOps.length > 0 &&
+      this.serverOrder.isActive() &&
+      this.serverOrder.hasServerSeqs(validOps)
+    ) {
+      try {
+        const bringBackCount = await this._applyInServerOrder(
+          validOps,
+          remoteOps,
+          options,
+        );
+        return {
+          localWinOpsCreated: bringBackCount,
+          allOpsFilteredBySyncImport: false,
+          filteredOpCount: 0,
+          isLocalUnsyncedImport: false,
+          blockedByIncompatibleOp,
+        };
+      } finally {
+        this.serverOrder.forgetServerSeqs(remoteOps);
+      }
+    }
+    if (validOps.length > 0) {
+      this.serverOrder.reset('batch without server numbers');
     }
 
     // CRITICAL: Flush pending operation writes before conflict detection.
@@ -543,6 +583,94 @@ export class RemoteOpsProcessingService {
       isLocalUnsyncedImport: false,
       blockedByIncompatibleOp,
     };
+  }
+
+  /**
+   * Stage 9 (anex): applies a batch in the server's order (server-order.service.ts). As today when nothing of this
+   * browser's own waits; otherwise back to the confirmed state, every change in server order, then this browser's later
+   * and unsent saves on top. Same cutoff as the full-state path: edits made before it are in the change log, edits
+   * after it are held back and re-applied on top. Returns the number of "bring it back" saves written.
+   */
+  private async _applyInServerOrder(
+    validOps: Operation[],
+    receivedOps: Operation[],
+    options: { callerHoldsOperationLogLock?: boolean; fenceEpoch?: number } | undefined,
+  ): Promise<number> {
+    // A rebuild downloads the server's history; when the plan already asks for one, that happens before the cutoff.
+    const early = await this.serverOrder.prepare(validOps, receivedOps);
+    if (early.plan.kind === 'rebuild') {
+      await this.serverOrder.rebuildConfirmedState(early.downloaded);
+    }
+
+    const applyWithOperationLogLockHeld = async (): Promise<number> => {
+      this.providerManager.assertSyncEpochUnchanged(
+        options?.fenceEpoch,
+        'server-order apply',
+      );
+      const releaseApplyingRemoteOpsHold =
+        this.hydrationStateService.acquireApplyingRemoteOpsHold();
+      let hasPrimaryError = false;
+      let bringBackCount = 0;
+      try {
+        let prepared = await this.serverOrder.prepare(validOps, receivedOps);
+        if (
+          prepared.plan.kind === 'rebuild' &&
+          (await this.serverOrder.rebuildConfirmedState(prepared.downloaded))
+        ) {
+          prepared = await this.serverOrder.prepare(validOps, receivedOps);
+        }
+        if (prepared.plan.kind === 'replay') {
+          const bringBack = await this.serverOrder.writeBringBackSaves(prepared);
+          bringBackCount = bringBack.length;
+          await this.applyNonConflictingOps(validOps, true, {
+            skipDeferredActionDrain: true,
+            createBulkApplyAction: this.serverOrder.replayActionFactory(
+              prepared,
+              bringBack,
+            ),
+          });
+          this.serverOrder.commitReplay(prepared);
+        } else {
+          if (prepared.plan.kind === 'rebuild') {
+            // The server's history cannot give the confirmed state: the download goes on top of the state shown, as
+            // today without the clock comparison, and differs from the server until its next checkpoint.
+            OpLog.warn(
+              'RemoteOpsProcessingService: no confirmed state; applying the download on top',
+            );
+          }
+          await this.applyNonConflictingOps(validOps, true, {
+            skipDeferredActionDrain: true,
+          });
+          await this.serverOrder.commitInOrder(prepared, getDeferredActions().length > 0);
+        }
+      } catch (error) {
+        hasPrimaryError = true;
+        this.serverOrder.reset('server-order apply failed');
+        throw error;
+      } finally {
+        releaseApplyingRemoteOpsHold();
+        try {
+          await processDeferredActionsAfterRemoteApply(this.injector, true);
+        } catch (deferredError) {
+          if (!hasPrimaryError) {
+            throw deferredError;
+          }
+          OpLog.err(
+            'RemoteOpsProcessingService: Deferred-action drain also failed after server-order apply error',
+            { name: (deferredError as Error | undefined)?.name },
+          );
+        }
+      }
+      await this.validateAfterSync(true);
+      return bringBackCount;
+    };
+
+    // Lock order as the full-state path: UPLOAD, then the flushed OPERATION_LOG cutoff.
+    return options?.callerHoldsOperationLogLock
+      ? applyWithOperationLogLockHeld()
+      : this.lockService.request(LOCK_NAMES.UPLOAD, () =>
+          this.writeFlushService.flushThenRunExclusive(applyWithOperationLogLockHeld),
+        );
   }
 
   /**
@@ -662,7 +790,11 @@ export class RemoteOpsProcessingService {
   async applyNonConflictingOps(
     ops: Operation[],
     callerHoldsLock: boolean = false,
-    options: { skipDeferredActionDrain?: boolean } = {},
+    options: {
+      skipDeferredActionDrain?: boolean;
+      /** Stage 9 (anex): the reducer action in place of the bulk apply (a server-order replay). */
+      createBulkApplyAction?: ApplyOperationsOptions['createBulkApplyAction'];
+    } = {},
   ): Promise<string[]> {
     const locallyReplayableOps =
       await this._withLocalOnlySyncSettingsForFullStateOps(ops);
@@ -687,6 +819,7 @@ export class RemoteOpsProcessingService {
             this.operationApplier.applyOperations(opsToApply, {
               skipDeferredLocalActions: true,
               onReducersCommitted: applyOptions?.onReducersCommitted,
+              createBulkApplyAction: options.createBulkApplyAction,
             }),
         },
         isFullStateOperation: this._isFullStateOperation,

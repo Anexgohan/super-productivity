@@ -36,6 +36,11 @@ export class TaskTimeSyncService {
     this._accumulator.flush();
   }
 
+  /** Time tracked since the last saved change, already shown but not yet in any change (anex, Stage 9). */
+  getPendingEntries(): BatchedTimeSyncEntry[] {
+    return this._accumulator.getPendingEntries();
+  }
+
   flushOne(taskId: string): void {
     this._accumulator.flushOne(taskId);
   }

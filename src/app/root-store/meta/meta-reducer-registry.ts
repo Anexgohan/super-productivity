@@ -2,6 +2,7 @@ import { MetaReducer } from '@ngrx/store';
 import { isDevMode } from '@angular/core';
 import { operationCaptureMetaReducer } from '../../op-log/capture/operation-capture.meta-reducer';
 import { bulkOperationsMetaReducer } from '../../op-log/apply/bulk-hydration.meta-reducer';
+import { serverOrderReplayMetaReducer } from '../../op-log/apply/server-order-replay.meta-reducer';
 import { undoTaskDeleteMetaReducer } from './undo-task-delete.meta-reducer';
 import { taskSharedCrudMetaReducer } from './task-shared-meta-reducers/task-shared-crud.reducer';
 import { taskBatchUpdateMetaReducer } from './task-shared-meta-reducers/task-batch-update.reducer';
@@ -81,6 +82,9 @@ export const META_REDUCERS: MetaReducer[] = [
   // Captures original state BEFORE any other meta-reducer modifies it.
   // Critical for operation logging - if moved, logs will have wrong before-state.
   operationCaptureMetaReducer,
+
+  // anex, Stage 9: replays in the server's order through the bulk apply below, so it sits right outside it.
+  serverOrderReplayMetaReducer,
 
   // ═══════════════════════════════════════════════════════════════════════════
   // PHASE 2: BULK OPERATIONS
@@ -162,10 +166,17 @@ const validateMetaReducerOrdering = (): void => {
     );
   }
 
-  // Check bulkOperationsMetaReducer is second
-  if (META_REDUCERS[1] !== bulkOperationsMetaReducer) {
+  // anex, Stage 9: the server-order replay runs its two passes through the bulk apply, so it sits right outside it.
+  if (META_REDUCERS[1] !== serverOrderReplayMetaReducer) {
     errors.push(
-      'bulkOperationsMetaReducer MUST be at index 1 to unwrap bulk dispatches early',
+      'serverOrderReplayMetaReducer MUST be at index 1, right outside the bulk apply it replays through',
+    );
+  }
+
+  // Check bulkOperationsMetaReducer comes next
+  if (META_REDUCERS[2] !== bulkOperationsMetaReducer) {
+    errors.push(
+      'bulkOperationsMetaReducer MUST be at index 2 to unwrap bulk dispatches early',
     );
   }
 

@@ -35,3 +35,20 @@ export const reportBulkReplayReducerFailure = (op: Operation, error: unknown): v
     error: error instanceof Error ? error : new Error(String(error)),
   });
 };
+
+/**
+ * Runs `run` passing on only the failures of ops `keep` accepts to the collector already active (anex, Stage 9).
+ * The server-order replay also re-runs this browser's own changes; their failures are logged by the bulk reducer and
+ * must not be reported as failures of the downloaded batch.
+ */
+export const runWithBulkReplayFailureFilter = <T>(
+  keep: (op: Operation) => boolean,
+  run: () => T,
+): T => {
+  const outerCollector = activeFailureCollector;
+  return runWithBulkReplayFailureCollector((failure) => {
+    if (keep(failure.op)) {
+      outerCollector?.(failure);
+    }
+  }, run);
+};

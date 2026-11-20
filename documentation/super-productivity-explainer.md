@@ -83,14 +83,19 @@ only for as long as you are the one signed in.
 > field against the container. Closing that would mean giving up offline editing,
 > which is not a trade this stack has chosen to make.
 >
-> For field edits to tasks, projects and tags, the edit that reaches the server
-> last wins, whatever the device clocks say. Where a downloaded change meets an
-> edit the browser has not sent yet, the browser keeps the downloaded change's
-> other fields and puts its own edit on top, also when that change is a whole
-> copy of the item another browser re-sent after a refused upload. It stores the
-> result as one new edit with a clock that covers both, so the server accepts it.
-> A task deleted on another device comes back with the edit. Other edits, tracked
-> time among them, still go by vector clocks and timestamps.
+> The server stores every valid change in the order it arrives and numbers it,
+> and every device applies changes in that order, whatever the device clocks
+> say: the bridge always did, and a browser whose own saves fall between the
+> downloaded ones goes back to the state the server last confirmed, replays
+> everything in the server's order and puts its unsent edits on top. So the
+> change that reaches the server last wins, and the server no longer refuses a
+> save because another device changed the same item. One exception keeps typed
+> work: an edit that lands on a task another device deleted first is sent again
+> as a save that brings the task back with the edit. A browser that does not
+> know the confirmed state (after a reload, or when another tab saved) rebuilds
+> it from the newest checkpoint and the changes after it; going back does not
+> undo archive writes, so archiving in one browser while editing in another can
+> differ until the next checkpoint.
 
 **Preferences follow the account, not the browser profile.** Upstream keeps
 things like theme, dark mode, sort order, and which lists are collapsed in
@@ -692,7 +697,7 @@ file via `env_file:`, so a value is written once and no service has an
 - **What it holds:** everything a browser's own full state holds, archives included, encrypted with the account's password like every change. Device-only sync settings (the provider, the interval, whether sync is on) never travel in it; every device keeps its own.
 - **Where to watch it:** `GET /api/status` has a `checkpoint` block: the last full state's change number, changes and bytes since, and when the last checkpoint was written or refused and why. The counters are kept in `checkpoint-state.json` (or `checkpoint-state.user-<id>.json`) in the bridge's data folder.
 - **Browsers with unsent edits:** a browser that has edits not yet uploaded when a checkpoint arrives takes the checkpoint without asking and applies its edits on top, then uploads them as usual; other devices replay them after the checkpoint. A short message says the browser was updated and its unsent changes kept. After a reload the edits are still there: the browser saves its state right after taking the checkpoint, and its startup rebuild also replays unsent edits after a checkpoint, never before it. It still asks when the incoming full state is a full import, or when it has an unsent full state of its own.
-- **Saves after a checkpoint:** a browser that took a checkpoint keeps only the checkpoint's author and itself in its vector clock. The server does not count that as a conflict with a card change stored before the checkpoint, because the checkpoint already contains it. Any later checkpoint counts, not only the newest: a browser that edited offline on one checkpoint while the next was written is still accepted. The server checks the newest 100 full states, back to the newest full import at most, since a full import replaces everything before it.
+- **Saves after a checkpoint:** stored in arrival order like every other change; the server compares no clocks, so a browser that edited offline on an older checkpoint while the next was written is accepted too, and its edits are applied after the newer checkpoint.
 - **What the server keeps:** the newest two checkpoints with every change after the older one, which is all syncing needs; and the newest checkpoint of each of the last 7 days that have one, as restore points. The daily cleanup deletes everything else, whatever its age, for every account; an account with fewer than two checkpoints keeps everything. Days follow the sync server's clock (its `TZ`) and count only days that have a checkpoint, so a busy day (up to one checkpoint an hour) or a quiet fortnight (none) still leaves a week of them. Nothing is lost for syncing: a device asking from before the newest checkpoint is moved forward to it and then gets every change after it. Restoring from the daily checkpoints has no button yet: the server cannot rebuild an encrypted account at an earlier point and refuses those restores, so they are an emergency copy for now.
 
 `SYNC_STORAGE_LIMIT` caps the sync history the server keeps per account, and when set it is every account's quota. Write it like the memory limits, `256m` or `1g`; a number without a unit stops the server at start rather than being guessed at. The older `STORAGE_QUOTA_BYTES`, in plain bytes, still works. Every save of a card's notes stores the whole notes again, so a few long cards edited often add tens of MB a day; the daily cleanup deletes what the checkpoints have made unnecessary (see "What the server keeps" above), so the history stays far below the limit unless a single day fills it, and then the server first deletes the oldest checkpoints with the history before them. When it is full the server refuses every write that does not fit: browsers show a "Sync storage is full" alert and keep the changes on the device, and the API answers `507` and saves nothing.

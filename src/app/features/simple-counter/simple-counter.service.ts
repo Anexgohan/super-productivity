@@ -35,7 +35,10 @@ import { isEqualSimpleCounterCfg } from './is-equal-simple-counter-cfg.util';
 import { DateService } from 'src/app/core/date/date.service';
 import { GlobalTrackingIntervalService } from '../../core/global-tracking-interval/global-tracking-interval.service';
 import { ImexViewService } from '../../imex/imex-meta/imex-view.service';
-import { BatchedTimeSyncAccumulator } from '../../core/util/batched-time-sync-accumulator';
+import {
+  BatchedTimeSyncAccumulator,
+  BatchedTimeSyncEntry,
+} from '../../core/util/batched-time-sync-accumulator';
 import { Log } from '../../core/log';
 
 @Injectable({
@@ -212,6 +215,11 @@ export class SimpleCounterService implements OnDestroy {
    * Sync stopwatch counter with absolute value instead of relative duration.
    * This ensures remote clients get the correct value regardless of their current state.
    */
+  /** Stopwatch time counted since the last saved change, already shown but not yet in any change (anex, Stage 9). */
+  getPendingStopwatchEntries(): BatchedTimeSyncEntry[] {
+    return this._stopwatchAccumulator.getPendingEntries();
+  }
+
   private _syncStopwatchAbsoluteValue(id: string, date: string): void {
     // Read current state via selectSimpleCounterById (O(1) lookup)
     firstValueFrom(this._store$.pipe(select(selectSimpleCounterById, { id })))

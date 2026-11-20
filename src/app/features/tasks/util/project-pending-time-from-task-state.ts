@@ -35,3 +35,31 @@ export const projectPendingTimeFromTaskState = (
 
   return projectedState;
 };
+
+/**
+ * Adds locally accumulated task-time deltas back onto a task state (anex, Stage 9).
+ *
+ * The inverse of projectPendingTimeFromTaskState: when a browser replays its state in the server's order, the
+ * replayed state holds only the time already saved as changes, so the time tracked since is added back.
+ */
+export const addPendingTimeToTaskState = (
+  state: TaskState,
+  pendingEntries: readonly BatchedTimeSyncEntry[],
+): TaskState => {
+  let nextState = state;
+
+  for (const { id, date, duration } of pendingEntries) {
+    const task = nextState.entities[id];
+    if (!task || !Number.isFinite(duration) || duration <= 0) {
+      continue;
+    }
+
+    const timeSpentOnDay = {
+      ...task.timeSpentOnDay,
+      [date]: (task.timeSpentOnDay?.[date] || 0) + duration,
+    };
+    nextState = updateTimeSpentForTask(id, timeSpentOnDay, nextState);
+  }
+
+  return nextState;
+};

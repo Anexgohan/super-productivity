@@ -8,6 +8,9 @@ export default defineConfig({
       '@sp/shared-schema': fileURLToPath(
         new URL('../shared-schema/src/index.ts', import.meta.url),
       ),
+      '@sp/sync-core': fileURLToPath(
+        new URL('../sync-core/src/index.ts', import.meta.url),
+      ),
     },
   },
   test: {

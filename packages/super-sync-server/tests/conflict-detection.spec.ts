@@ -308,12 +308,7 @@ vi.mock('../src/db', async () => {
 
 import { initSyncService, getSyncService } from '../src/sync/sync.service';
 import { OperationDownloadService } from '../src/sync/services/operation-download.service';
-import {
-  Operation,
-  SYNC_ERROR_CODES,
-  VectorClock,
-  MAX_VECTOR_CLOCK_SIZE,
-} from '../src/sync/sync.types';
+import { Operation, VectorClock, MAX_VECTOR_CLOCK_SIZE } from '../src/sync/sync.types';
 
 describe('Conflict Detection', () => {
   const userId = 1;
@@ -375,111 +370,40 @@ describe('Conflict Detection', () => {
       expect(result2[0].accepted).toBe(true);
     });
 
-    it('should reject operation when incoming clock is LESS_THAN existing (superseded)', async () => {
-      const service = getSyncService();
-      const entityId = 'task-1';
+    // anex fork, Stage 9: the server no longer refuses a change because another browser changed the same item. Every
+    // valid change is stored in arrival order; browsers apply them in that order (the server_seq).
+    it.each([
+      ['older than the stored one (superseded)', { [clientA]: 1 }, { [clientA]: 2 }],
+      ['concurrent with the stored one', { [clientB]: 1 }, { [clientA]: 1 }],
+      [
+        'equal to the stored one, from another client',
+        { [clientA]: 1 },
+        { [clientA]: 1 },
+      ],
+      ['empty, after an empty one from another client', {}, {}],
+    ])(
+      'should store an update whose clock is %s, numbered after it',
+      async (_case, incomingClock, storedClock) => {
+        const service = getSyncService();
+        const entityId = 'task-1';
 
-      // First op with clock {a: 2}
-      const op1 = createOp({
-        entityId,
-        clientId: clientA,
-        vectorClock: { [clientA]: 2 },
-        opType: 'CRT',
-      });
-      const result1 = await service.uploadOps(userId, clientA, [op1]);
-      expect(result1[0].accepted).toBe(true);
+        const stored = await service.uploadOps(userId, clientA, [
+          createOp({
+            entityId,
+            clientId: clientA,
+            vectorClock: storedClock,
+            opType: 'CRT',
+          }),
+        ]);
+        expect(stored[0]).toMatchObject({ accepted: true, serverSeq: 1 });
 
-      // Second op with clock {a: 1} - LESS_THAN {a: 2} (superseded)
-      const op2 = createOp({
-        entityId,
-        clientId: clientB,
-        vectorClock: { [clientA]: 1 },
-      });
-      const result2 = await service.uploadOps(userId, clientB, [op2]);
-      expect(result2[0].accepted).toBe(false);
-      expect(result2[0].errorCode).toBe(SYNC_ERROR_CODES.CONFLICT_SUPERSEDED);
-      expect(result2[0].error).toContain('Superseded operation');
-    });
-
-    it('should reject operation when clocks are CONCURRENT', async () => {
-      const service = getSyncService();
-      const entityId = 'task-1';
-
-      // First op from client A with clock {a: 1}
-      const op1 = createOp({
-        entityId,
-        clientId: clientA,
-        vectorClock: { [clientA]: 1 },
-        opType: 'CRT',
-      });
-      const result1 = await service.uploadOps(userId, clientA, [op1]);
-      expect(result1[0].accepted).toBe(true);
-
-      // Second op from client B with clock {b: 1} - CONCURRENT with {a: 1}
-      const op2 = createOp({
-        entityId,
-        clientId: clientB,
-        vectorClock: { [clientB]: 1 },
-      });
-      const result2 = await service.uploadOps(userId, clientB, [op2]);
-      expect(result2[0].accepted).toBe(false);
-      expect(result2[0].errorCode).toBe(SYNC_ERROR_CODES.CONFLICT_CONCURRENT);
-      expect(result2[0].error).toContain('Concurrent modification');
-    });
-
-    it('should return existingClock in rejection response for concurrent conflicts', async () => {
-      const service = getSyncService();
-      const entityId = 'task-1';
-
-      // First op from client A with clock {a: 1}
-      const op1 = createOp({
-        entityId,
-        clientId: clientA,
-        vectorClock: { [clientA]: 1 },
-        opType: 'CRT',
-      });
-      await service.uploadOps(userId, clientA, [op1]);
-
-      // Second op from client B with clock {b: 1} - CONCURRENT with {a: 1}
-      const op2 = createOp({
-        entityId,
-        clientId: clientB,
-        vectorClock: { [clientB]: 1 },
-      });
-      const result = await service.uploadOps(userId, clientB, [op2]);
-
-      // Should return the existing clock so client can create LWW update
-      expect(result[0].accepted).toBe(false);
-      expect(result[0].existingClock).toBeDefined();
-      expect(result[0].existingClock).toEqual({ [clientA]: 1 });
-    });
-
-    it('should return existingClock in rejection response for superseded conflicts', async () => {
-      const service = getSyncService();
-      const entityId = 'task-1';
-
-      // First op with clock {a: 2}
-      const op1 = createOp({
-        entityId,
-        clientId: clientA,
-        vectorClock: { [clientA]: 2 },
-        opType: 'CRT',
-      });
-      await service.uploadOps(userId, clientA, [op1]);
-
-      // Second op with clock {a: 1} - LESS_THAN {a: 2} (superseded)
-      const op2 = createOp({
-        entityId,
-        clientId: clientB,
-        vectorClock: { [clientA]: 1 },
-      });
-      const result = await service.uploadOps(userId, clientB, [op2]);
-
-      // Should return the existing clock so client can create LWW update
-      expect(result[0].accepted).toBe(false);
-      expect(result[0].existingClock).toBeDefined();
-      expect(result[0].existingClock).toEqual({ [clientA]: 2 });
-    });
+        const result = await service.uploadOps(userId, clientB, [
+          createOp({ entityId, clientId: clientB, vectorClock: incomingClock }),
+        ]);
+        expect(result[0]).toMatchObject({ accepted: true, serverSeq: 2 });
+        expect(result[0].errorCode).toBeUndefined();
+      },
+    );
 
     it('should accept operation when clocks are EQUAL from same client (retry)', async () => {
       const service = getSyncService();
@@ -503,31 +427,6 @@ describe('Conflict Detection', () => {
       });
       const result2 = await service.uploadOps(userId, clientA, [op2]);
       expect(result2[0].accepted).toBe(true);
-    });
-
-    it('should reject operation when clocks are EQUAL from different client (suspicious reuse)', async () => {
-      const service = getSyncService();
-      const entityId = 'task-1';
-
-      // First op from client A
-      const op1 = createOp({
-        entityId,
-        clientId: clientA,
-        vectorClock: { [clientA]: 1 },
-        opType: 'CRT',
-      });
-      const result1 = await service.uploadOps(userId, clientA, [op1]);
-      expect(result1[0].accepted).toBe(true);
-
-      // Second op from client B with EQUAL clock - rejected as suspicious
-      const op2 = createOp({
-        entityId,
-        clientId: clientB,
-        vectorClock: { [clientA]: 1 },
-      });
-      const result2 = await service.uploadOps(userId, clientB, [op2]);
-      expect(result2[0].accepted).toBe(false);
-      expect(result2[0].error).toContain('Equal vector clocks from different clients');
     });
   });
 
@@ -674,9 +573,9 @@ describe('Conflict Detection', () => {
         clientId: clientA,
         vectorClock: { [clientA]: 2 },
       });
+      // Stored after the others (Stage 9: no refusal; browsers apply it in this order).
       const result = await service.uploadOps(userId, clientA, [op4]);
-      expect(result[0].accepted).toBe(false);
-      expect(result[0].errorCode).toBe(SYNC_ERROR_CODES.CONFLICT_CONCURRENT);
+      expect(result[0]).toMatchObject({ accepted: true, serverSeq: 4 });
     });
 
     it('should handle rapid sequential updates from same client', async () => {
@@ -697,7 +596,7 @@ describe('Conflict Detection', () => {
       }
     });
 
-    it('should detect conflict for deleted entity being updated', async () => {
+    it('should store an update to a deleted entity after the delete', async () => {
       const service = getSyncService();
       const entityId = 'task-1';
 
@@ -726,9 +625,10 @@ describe('Conflict Detection', () => {
         clientId: clientB,
         vectorClock: { [clientA]: 1, [clientB]: 1 },
       });
+      // Stored after the delete; the browsers apply it there (an update to a deleted task changes nothing). A browser
+      // that wants the task back sends a "bring it back" save (Stage 8).
       const result = await service.uploadOps(userId, clientB, [op3]);
-      expect(result[0].accepted).toBe(false);
-      expect(result[0].errorCode).toBe(SYNC_ERROR_CODES.CONFLICT_CONCURRENT);
+      expect(result[0]).toMatchObject({ accepted: true, serverSeq: 3 });
     });
   });
 
@@ -819,31 +719,6 @@ describe('Conflict Detection', () => {
   });
 
   describe('Edge Cases', () => {
-    it('should handle empty vector clocks gracefully', async () => {
-      const service = getSyncService();
-      const entityId = 'task-1';
-
-      // First op with empty clock
-      const op1 = createOp({
-        entityId,
-        clientId: clientA,
-        vectorClock: {},
-        opType: 'CRT',
-      });
-      const result1 = await service.uploadOps(userId, clientA, [op1]);
-      expect(result1[0].accepted).toBe(true);
-
-      // Second op with empty clock from different client - rejected as EQUAL from different client
-      const op2 = createOp({
-        entityId,
-        clientId: clientB,
-        vectorClock: {},
-      });
-      const result2 = await service.uploadOps(userId, clientB, [op2]);
-      expect(result2[0].accepted).toBe(false);
-      expect(result2[0].error).toContain('Equal vector clocks from different clients');
-    });
-
     it('should handle oversized vector clocks by pruning to MAX_VECTOR_CLOCK_SIZE before storage', async () => {
       const service = getSyncService();
       const entityId = 'task-1';
@@ -974,109 +849,6 @@ describe('Conflict Detection', () => {
       });
       const result = await service.uploadOps(userId, clientA, [op]);
       expect(result[0].accepted).toBe(true);
-    });
-
-    it('should batch latest-op lookups for multi-entity conflict detection', async () => {
-      const service = getSyncService();
-
-      const existingOp = createOp({
-        entityId: 'task-2',
-        clientId: clientB,
-        vectorClock: { [clientB]: 1 },
-      });
-      const existingResult = await service.uploadOps(userId, clientB, [existingOp]);
-      expect(existingResult[0].accepted).toBe(true);
-      const beforeMultiEntityFindFirstCount = testState.entityConflictFindFirstCount;
-
-      const multiEntityOp = createOp({
-        entityId: 'task-1',
-        entityIds: ['task-1', 'task-2', 'task-3'],
-        clientId: clientA,
-        vectorClock: { [clientA]: 1 },
-      });
-
-      const result = await service.uploadOps(userId, clientA, [multiEntityOp]);
-
-      expect(testState.batchConflictQueryCount).toBeGreaterThan(0);
-      expect(testState.entityConflictFindFirstCount).toBe(
-        beforeMultiEntityFindFirstCount,
-      );
-      expect(result[0]).toMatchObject({
-        accepted: false,
-        errorCode: SYNC_ERROR_CODES.CONFLICT_CONCURRENT,
-        existingClock: { [clientB]: 1 },
-      });
-      expect(result[0].error).toContain('TASK:task-2');
-    });
-
-    // Regression for #8334. The test above proves an *incoming* multi-entity op
-    // is checked against all its ids. These two prove the reverse — a *stored*
-    // multi-entity op exposes every entity to later conflict lookups, not just
-    // entityIds[0] — across both the single-entity and batch lookup paths.
-    it('#8334 single path: stale write to a non-first stored entity conflicts', async () => {
-      const service = getSyncService();
-
-      // clientA stores a multi-entity op over [task-1, task-2]
-      // (persisted scalar entity_id = task-1, entity_ids = both).
-      const stored = await service.uploadOps(userId, clientA, [
-        createOp({
-          entityId: 'task-1',
-          entityIds: ['task-1', 'task-2'],
-          clientId: clientA,
-          vectorClock: { [clientA]: 1 },
-        }),
-      ]);
-      expect(stored[0].accepted).toBe(true);
-
-      // clientB sends a stale single-entity op for task-2 (the SECOND entity).
-      // {clientB:1} is CONCURRENT with {clientA:1}.
-      const result = await service.uploadOps(userId, clientB, [
-        createOp({
-          entityId: 'task-2',
-          clientId: clientB,
-          vectorClock: { [clientB]: 1 },
-        }),
-      ]);
-
-      expect(result[0]).toMatchObject({
-        accepted: false,
-        errorCode: SYNC_ERROR_CODES.CONFLICT_CONCURRENT,
-      });
-    });
-
-    // NOTE: with the default (non-batch) upload config this exercises
-    // `detectConflictForEntities`. The `prefetchLatestEntityOpsForBatch` variant
-    // (batchUpload=true) shares the same entity_ids matching SQL but is not driven
-    // here; its raw query is validated separately against real Postgres.
-    it('#8334 batch path: incoming multi-entity op hits a non-first stored entity', async () => {
-      const service = getSyncService();
-
-      const stored = await service.uploadOps(userId, clientA, [
-        createOp({
-          entityId: 'task-1',
-          entityIds: ['task-1', 'task-2'],
-          clientId: clientA,
-          vectorClock: { [clientA]: 1 },
-        }),
-      ]);
-      expect(stored[0].accepted).toBe(true);
-
-      // Incoming *multi-entity* op (→ batch lookup path) touching task-2.
-      const result = await service.uploadOps(userId, clientB, [
-        createOp({
-          entityId: 'task-2',
-          entityIds: ['task-2', 'task-9'],
-          clientId: clientB,
-          vectorClock: { [clientB]: 1 },
-        }),
-      ]);
-
-      expect(testState.batchConflictQueryCount).toBeGreaterThan(0);
-      expect(result[0]).toMatchObject({
-        accepted: false,
-        errorCode: SYNC_ERROR_CODES.CONFLICT_CONCURRENT,
-      });
-      expect(result[0].error).toContain('TASK:task-2');
     });
   });
 });

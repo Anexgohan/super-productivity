@@ -537,7 +537,8 @@ describe('TIME_TRACKING Operations', () => {
   });
 
   describe('Multi-Client Time Tracking', () => {
-    it('should reject concurrent updates from different clients (conflict detection)', async () => {
+    // anex fork, Stage 9: concurrent updates are both stored, in arrival order; browsers apply them in that order.
+    it('should store concurrent updates from different clients in arrival order', async () => {
       const service = getSyncService();
       const clientA = 'client-A';
       const clientB = 'client-B';
@@ -582,11 +583,8 @@ describe('TIME_TRACKING Operations', () => {
       const resultsA = await service.uploadOps(userId, clientA, [opA]);
       const resultsB = await service.uploadOps(userId, clientB, [opB]);
 
-      // First operation accepted
-      expect(resultsA[0].accepted).toBe(true);
-      // Second operation rejected as concurrent conflict
-      expect(resultsB[0].accepted).toBe(false);
-      expect(resultsB[0].errorCode).toBe('CONFLICT_CONCURRENT');
+      expect(resultsA[0]).toMatchObject({ accepted: true, serverSeq: 1 });
+      expect(resultsB[0]).toMatchObject({ accepted: true, serverSeq: 2 });
     });
 
     it('should accept sequential updates from different clients (with merged clocks)', async () => {

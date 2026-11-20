@@ -1236,54 +1236,6 @@ describe('SyncService', () => {
       );
     });
 
-    it('terminally rejects a later serial same-ID sibling when the first one conflicts', async () => {
-      const service = new SyncService({ batchUpload: false });
-      const otherClientId = 'other-device';
-      const existing = makeOp({
-        id: 'existing-op',
-        clientId: otherClientId,
-        entityId: 'blocked-task',
-        vectorClock: { [otherClientId]: 1 },
-      });
-      expect(
-        (await service.uploadOps(userId, otherClientId, [existing]))[0].accepted,
-      ).toBe(true);
-
-      const repeatedId = 'repeated-request-id';
-      const first = makeOp({
-        id: repeatedId,
-        entityId: 'blocked-task',
-        payload: { title: 'small' },
-        vectorClock: { [clientId]: 1 },
-      });
-      const laterLargeSibling = makeOp({
-        id: repeatedId,
-        entityId: 'fresh-task',
-        payload: { data: 'x'.repeat(10_000) },
-        vectorClock: { [clientId]: 2 },
-        timestamp: first.timestamp + 1,
-      });
-
-      const results = await service.uploadOps(userId, clientId, [
-        first,
-        laterLargeSibling,
-      ]);
-
-      expect(results[0]).toEqual(
-        expect.objectContaining({
-          accepted: false,
-          errorCode: SYNC_ERROR_CODES.CONFLICT_CONCURRENT,
-        }),
-      );
-      expect(results[1]).toEqual(
-        expect.objectContaining({
-          accepted: false,
-          errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
-        }),
-      );
-      expect(testState.operations.has(repeatedId)).toBe(false);
-    });
-
     it('redacts malformed operation metadata from audit logs', async () => {
       const service = new SyncService({ batchUpload: false });
       const privateText = 'private task title that must not be logged';
@@ -1344,7 +1296,8 @@ describe('SyncService', () => {
       },
     );
 
-    it('should reject intra-batch entity conflicts in order', async () => {
+    // anex fork, Stage 9: changes to the same item from one batch are all stored, in the order sent.
+    it('should store intra-batch concurrent edits in order', async () => {
       const service = new SyncService({ batchUpload: true });
       const ops: Operation[] = [
         {
@@ -1375,22 +1328,19 @@ describe('SyncService', () => {
 
       const results = await service.uploadOps(userId, clientId, ops);
 
-      expect(results[0].accepted).toBe(true);
-      expect(results[1]).toEqual(
-        expect.objectContaining({
-          accepted: false,
-          errorCode: SYNC_ERROR_CODES.CONFLICT_CONCURRENT,
-        }),
-      );
-      expect(testState.userSyncStates.get(userId)?.lastSeq).toBe(1);
-      expect(testState.operations.size).toBe(1);
+      expect(results.map((r) => [r.accepted, r.serverSeq])).toEqual([
+        [true, 1],
+        [true, 2],
+      ]);
+      expect(testState.userSyncStates.get(userId)?.lastSeq).toBe(2);
+      expect(testState.operations.size).toBe(2);
     });
 
     it.each([
       ['serial', false],
       ['batch', true],
     ])(
-      'rejects a v2 tasks write against an already-stored raw v1 misc row in the %s path',
+      'stores a v2 tasks write after an already-stored raw v1 misc row in the %s path',
       async (_label, batchUpload) => {
         const legacyClientId = 'legacy-client';
         testState.userSyncStates.set(userId, { userId, lastSeq: 1 });
@@ -1435,12 +1385,11 @@ describe('SyncService', () => {
         expect(result).toEqual([
           expect.objectContaining({
             opId: 'current-tasks-write',
-            accepted: false,
-            errorCode: SYNC_ERROR_CODES.CONFLICT_CONCURRENT,
-            existingClock: { [legacyClientId]: 1 },
+            accepted: true,
+            serverSeq: 2,
           }),
         ]);
-        expect(testState.operations.size).toBe(1);
+        expect(testState.operations.size).toBe(2);
       },
     );
 
@@ -1448,7 +1397,7 @@ describe('SyncService', () => {
       ['serial', false],
       ['batch', true],
     ])(
-      'atomically rejects a new mixed v1 misc upload that conflicts with v2 tasks in the %s path',
+      'stores a new mixed v1 misc upload after a v2 tasks write in the %s path',
       async (_label, batchUpload) => {
         const currentClientId = 'current-client';
         const service = new SyncService({ batchUpload });
@@ -1484,17 +1433,11 @@ describe('SyncService', () => {
         ]);
 
         expect(legacyResult).toEqual([
-          expect.objectContaining({
-            opId: sourceId,
-            accepted: false,
-            errorCode: SYNC_ERROR_CODES.CONFLICT_CONCURRENT,
-            existingClock: { [currentClientId]: 1 },
-          }),
+          expect.objectContaining({ opId: sourceId, accepted: true }),
         ]);
-        expect(testState.operations.has(`${sourceId}_misc`)).toBe(false);
-        expect(testState.operations.has(`${sourceId}_tasks`)).toBe(false);
-        expect(testState.operations.has(sourceId)).toBe(false);
-        expect(testState.operations.size).toBe(1);
+        // Stored as sent; the misc/tasks split happens when the op is replayed (op-replay.ts).
+        expect(testState.operations.get(sourceId)).toMatchObject({ serverSeq: 2 });
+        expect(testState.operations.size).toBe(2);
       },
     );
 
@@ -1531,53 +1474,6 @@ describe('SyncService', () => {
 
       expect(results.every((result) => result.accepted)).toBe(true);
       expect(testState.operations.size).toBe(2);
-    });
-
-    it('should use entityIds when prefetching batch conflicts', async () => {
-      const service = new SyncService({ batchUpload: true });
-      testState.userSyncStates.set(userId, { userId, lastSeq: 1 });
-      testState.operations.set('existing-op', {
-        id: 'existing-op',
-        userId,
-        clientId: 'other-client',
-        serverSeq: 1,
-        actionType: 'UPDATE_TASK',
-        opType: 'UPD',
-        entityType: 'TASK',
-        entityId: 'task-b',
-        payload: { title: 'Existing' },
-        payloadBytes: BigInt(10),
-        vectorClock: { 'other-client': 1 },
-        schemaVersion: 1,
-        clientTimestamp: BigInt(Date.now() - 1000),
-        receivedAt: BigInt(Date.now() - 1000),
-        isPayloadEncrypted: false,
-        syncImportReason: null,
-      });
-
-      const results = await service.uploadOps(userId, clientId, [
-        {
-          id: uuidv7(),
-          clientId,
-          actionType: 'BATCH_UPDATE_TASKS',
-          opType: 'BATCH',
-          entityType: 'TASK',
-          entityId: 'task-a',
-          entityIds: ['task-a', 'task-b', 'task-c'],
-          payload: { entities: { 'task-a': { title: 'A' } } },
-          vectorClock: { [clientId]: 1 },
-          timestamp: Date.now(),
-          schemaVersion: 1,
-        },
-      ]);
-
-      expect(results[0]).toEqual(
-        expect.objectContaining({
-          accepted: false,
-          errorCode: SYNC_ERROR_CODES.CONFLICT_CONCURRENT,
-        }),
-      );
-      expect(testState.userSyncStates.get(userId)?.lastSeq).toBe(1);
     });
 
     it('should chunk large batch entity prefetch queries', async () => {

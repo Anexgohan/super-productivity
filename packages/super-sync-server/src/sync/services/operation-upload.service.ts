@@ -9,12 +9,9 @@ import {
   AcceptedBatchOperation,
   BatchUploadCandidate,
   CAUSAL_FULL_STATE_OPERATION_WHERE,
-  CONFLICT_DETECTION_ENTITY_BATCH_SIZE,
-  ConflictResult,
   DEFAULT_SYNC_CONFIG,
   DUPLICATE_OP_SELECT,
   isCausalFullStateOperation,
-  isFullStateOpType,
   limitVectorClockSize,
   MAX_VECTOR_CLOCK_SIZE,
   Operation,
@@ -26,17 +23,10 @@ import {
   VectorClock,
 } from '../sync.types';
 import {
-  detectConflict,
-  getBatchConflictEntityPairs,
-  getConflictEntityIds,
   getStoredEntityIds,
-  getEntityConflictKey,
   isSameDuplicateOperation,
   isSameIncomingOperation,
-  getFullStateBoundaries,
-  prefetchLatestEntityOpsForBatch,
   pruneVectorClockForStorage,
-  resolveConflictForExistingOp,
 } from '../conflict';
 import { parsePersistedVectorClock } from './operation-download.service';
 import {
@@ -367,15 +357,8 @@ export class OperationUploadService {
     dbRoundtrips += classified.dbRoundtrips;
     const duplicateFreeCandidates = classified.duplicateFreeCandidates;
 
-    const conflictOutcome = await this.detectBatchConflicts(
-      userId,
-      clientId,
-      duplicateFreeCandidates,
-      tx,
-      results,
-    );
-    dbRoundtrips += conflictOutcome.dbRoundtrips;
-    const { accepted, acceptedDeltaBytes, unserializableAccepted } = conflictOutcome;
+    const { accepted, acceptedDeltaBytes, unserializableAccepted } =
+      await this.acceptBatchCandidates(userId, duplicateFreeCandidates, tx);
 
     if (accepted.length === 0) {
       return {
@@ -553,80 +536,25 @@ export class OperationUploadService {
   }
 
   /**
-   * Stage 4: prefetch the latest op per touched entity and run conflict
-   * detection in memory. The prefetched map is updated as each non-full-state
-   * op is accepted so intra-batch conflicts on the same entity resolve in
-   * serial order — this must stay co-located with the conflict loop. Accepted
-   * ops are sized for the storage counter here.
+   * Stage 4: every valid op is stored in arrival order (anex, Stage 9). Another device's change to the same item is no
+   * reason to refuse: browsers and the bridge apply the server's order, so nothing is compared by clock here. Accepted
+   * ops are sized for the storage counter.
    */
-  private async detectBatchConflicts(
+  private async acceptBatchCandidates(
     userId: number,
-    clientId: string,
     duplicateFreeCandidates: BatchUploadCandidate[],
     tx: Prisma.TransactionClient,
-    results: UploadResult[],
   ): Promise<{
     accepted: AcceptedBatchOperation[];
     acceptedDeltaBytes: number;
     unserializableAccepted: number;
-    dbRoundtrips: number;
   }> {
-    const entityPairs = getBatchConflictEntityPairs(duplicateFreeCandidates);
-    const dbRoundtrips = Math.ceil(
-      entityPairs.length / CONFLICT_DETECTION_ENTITY_BATCH_SIZE,
-    );
-    const latestOpByEntity = await prefetchLatestEntityOpsForBatch(
-      userId,
-      entityPairs,
-      tx,
-    );
-    const boundaries =
-      latestOpByEntity.size > 0 ? await getFullStateBoundaries(userId, tx) : null;
-
     const accepted: AcceptedBatchOperation[] = [];
     let acceptedDeltaBytes = 0;
     let unserializableAccepted = 0;
 
     for (const candidate of duplicateFreeCandidates) {
       const { op } = candidate;
-      if (!isFullStateOpType(op.opType)) {
-        let conflict: ConflictResult | null = null;
-        for (const entityId of getConflictEntityIds(op)) {
-          const existingOp = latestOpByEntity.get(
-            getEntityConflictKey(op.entityType, entityId),
-          );
-          if (!existingOp) continue;
-
-          const conflictResult = resolveConflictForExistingOp(
-            op,
-            entityId,
-            existingOp,
-            boundaries,
-          );
-          if (conflictResult.hasConflict) {
-            conflict = conflictResult;
-            break;
-          }
-        }
-
-        if (conflict) {
-          const errorCode =
-            conflict.conflictType === 'concurrent' ||
-            conflict.conflictType === 'equal_different_client'
-              ? SYNC_ERROR_CODES.CONFLICT_CONCURRENT
-              : SYNC_ERROR_CODES.CONFLICT_SUPERSEDED;
-          results[candidate.resultIndex] = this.rejectedUploadResult(
-            userId,
-            clientId,
-            op,
-            conflict.reason,
-            errorCode,
-            conflict.existingClock,
-          );
-          continue;
-        }
-      }
-
       if (isCausalFullStateOperation(op)) {
         this.noteFullStateAuthor(tx, op.clientId);
       }
@@ -644,21 +572,9 @@ export class OperationUploadService {
         storageBytes: sized.bytes,
       };
       accepted.push(acceptedOperation);
-
-      if (!isFullStateOpType(op.opType)) {
-        for (const entityId of getConflictEntityIds(op)) {
-          latestOpByEntity.set(getEntityConflictKey(op.entityType, entityId), {
-            entityType: op.entityType,
-            entityId,
-            clientId: op.clientId,
-            actionType: op.actionType,
-            vectorClock: op.vectorClock,
-          });
-        }
-      }
     }
 
-    return { accepted, acceptedDeltaBytes, unserializableAccepted, dbRoundtrips };
+    return { accepted, acceptedDeltaBytes, unserializableAccepted };
   }
 
   /**
@@ -872,60 +788,14 @@ export class OperationUploadService {
       );
     }
 
-    // Check for conflicts with existing operations
-    const conflict = await detectConflict(userId, op, tx);
-    if (conflict.hasConflict) {
-      const errorCode =
-        conflict.conflictType === 'concurrent' ||
-        conflict.conflictType === 'equal_different_client'
-          ? SYNC_ERROR_CODES.CONFLICT_CONCURRENT
-          : SYNC_ERROR_CODES.CONFLICT_SUPERSEDED;
-      return reject(
-        this.rejectedUploadResult(
-          userId,
-          clientId,
-          op,
-          conflict.reason,
-          errorCode,
-          conflict.existingClock,
-        ),
-      );
-    }
-
+    // anex, Stage 9: no refusal because of another device's change to the same item; every valid op is stored in
+    // arrival order and browsers and the bridge apply that order.
     // Get next sequence number
     const updatedState = await tx.userSyncState.update({
       where: { userId },
       data: { lastSeq: { increment: 1 } },
     });
     const serverSeq = updatedState.lastSeq;
-
-    // FIX 1.5: Re-check for conflicts after sequence allocation.
-    // This catches races where another request inserted an operation for the same
-    // entity between our initial conflict check and now. Combined with REPEATABLE_READ
-    // isolation, this ensures no undetected concurrent modifications.
-    const finalConflict = await detectConflict(userId, op, tx);
-    if (finalConflict.hasConflict) {
-      await tx.userSyncState.update({
-        where: { userId },
-        data: { lastSeq: { decrement: 1 } },
-      });
-
-      const errorCode =
-        finalConflict.conflictType === 'concurrent' ||
-        finalConflict.conflictType === 'equal_different_client'
-          ? SYNC_ERROR_CODES.CONFLICT_CONCURRENT
-          : SYNC_ERROR_CODES.CONFLICT_SUPERSEDED;
-      return reject(
-        this.rejectedUploadResult(
-          userId,
-          clientId,
-          op,
-          finalConflict.reason,
-          errorCode,
-          finalConflict.existingClock,
-        ),
-      );
-    }
 
     // Prune vector clock AFTER conflict detection but BEFORE storage.
     // Moved from ValidationService to here so that the full (unpruned) clock is used

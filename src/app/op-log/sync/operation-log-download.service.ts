@@ -14,6 +14,7 @@ import {
 } from '../sync-providers/provider.interface';
 import { syncOpToOperation } from './operation-sync.util';
 import { SnackService } from '../../core/snack/snack.service';
+import { ServerOrderService } from './server-order.service';
 import { T } from '../../t.const';
 import {
   LOCK_NAMES,
@@ -50,6 +51,7 @@ export class OperationLogDownloadService implements OnDestroy {
   private opLogStore = inject(OperationLogStoreService);
   private lockService = inject(LockService);
   private snackService = inject(SnackService);
+  private serverOrder = inject(ServerOrderService);
   private encryptionService = inject(OperationEncryptionService);
   private superSyncStatusService = inject(SuperSyncStatusService);
   private clientIdProvider = inject(CLIENT_ID_PROVIDER);
@@ -296,6 +298,9 @@ export class OperationLogDownloadService implements OnDestroy {
         }
 
         // Filter already applied ops
+        // Stage 9 (anex): the server's numbers place the downloaded changes in its order.
+        this.serverOrder.recordServerSeqs(response.ops);
+
         let syncOps: SyncOperation[] = response.ops
           .filter((serverOp) => !appliedOpIds.has(serverOp.op.id))
           .map((serverOp) => serverOp.op);

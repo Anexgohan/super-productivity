@@ -2,6 +2,7 @@
 // app uses its own Operation type so callers see the SP-narrowed entityType /
 // actionType unions and the syncImportReason field.
 
+import type { Action } from '@ngrx/store';
 import type { Operation } from '../operation.types';
 
 export interface ApplyOperationsResult {
@@ -62,4 +63,10 @@ export interface ApplyOperationsOptions {
     ops: Operation[],
     failures?: NonNullable<ApplyOperationsResult['reducerFailures']>,
   ) => Promise<void>;
+
+  /**
+   * anex, Stage 9: the reducer action for the ops being applied, in place of the bulk apply (a server-order replay).
+   * Called with the ops actually dispatched, which retry paths may narrow.
+   */
+  createBulkApplyAction?: (ops: Operation[], localClientId?: string) => Action;
 }

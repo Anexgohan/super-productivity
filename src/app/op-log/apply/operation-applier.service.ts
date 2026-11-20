@@ -130,7 +130,9 @@ export class OperationApplierService implements OperationApplyPort<Operation> {
           ),
       },
       createBulkApplyAction: (operations) =>
-        bulkApplyOperations({ operations, localClientId }),
+        options.createBulkApplyAction
+          ? options.createBulkApplyAction(operations, localClientId)
+          : bulkApplyOperations({ operations, localClientId }),
       getReducerFailures: () => reducerFailures,
       remoteApplyWindow: options.remoteApplyWindowAlreadyOpen
         ? CALLER_MANAGED_REMOTE_APPLY_WINDOW
