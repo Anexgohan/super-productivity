@@ -730,10 +730,11 @@ export class SyncService {
 
   // === Cleanup ===
 
-  async deleteOldSyncedOpsForAllUsers(
-    cutoffTime: number,
-  ): Promise<{ totalDeleted: number; affectedUserIds: number[] }> {
-    return this.storageQuotaService.deleteOldSyncedOpsForAllUsers(cutoffTime);
+  async deleteOldSyncedOpsForAllUsers(): Promise<{
+    totalDeleted: number;
+    affectedUserIds: number[];
+  }> {
+    return this.storageQuotaService.deleteOldSyncedOpsForAllUsers();
   }
 
   async deleteOldestRestorePointAndOps(

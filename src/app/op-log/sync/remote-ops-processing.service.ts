@@ -388,6 +388,10 @@ export class RemoteOpsProcessingService {
         this.snackService.open({
           msg: T.F.SYNC.S.CHECKPOINT_KEPT_UNSENT,
           translateParams: { count: fullStateApplyResult.keptOnTopCount },
+          // Long enough to read: the default 3 s was too fast (user, 2026-11-20); the sync button's "synced" toast
+          // must not replace it either.
+          config: { duration: 8000 },
+          isKeptVisible: true,
         });
       }
 

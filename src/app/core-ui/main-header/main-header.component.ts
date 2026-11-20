@@ -315,9 +315,12 @@ export class MainHeaderComponent implements OnDestroy {
 
   sync(): void {
     this.syncWrapperService.sync(true).then((r) => {
-      // Keep persistent recovery actions (for example USE_REMOTE Undo) visible;
-      // routine sync-success feedback must not replace them.
-      if (this._snackService.hasPendingPersistentAction()) {
+      // Keep persistent recovery actions (for example USE_REMOTE Undo) and messages the user must get to read (a
+      // checkpoint taken with unsent edits kept) visible; routine sync-success feedback must not replace them.
+      if (
+        this._snackService.hasPendingPersistentAction() ||
+        this._snackService.isKeepingMessageVisible()
+      ) {
         return;
       }
       if (

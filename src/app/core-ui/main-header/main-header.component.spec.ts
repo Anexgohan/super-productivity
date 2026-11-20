@@ -180,6 +180,7 @@ describe('MainHeaderComponent focus button visibility', () => {
           useValue: {
             open: jasmine.createSpy('open'),
             hasPendingPersistentAction: jasmine.createSpy('hasPendingPersistentAction'),
+            isKeepingMessageVisible: jasmine.createSpy('isKeepingMessageVisible'),
           },
         },
         { provide: Router, useValue: { events: EMPTY } },
@@ -246,6 +247,22 @@ describe('MainHeaderComponent focus button visibility', () => {
     const snackService = TestBed.inject(SnackService) as jasmine.SpyObj<SnackService>;
     syncWrapperService.sync.and.resolveTo(SyncStatus.UpdateRemote);
     snackService.hasPendingPersistentAction.and.returnValue(true);
+
+    component.sync();
+    await Promise.resolve();
+
+    expect(snackService.open).not.toHaveBeenCalled();
+  });
+
+  it('keeps a message the user must read instead of showing routine sync success', async () => {
+    component = createComponent();
+    const syncWrapperService = TestBed.inject(
+      SyncWrapperService,
+    ) as jasmine.SpyObj<SyncWrapperService>;
+    const snackService = TestBed.inject(SnackService) as jasmine.SpyObj<SnackService>;
+    syncWrapperService.sync.and.resolveTo(SyncStatus.UpdateLocal);
+    snackService.hasPendingPersistentAction.and.returnValue(false);
+    snackService.isKeepingMessageVisible.and.returnValue(true);
 
     component.sync();
     await Promise.resolve();

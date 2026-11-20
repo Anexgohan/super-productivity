@@ -573,10 +573,8 @@ describe('Sync System Fixes', () => {
   describe('Issue 8: deleteOldSyncedOpsForAllUsers returns affectedUserIds', () => {
     it('should return totalDeleted and affectedUserIds structure', async () => {
       const syncService = getSyncService();
-      const cutoffTime = Date.now() - 50 * 24 * 60 * 60 * 1000; // 50 days ago
-
       // Call the method - with default mock it returns empty since no users have snapshots
-      const result = await syncService.deleteOldSyncedOpsForAllUsers(cutoffTime);
+      const result = await syncService.deleteOldSyncedOpsForAllUsers();
 
       // Verify return structure
       expect(result).toHaveProperty('totalDeleted');
@@ -587,9 +585,7 @@ describe('Sync System Fixes', () => {
 
     it('should return empty affectedUserIds when no operations deleted', async () => {
       const syncService = getSyncService();
-      const cutoffTime = Date.now() - 50 * 24 * 60 * 60 * 1000;
-
-      const result = await syncService.deleteOldSyncedOpsForAllUsers(cutoffTime);
+      const result = await syncService.deleteOldSyncedOpsForAllUsers();
 
       expect(result.totalDeleted).toBe(0);
       expect(result.affectedUserIds).toHaveLength(0);

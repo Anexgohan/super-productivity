@@ -62,22 +62,17 @@ describe('Cleanup Jobs', () => {
       expect(mockSyncService.cleanupExpiredRequestDedupEntries).toHaveBeenCalled();
     });
 
-    it('should use retentionMs for cutoff calculation', async () => {
+    it('should use retentionMs for the stale-device cutoff; history goes by checkpoint', async () => {
       startCleanupJobs();
 
       // Fast-forward 10 seconds to trigger initial cleanup
       await vi.advanceTimersByTimeAsync(10_000);
 
-      // Check that the cutoff time uses retentionMs
-      const cutoffCall = mockSyncService.deleteOldSyncedOpsForAllUsers.mock.calls[0][0];
+      // anex Stage 7: history cleanup takes no age cutoff (checkpoint-retention.ts).
+      expect(mockSyncService.deleteOldSyncedOpsForAllUsers).toHaveBeenCalledWith();
       const devicesCutoffCall = mockSyncService.deleteStaleDevices.mock.calls[0][0];
-
-      // Both should use the same cutoff (within a few ms tolerance)
-      expect(Math.abs(cutoffCall - devicesCutoffCall)).toBeLessThan(100);
-
-      // Cutoff should be approximately Date.now() - retentionMs
       const expectedCutoff = Date.now() - DEFAULT_SYNC_CONFIG.retentionMs;
-      expect(Math.abs(cutoffCall - expectedCutoff)).toBeLessThan(100);
+      expect(Math.abs(devicesCutoffCall - expectedCutoff)).toBeLessThan(100);
     });
 
     it('should run cleanup daily', async () => {

@@ -2812,528 +2812,243 @@ describe('SyncService', () => {
   });
 
   describe('cleanup', () => {
-    const seedFullStateOp = (
+    // anex Stage 7: history is kept by checkpoint, not by age (src/sync/checkpoint-retention.ts).
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    type SeedKind = 'CRT' | 'REPAIR' | 'LEGACY_REPAIR' | 'SYNC_IMPORT';
+    const seedOp = (
       targetUserId: number,
       serverSeq: number,
-      receivedAt: bigint,
+      kind: SeedKind,
+      receivedAt: number = Date.now(),
     ): void => {
-      testState.operations.set(`full-state-${targetUserId}-${serverSeq}`, {
-        id: `full-state-${targetUserId}-${serverSeq}`,
+      const isFullState = kind !== 'CRT';
+      const id = `u${targetUserId}-op-${serverSeq}`;
+      testState.operations.set(id, {
+        id,
         userId: targetUserId,
-        clientId: `client-${targetUserId}`,
+        clientId,
         serverSeq,
-        actionType: 'LOAD_ALL_DATA',
-        opType: 'SYNC_IMPORT',
-        entityType: 'ALL',
-        entityId: null,
+        actionType: isFullState ? 'LOAD_ALL_DATA' : 'ADD',
+        opType: kind === 'LEGACY_REPAIR' ? 'REPAIR' : kind,
+        entityType: isFullState ? 'ALL' : 'TASK',
+        entityId: isFullState ? null : `t${serverSeq}`,
         entityIds: [],
-        payload: { appDataComplete: { TASK: {} } },
+        payload: isFullState ? { appDataComplete: { TASK: {} } } : {},
         vectorClock: {},
         schemaVersion: 1,
-        clientTimestamp: BigInt(Date.now()),
-        receivedAt,
-        isPayloadEncrypted: false,
+        clientTimestamp: BigInt(receivedAt),
+        receivedAt: BigInt(receivedAt),
+        isPayloadEncrypted: true,
         syncImportReason: null,
+        repairBaseServerSeq: kind === 'REPAIR' ? serverSeq - 1 : null,
       });
     };
-
-    it('should not delete old operations when no full-state base exists', async () => {
-      const service = getSyncService();
-      const warnSpy = vi.spyOn(Logger, 'warn').mockImplementation(() => undefined);
-
-      // Upload operations
-      for (let i = 1; i <= 5; i++) {
-        await service.uploadOps(userId, clientId, [
-          {
-            id: uuidv7(),
-            clientId,
-            actionType: 'ADD',
-            opType: 'CRT',
-            entityType: 'TASK',
-            entityId: `t${i}`,
-            payload: {},
-            vectorClock: {},
-            timestamp: Date.now(),
-            schemaVersion: 1,
-          },
-        ]);
-      }
-
-      // Manually set old received_at to simulate old operations
-      for (const [_id, op] of testState.operations) {
-        if (op.serverSeq <= 2) {
-          op.receivedAt = BigInt(Date.now() - 100 * 24 * 60 * 60 * 1000); // 100 days ago
-        }
-      }
-
-      // Set up userSyncState with required fields for cleanup
-      // The cleanup requires lastSnapshotSeq and snapshotAt to be set
-      const cutoffTime = Date.now() - 50 * 24 * 60 * 60 * 1000; // 50 days ago
-      testState.userSyncStates.set(userId, {
-        userId,
-        lastSeq: 5,
-        lastSnapshotSeq: 5, // Snapshot covers all ops up to seq 5
-        snapshotAt: BigInt(Date.now()), // Snapshot taken recently (>= cutoffTime)
+    const seedSyncState = (targetUserId: number, lastSeq: number, extra = {}): void => {
+      testState.userSyncStates.set(targetUserId, {
+        userId: targetUserId,
+        lastSeq,
+        lastSnapshotSeq: null,
+        snapshotAt: null,
+        ...extra,
       });
+    };
+    const remainingSeqs = (targetUserId: number = userId): number[] =>
+      Array.from(testState.operations.values())
+        .filter((op) => op.userId === targetUserId)
+        .map((op) => op.serverSeq)
+        .sort((x, y) => x - y);
 
-      try {
-        const { totalDeleted, affectedUserIds } =
-          await service.deleteOldSyncedOpsForAllUsers(cutoffTime);
-
-        expect(totalDeleted).toBe(0);
-        expect(affectedUserIds).not.toContain(userId);
-        expect(warnSpy).toHaveBeenCalledWith(
-          'Cleanup [old-ops]: skipped 1 eligible user(s) without a full-state replay base; their operation histories were left intact.',
-        );
-
-        const remaining = (await operationDownloadService.getOpsSinceWithSeq(userId, 0))
-          .ops;
-        expect(remaining).toHaveLength(5);
-      } finally {
-        warnSpy.mockRestore();
-      }
-    });
-
-    it('should preserve the latest full-state operation and its replay tail', async () => {
+    it('keeps everything for an account with fewer than two checkpoints', async () => {
       const service = getSyncService();
-      const cutoffTime = Date.now() - 50 * 24 * 60 * 60 * 1000;
-
-      for (let i = 1; i <= 5; i++) {
-        const isFullState = i === 2 || i === 4;
-        testState.operations.set(`old-op-${i}`, {
-          id: `old-op-${i}`,
-          userId,
-          clientId,
-          serverSeq: i,
-          actionType: isFullState ? 'LOAD_ALL_DATA' : 'ADD',
-          opType: i === 2 ? 'BACKUP_IMPORT' : i === 4 ? 'REPAIR' : 'CRT',
-          entityType: isFullState ? 'ALL' : 'TASK',
-          entityId: isFullState ? null : `t${i}`,
-          entityIds: [],
-          payload: isFullState ? { appDataComplete: { TASK: {} } } : {},
-          vectorClock: {},
-          schemaVersion: 1,
-          clientTimestamp: BigInt(Date.now()),
-          receivedAt: BigInt(cutoffTime - 1),
-          isPayloadEncrypted: false,
-          syncImportReason: null,
-          // seq 4 is a CAUSAL repair (base cursor set), so the marker at seq 4 is
-          // a valid pruning boundary once its causality is confirmed.
-          repairBaseServerSeq: i === 4 ? 3 : null,
-        });
-      }
-
-      testState.userSyncStates.set(userId, {
-        userId,
-        lastSeq: 5,
-        lastSnapshotSeq: 4,
-        snapshotAt: BigInt(Date.now()),
-        latestFullStateSeq: 4,
-      });
-
-      const { totalDeleted } = await service.deleteOldSyncedOpsForAllUsers(cutoffTime);
-
-      expect(totalDeleted).toBe(3);
-      // The primary `latestFullStateSeq` marker is no longer trusted blindly: it
-      // is validated against the causal predicate before authorizing a DELETE.
-      expect(prisma.operation.findFirst).toHaveBeenCalled();
-      expect(Array.from(testState.operations.keys())).toEqual(['old-op-4', 'old-op-5']);
-      const freshClientOps = (
-        await operationDownloadService.getOpsSinceWithSeq(userId, 0)
-      ).ops;
-      expect(freshClientOps.map((op) => op.serverSeq)).toEqual([4, 5]);
-    });
-
-    it('does not prune history behind a stale latestFullStateSeq marker pointing at a legacy REPAIR (primary path)', async () => {
-      // Regression for the primary-path gap: installs upgraded from before the
-      // causal-marker migration can carry a `latestFullStateSeq` that points at a
-      // legacy REPAIR (repairBaseServerSeq NULL) — the migration added no backfill
-      // to clear it. Trusting that cached marker would prune history behind a
-      // repair the replay path refuses as a boundary. The marker must be validated
-      // causal before it can authorize a DELETE; a stale one drops to the (causal-
-      // only) fallback, which here finds no boundary → the user is skipped.
-      const service = getSyncService();
-      const cutoffTime = Date.now() - 50 * 24 * 60 * 60 * 1000;
-
-      for (let i = 1; i <= 5; i++) {
-        const isLegacyRepair = i === 4;
-        testState.operations.set(`old-op-${i}`, {
-          id: `old-op-${i}`,
-          userId,
-          clientId,
-          serverSeq: i,
-          actionType: isLegacyRepair ? 'LOAD_ALL_DATA' : 'ADD',
-          opType: isLegacyRepair ? 'REPAIR' : 'CRT',
-          entityType: isLegacyRepair ? 'ALL' : 'TASK',
-          entityId: isLegacyRepair ? null : `t${i}`,
-          entityIds: [],
-          payload: isLegacyRepair ? { appDataComplete: { TASK: {} } } : {},
-          vectorClock: {},
-          schemaVersion: 1,
-          clientTimestamp: BigInt(Date.now()),
-          receivedAt: BigInt(cutoffTime - 1),
-          isPayloadEncrypted: false,
-          syncImportReason: null,
-          // Legacy REPAIR = no causal base cursor.
-          repairBaseServerSeq: null,
-        });
-      }
-
-      // Stale marker: points at the markerless legacy REPAIR at seq 4.
-      testState.userSyncStates.set(userId, {
-        userId,
-        lastSeq: 5,
-        lastSnapshotSeq: 4,
-        snapshotAt: BigInt(Date.now()),
-        latestFullStateSeq: 4,
-      });
+      const old = Date.now() - 100 * DAY_MS;
+      seedOp(userId, 1, 'CRT', old);
+      seedOp(userId, 2, 'CRT', old);
+      seedOp(userId, 3, 'REPAIR', old);
+      seedOp(userId, 4, 'CRT', old);
+      seedSyncState(userId, 4);
 
       const { totalDeleted, affectedUserIds } =
-        await service.deleteOldSyncedOpsForAllUsers(cutoffTime);
+        await service.deleteOldSyncedOpsForAllUsers();
 
       expect(totalDeleted).toBe(0);
-      expect(affectedUserIds).not.toContain(userId);
-      expect(prisma.operation.findFirst).toHaveBeenCalled();
-      expect(Array.from(testState.operations.keys())).toEqual([
-        'old-op-1',
-        'old-op-2',
-        'old-op-3',
-        'old-op-4',
-        'old-op-5',
-      ]);
+      expect(affectedUserIds).toEqual([]);
+      expect(remainingSeqs()).toEqual([1, 2, 3, 4]);
     });
 
-    it('does not prune history behind a legacy REPAIR without a causal base (fallback path)', async () => {
-      // Regression guard: the fallback used when `latestFullStateSeq` is absent
-      // (legacy/pre-marker installs) must use the causal-only full-state
-      // predicate, like every other full-state query. A legacy REPAIR carries
-      // appDataComplete but no `repairBaseServerSeq` proving its state is current
-      // as of its seq, so it must NEVER authorize history pruning — ops between
-      // its logical base and its seq would be lost for a device replaying from
-      // before it. Before the fix this fallback used a raw opType filter that
-      // selected the legacy REPAIR as the prune boundary and deleted ops 1–3.
+    it('deletes everything before the second-newest checkpoint, whatever its age', async () => {
       const service = getSyncService();
-      const warnSpy = vi.spyOn(Logger, 'warn').mockImplementation(() => undefined);
-      const cutoffTime = Date.now() - 50 * 24 * 60 * 60 * 1000;
-
-      for (let i = 1; i <= 5; i++) {
-        const isLegacyRepair = i === 4;
-        testState.operations.set(`old-op-${i}`, {
-          id: `old-op-${i}`,
-          userId,
-          clientId,
-          serverSeq: i,
-          actionType: isLegacyRepair ? 'LOAD_ALL_DATA' : 'ADD',
-          opType: isLegacyRepair ? 'REPAIR' : 'CRT',
-          entityType: isLegacyRepair ? 'ALL' : 'TASK',
-          entityId: isLegacyRepair ? null : `t${i}`,
-          entityIds: [],
-          payload: isLegacyRepair ? { appDataComplete: { TASK: {} } } : {},
-          vectorClock: {},
-          schemaVersion: 1,
-          clientTimestamp: BigInt(Date.now()),
-          receivedAt: BigInt(cutoffTime - 1),
-          isPayloadEncrypted: false,
-          syncImportReason: null,
-          // Legacy REPAIR = no causal base cursor.
-          repairBaseServerSeq: null,
-        });
+      for (const [seq, kind] of [
+        [1, 'CRT'],
+        [2, 'REPAIR'],
+        [3, 'CRT'],
+        [4, 'REPAIR'],
+        [5, 'CRT'],
+      ] as const) {
+        seedOp(userId, seq, kind);
       }
-
-      // latestFullStateSeq deliberately unset → cleanup takes the fallback query
-      // path (the branch this fix hardens).
-      testState.userSyncStates.set(userId, {
-        userId,
-        lastSeq: 5,
-        lastSnapshotSeq: 5,
-        snapshotAt: BigInt(Date.now()),
-      });
-
-      try {
-        const { totalDeleted, affectedUserIds } =
-          await service.deleteOldSyncedOpsForAllUsers(cutoffTime);
-
-        expect(totalDeleted).toBe(0);
-        expect(affectedUserIds).not.toContain(userId);
-        // The fallback query ran (marker absent) but excluded the legacy REPAIR,
-        // so the user has no replay base and is skipped rather than pruned.
-        expect(prisma.operation.findFirst).toHaveBeenCalled();
-        expect(Array.from(testState.operations.keys())).toEqual([
-          'old-op-1',
-          'old-op-2',
-          'old-op-3',
-          'old-op-4',
-          'old-op-5',
-        ]);
-        expect(warnSpy).toHaveBeenCalledWith(
-          'Cleanup [old-ops]: skipped 1 eligible user(s) without a full-state replay base; their operation histories were left intact.',
-        );
-      } finally {
-        warnSpy.mockRestore();
-      }
-    });
-
-    it('drains a single user up to the per-run budget', async () => {
-      const service = getSyncService();
-      process.env.OLD_OPS_CLEANUP_DELETE_BATCH_SIZE = '50';
-      process.env.OLD_OPS_CLEANUP_MAX_DELETED_PER_RUN = '250';
-      const totalOps = 255;
-      const cutoffTime = Date.now() - 50 * 24 * 60 * 60 * 1000;
-
-      for (let i = 1; i <= totalOps; i++) {
-        testState.operations.set(`old-op-${i}`, {
-          id: `old-op-${i}`,
-          userId,
-          clientId,
-          serverSeq: i,
-          actionType: 'ADD',
-          opType: 'CRT',
-          entityType: 'TASK',
-          entityId: `t${i}`,
-          payload: {},
-          vectorClock: {},
-          schemaVersion: 1,
-          clientTimestamp: BigInt(Date.now()),
-          receivedAt: BigInt(cutoffTime - 1),
-          isPayloadEncrypted: false,
-          syncImportReason: null,
-        });
-      }
-      seedFullStateOp(userId, totalOps + 1, BigInt(cutoffTime - 1));
-
-      testState.userSyncStates.set(userId, {
-        userId,
-        lastSeq: totalOps + 1,
-        lastSnapshotSeq: totalOps + 1,
-        snapshotAt: BigInt(Date.now()),
-      });
+      seedSyncState(userId, 5);
 
       const { totalDeleted, affectedUserIds } =
-        await service.deleteOldSyncedOpsForAllUsers(cutoffTime);
-      delete process.env.OLD_OPS_CLEANUP_DELETE_BATCH_SIZE;
-      delete process.env.OLD_OPS_CLEANUP_MAX_DELETED_PER_RUN;
+        await service.deleteOldSyncedOpsForAllUsers();
 
-      // Per-run budget is larger than one delete batch. The inner drain loop keeps
-      // deleting until the budget hits zero, not just one batch.
-      expect(totalDeleted).toBe(250);
+      // Both checkpoints are from today: the day keeps only its newest, which is
+      // already kept as the newest checkpoint; seq 2 stays as the replay base.
+      expect(totalDeleted).toBe(1);
       expect(affectedUserIds).toEqual([userId]);
-      expect(testState.operations.size).toBe(6);
+      expect(remainingSeqs()).toEqual([2, 3, 4, 5]);
     });
 
-    it('marks user for reconcile when a later batch throws mid-loop', async () => {
+    it('keeps the newest checkpoint of each earlier day, and a fresh client still starts from the newest', async () => {
       const service = getSyncService();
-      process.env.OLD_OPS_CLEANUP_DELETE_BATCH_SIZE = '50';
-      process.env.OLD_OPS_CLEANUP_MAX_DELETED_PER_RUN = '250';
-      const totalOps = 120;
-      const cutoffTime = Date.now() - 50 * 24 * 60 * 60 * 1000;
+      const now = Date.now();
+      seedOp(userId, 1, 'CRT', now - 10 * DAY_MS);
+      seedOp(userId, 2, 'REPAIR', now - 9 * DAY_MS);
+      seedOp(userId, 3, 'CRT', now - 8 * DAY_MS);
+      seedOp(userId, 4, 'REPAIR', now - 3 * DAY_MS);
+      seedOp(userId, 5, 'REPAIR', now - 3 * DAY_MS + 60_000);
+      seedOp(userId, 6, 'CRT', now - 2 * DAY_MS);
+      seedOp(userId, 7, 'REPAIR', now - 1 * DAY_MS);
+      seedOp(userId, 8, 'CRT', now - 1 * DAY_MS + 60_000);
+      seedOp(userId, 9, 'REPAIR', now);
+      seedOp(userId, 10, 'CRT', now);
+      seedSyncState(userId, 10);
 
-      for (let i = 1; i <= totalOps; i++) {
-        testState.operations.set(`old-op-${i}`, {
-          id: `old-op-${i}`,
-          userId,
-          clientId,
-          serverSeq: i,
-          actionType: 'ADD',
-          opType: 'CRT',
-          entityType: 'TASK',
-          entityId: `t${i}`,
-          payload: {},
-          vectorClock: {},
-          schemaVersion: 1,
-          clientTimestamp: BigInt(Date.now()),
-          receivedAt: BigInt(cutoffTime - 1),
-          isPayloadEncrypted: false,
-          syncImportReason: null,
-        });
-      }
-      seedFullStateOp(userId, totalOps + 1, BigInt(cutoffTime - 1));
+      const { totalDeleted } = await service.deleteOldSyncedOpsForAllUsers();
 
-      testState.userSyncStates.set(userId, {
-        userId,
-        lastSeq: totalOps + 1,
-        lastSnapshotSeq: totalOps + 1,
-        snapshotAt: BigInt(Date.now()),
-      });
-
-      // Let the first batch run normally, then simulate a transient DB error
-      // on the second batch. Pre-fix this would leave the storage counter
-      // stale-high with no reconcile signal until the next daily pass.
-      const serviceWithPrivates = service as unknown as {
-        storageQuotaService: {
-          deleteOldSyncedOpsBatch: (...args: unknown[]) => Promise<number>;
-          needsReconcile: (userId: number) => boolean;
-        };
-      };
-      const storageQuotaService = serviceWithPrivates.storageQuotaService;
-      const originalBatch =
-        storageQuotaService.deleteOldSyncedOpsBatch.bind(storageQuotaService);
-      let callCount = 0;
-      vi.spyOn(storageQuotaService, 'deleteOldSyncedOpsBatch').mockImplementation(
-        async (...args: unknown[]) => {
-          callCount += 1;
-          if (callCount === 1) return originalBatch(...args);
-          throw new Error('simulated transient DB failure');
-        },
-      );
-
-      await expect(service.deleteOldSyncedOpsForAllUsers(cutoffTime)).rejects.toThrow(
-        'simulated transient DB failure',
-      );
-      delete process.env.OLD_OPS_CLEANUP_DELETE_BATCH_SIZE;
-      delete process.env.OLD_OPS_CLEANUP_MAX_DELETED_PER_RUN;
-
-      // First batch committed deletes; the user must still be marked so
-      // the next request reconciles the now-stale-high counter.
-      expect(storageQuotaService.needsReconcile(userId)).toBe(true);
-      expect(testState.operations.size).toBe(totalOps + 1 - 50);
+      // 9 newest, 7 replay base with 8 after it; 5 is its day's newest, 2 its day's only one.
+      expect(totalDeleted).toBe(4);
+      expect(remainingSeqs()).toEqual([2, 5, 7, 8, 9, 10]);
+      const fromStart = await operationDownloadService.getOpsSinceWithSeq(userId, 0);
+      expect(fromStart.ops.map((op) => op.serverSeq)).toEqual([9, 10]);
+      expect(fromStart.gapDetected).toBe(false);
+      // A client left behind the deleted history is moved forward, not given a gap.
+      const fromDeleted = await operationDownloadService.getOpsSinceWithSeq(userId, 3);
+      expect(fromDeleted.ops.map((op) => op.serverSeq)).toEqual([9, 10]);
+      expect(fromDeleted.gapDetected).toBe(false);
     });
 
-    it('shares the per-run budget across users; tail users wait for next pass', async () => {
+    it('keeps checkpoints from the last 7 days that have one, not 7 calendar days', async () => {
+      const service = getSyncService();
+      const now = Date.now();
+      // Ten checkpoints on ten different days, 30 to 21 days ago: a quiet stretch
+      // must not age them out. A change follows each checkpoint.
+      for (let k = 1; k <= 10; k++) {
+        seedOp(userId, 2 * k - 1, 'CRT', now - (31 - k) * DAY_MS - 60_000);
+        seedOp(userId, 2 * k, 'REPAIR', now - (31 - k) * DAY_MS);
+      }
+      seedSyncState(userId, 20);
+
+      await service.deleteOldSyncedOpsForAllUsers();
+
+      // Days of 20, 18, 16, 14, 12, 10 and 8 are the seven; 18 is the replay base.
+      expect(remainingSeqs()).toEqual([8, 10, 12, 14, 16, 18, 19, 20]);
+    });
+
+    it('never counts a REPAIR without a base as a checkpoint', async () => {
+      const service = getSyncService();
+      seedOp(userId, 1, 'CRT');
+      seedOp(userId, 2, 'LEGACY_REPAIR');
+      seedOp(userId, 3, 'CRT');
+      seedOp(userId, 4, 'REPAIR');
+      seedOp(userId, 5, 'CRT');
+      seedSyncState(userId, 5);
+
+      const { totalDeleted } = await service.deleteOldSyncedOpsForAllUsers();
+
+      expect(totalDeleted).toBe(0);
+      expect(remainingSeqs()).toEqual([1, 2, 3, 4, 5]);
+    });
+
+    it('counts full imports as checkpoints', async () => {
+      const service = getSyncService();
+      seedOp(userId, 1, 'CRT');
+      seedOp(userId, 2, 'SYNC_IMPORT');
+      seedOp(userId, 3, 'CRT');
+      seedOp(userId, 4, 'REPAIR');
+      seedSyncState(userId, 4);
+
+      await service.deleteOldSyncedOpsForAllUsers();
+
+      expect(remainingSeqs()).toEqual([2, 3, 4]);
+    });
+
+    it('drops the server snapshot copy only when it points into deleted history', async () => {
+      const service = getSyncService();
+      for (const uid of [userId, 2]) {
+        for (const [seq, kind] of [
+          [1, 'CRT'],
+          [2, 'CRT'],
+          [3, 'REPAIR'],
+          [4, 'REPAIR'],
+        ] as const) {
+          seedOp(uid, seq, kind);
+        }
+      }
+      seedSyncState(userId, 4, { lastSnapshotSeq: 2, snapshotAt: BigInt(Date.now()) });
+      seedSyncState(2, 4, { lastSnapshotSeq: 3, snapshotAt: BigInt(Date.now()) });
+
+      await service.deleteOldSyncedOpsForAllUsers();
+
+      expect(prisma.userSyncState.update).toHaveBeenCalledTimes(1);
+      expect(prisma.userSyncState.update).toHaveBeenCalledWith({
+        where: { userId },
+        data: { snapshotData: null, lastSnapshotSeq: null, snapshotAt: null },
+      });
+    });
+
+    it('shares the per-run budget across users; the rest waits for the next pass', async () => {
       const service = getSyncService();
       process.env.OLD_OPS_CLEANUP_DELETE_BATCH_SIZE = '50';
       process.env.OLD_OPS_CLEANUP_MAX_DELETED_PER_RUN = '250';
       const user2Id = 2;
-      const cutoffTime = Date.now() - 50 * 24 * 60 * 60 * 1000;
-
       testState.users.set(user2Id, {
         id: user2Id,
         email: 'test2@test.com',
         storageQuotaBytes: BigInt(100 * 1024 * 1024),
         storageUsedBytes: BigInt(0),
       });
-
-      // Each user has 200 stale ops — more than the 250 per-run budget combined.
       const opsPerUser = 200;
       for (const uid of [userId, user2Id]) {
-        for (let i = 1; i <= opsPerUser; i++) {
-          testState.operations.set(`u${uid}-op-${i}`, {
-            id: `u${uid}-op-${i}`,
-            userId: uid,
-            clientId,
-            serverSeq: i,
-            actionType: 'ADD',
-            opType: 'CRT',
-            entityType: 'TASK',
-            entityId: `t${i}`,
-            payload: {},
-            vectorClock: {},
-            schemaVersion: 1,
-            clientTimestamp: BigInt(Date.now()),
-            receivedAt: BigInt(cutoffTime - 1),
-            isPayloadEncrypted: false,
-            syncImportReason: null,
-          });
-        }
-        seedFullStateOp(uid, opsPerUser + 1, BigInt(cutoffTime - 1));
+        for (let i = 1; i <= opsPerUser; i++) seedOp(uid, i, 'CRT');
+        seedOp(uid, opsPerUser + 1, 'REPAIR');
+        seedOp(uid, opsPerUser + 2, 'REPAIR');
+        seedSyncState(uid, opsPerUser + 2);
       }
 
-      // userSyncStates are processed by `orderBy: snapshotAt asc`, so the
-      // stalest snapshot wins the budget first. user1 here is staler.
-      testState.userSyncStates.set(userId, {
-        userId,
-        lastSeq: opsPerUser + 1,
-        lastSnapshotSeq: opsPerUser + 1,
-        snapshotAt: BigInt(Date.now() - 1000),
-      });
-      testState.userSyncStates.set(user2Id, {
-        userId: user2Id,
-        lastSeq: opsPerUser + 1,
-        lastSnapshotSeq: opsPerUser + 1,
-        snapshotAt: BigInt(Date.now()),
-      });
-
       const { totalDeleted, affectedUserIds } =
-        await service.deleteOldSyncedOpsForAllUsers(cutoffTime);
-      delete process.env.OLD_OPS_CLEANUP_DELETE_BATCH_SIZE;
-      delete process.env.OLD_OPS_CLEANUP_MAX_DELETED_PER_RUN;
+        await service.deleteOldSyncedOpsForAllUsers();
 
-      // user1 drains fully, user2 only gets the remaining budget.
       expect(totalDeleted).toBe(250);
       expect(affectedUserIds).toEqual([userId, user2Id]);
-      expect(testState.operations.size).toBe(152);
+      expect(remainingSeqs(userId)).toEqual([opsPerUser + 1, opsPerUser + 2]);
+      expect(remainingSeqs(user2Id)).toHaveLength(opsPerUser + 2 - 50);
     });
 
-    it('should delete old operations from all users', async () => {
+    it('marks the account for a storage recount when a later batch throws', async () => {
       const service = getSyncService();
-      const user2Id = 2;
+      process.env.OLD_OPS_CLEANUP_DELETE_BATCH_SIZE = '50';
+      for (let i = 1; i <= 120; i++) seedOp(userId, i, 'CRT');
+      seedOp(userId, 121, 'REPAIR');
+      seedOp(userId, 122, 'REPAIR');
+      seedSyncState(userId, 122);
 
-      // Create second user
-      testState.users.set(user2Id, {
-        id: user2Id,
-        email: 'test2@test.com',
-        storageQuotaBytes: BigInt(100 * 1024 * 1024),
-        storageUsedBytes: BigInt(0),
+      const deleteMany = vi.mocked(prisma.operation.deleteMany);
+      const realDelete = deleteMany.getMockImplementation()!;
+      deleteMany.mockImplementationOnce(realDelete).mockImplementationOnce(async () => {
+        throw new Error('simulated transient DB failure');
       });
 
-      // Upload ops for user 1
-      await service.uploadOps(userId, clientId, [
-        {
-          id: uuidv7(),
-          clientId,
-          actionType: 'ADD',
-          opType: 'CRT',
-          entityType: 'TASK',
-          entityId: 't1',
-          payload: {},
-          vectorClock: {},
-          timestamp: Date.now(),
-          schemaVersion: 1,
-        },
-      ]);
+      await expect(service.deleteOldSyncedOpsForAllUsers()).rejects.toThrow(
+        'simulated transient DB failure',
+      );
 
-      // Upload ops for user 2
-      await service.uploadOps(user2Id, 'client-2', [
-        {
-          id: uuidv7(),
-          clientId: 'client-2',
-          actionType: 'ADD',
-          opType: 'CRT',
-          entityType: 'TASK',
-          entityId: 't2',
-          payload: {},
-          vectorClock: {},
-          timestamp: Date.now(),
-          schemaVersion: 1,
-        },
-      ]);
-
-      // Make all ops old
-      for (const op of testState.operations.values()) {
-        op.receivedAt = BigInt(Date.now() - 100 * 24 * 60 * 60 * 1000); // 100 days ago
-      }
-
-      // Set up userSyncState with required fields for both users
-      const cutoffTime = Date.now() - 50 * 24 * 60 * 60 * 1000;
-      seedFullStateOp(userId, 2, BigInt(cutoffTime - 1));
-      seedFullStateOp(user2Id, 3, BigInt(cutoffTime - 1));
-      testState.userSyncStates.set(userId, {
-        userId,
-        lastSeq: 2,
-        lastSnapshotSeq: 2,
-        snapshotAt: BigInt(Date.now()),
-      });
-      testState.userSyncStates.set(user2Id, {
-        userId: user2Id,
-        lastSeq: 3,
-        lastSnapshotSeq: 3,
-        snapshotAt: BigInt(Date.now()),
-      });
-
-      // Delete ops older than 50 days
-      const { totalDeleted, affectedUserIds } =
-        await service.deleteOldSyncedOpsForAllUsers(cutoffTime);
-
-      expect(totalDeleted).toBe(2); // Both users' ops deleted
-      expect(affectedUserIds).toHaveLength(2);
-      expect(affectedUserIds).toContain(userId);
-      expect(affectedUserIds).toContain(user2Id);
-
-      expect(
-        (await operationDownloadService.getOpsSinceWithSeq(userId, 0)).ops.length,
-      ).toBe(1);
-      expect(
-        (await operationDownloadService.getOpsSinceWithSeq(user2Id, 0)).ops.length,
-      ).toBe(1);
+      const storageQuotaService = (
+        service as unknown as {
+          storageQuotaService: { needsReconcile: (id: number) => boolean };
+        }
+      ).storageQuotaService;
+      expect(storageQuotaService.needsReconcile(userId)).toBe(true);
+      expect(remainingSeqs()).toHaveLength(122 - 50);
     });
 
     it('should delete stale devices', async () => {
@@ -3368,39 +3083,6 @@ describe('SyncService', () => {
       );
 
       expect(deleted).toBe(1);
-    });
-
-    it('should not delete recent operations', async () => {
-      const service = getSyncService();
-
-      // Upload recent operations
-      for (let i = 1; i <= 3; i++) {
-        await service.uploadOps(userId, clientId, [
-          {
-            id: uuidv7(),
-            clientId,
-            actionType: 'ADD',
-            opType: 'CRT',
-            entityType: 'TASK',
-            entityId: `t${i}`,
-            payload: {},
-            vectorClock: {},
-            timestamp: Date.now(),
-            schemaVersion: 1,
-          },
-        ]);
-      }
-
-      // Try to delete with 50-day cutoff - should delete nothing since ops are fresh
-      const cutoffTime = Date.now() - 50 * 24 * 60 * 60 * 1000;
-      const { totalDeleted, affectedUserIds } =
-        await service.deleteOldSyncedOpsForAllUsers(cutoffTime);
-
-      expect(totalDeleted).toBe(0);
-      expect(affectedUserIds).toHaveLength(0);
-      expect(
-        (await operationDownloadService.getOpsSinceWithSeq(userId, 0)).ops.length,
-      ).toBe(3);
     });
 
     it('should not delete recent devices', async () => {

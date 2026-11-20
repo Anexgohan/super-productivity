@@ -658,6 +658,44 @@ describe('Sync Operations', () => {
       const syncState = testState.userSyncStates.get(userId);
       expect(syncState?.latestFullStateVectorClock).toEqual({ 'shared-client': 9 });
     });
+
+    it('carries the previous combined clock forward once the history behind it is deleted', async () => {
+      const service = getSyncService();
+      await service.uploadOps(userId, 'old-client-a', [
+        {
+          id: uuidv7(),
+          clientId: 'old-client-a',
+          actionType: 'ADD_TASK',
+          opType: 'CRT',
+          entityType: 'TASK',
+          entityId: 'task-a',
+          payload: { title: 'A' },
+          vectorClock: { 'old-client-a': 5 },
+          timestamp: Date.now(),
+          schemaVersion: 1,
+        },
+      ]);
+      await service.uploadOps(userId, 'importer', [
+        createFullStateOp('SYNC_IMPORT', 'importer', { importer: 1 }),
+      ]);
+      expect(testState.userSyncStates.get(userId)?.latestFullStateVectorClock).toEqual({
+        'old-client-a': 5,
+        importer: 1,
+      });
+
+      // anex Stage 7: the daily cleanup deleted the change before the checkpoints.
+      for (const [id, op] of testState.operations) {
+        if (op.userId === userId && op.opType === 'CRT') testState.operations.delete(id);
+      }
+      await service.uploadOps(userId, 'importer', [
+        createFullStateOp('SYNC_IMPORT', 'importer', { importer: 2 }),
+      ]);
+
+      expect(testState.userSyncStates.get(userId)?.latestFullStateVectorClock).toEqual({
+        'old-client-a': 5,
+        importer: 2,
+      });
+    });
   });
 
   describe('Snapshot Generation', () => {
@@ -905,60 +943,37 @@ describe('Sync Operations', () => {
   });
 
   describe('Cleanup Operations', () => {
-    it('should delete old synced operations', async () => {
+    it('should delete history before the second-newest checkpoint', async () => {
       const service = getSyncService();
+      const importOp = (counter: number) => ({
+        id: uuidv7(),
+        clientId,
+        actionType: '[SP_ALL] Load(import) all data',
+        opType: 'SYNC_IMPORT' as const,
+        entityType: 'ALL' as const,
+        payload: {},
+        vectorClock: { [clientId]: counter },
+        timestamp: Date.now(),
+        schemaVersion: 1,
+      });
 
-      // Upload some operations
       await service.uploadOps(userId, clientId, [
         createOp('task-1', 'CRT'),
         createOp('task-2', 'CRT'),
       ]);
-      await service.uploadOps(userId, clientId, [
-        {
-          id: uuidv7(),
-          clientId,
-          actionType: '[SP_ALL] Load(import) all data',
-          opType: 'SYNC_IMPORT',
-          entityType: 'ALL',
-          payload: {},
-          vectorClock: { [clientId]: 2 },
-          timestamp: Date.now(),
-          schemaVersion: 1,
-        },
-      ]);
+      await service.uploadOps(userId, clientId, [importOp(3)]);
+      await service.uploadOps(userId, clientId, [importOp(4)]);
 
-      // Set up userSyncState with snapshot info (required for cleanup logic)
-      const now = Date.now();
-      testState.userSyncStates.set(userId, {
-        userId,
-        lastSeq: 3,
-        lastSnapshotSeq: 3,
-        snapshotAt: BigInt(now),
-        opCount: 3,
-      });
+      // anex Stage 7: kept by checkpoint, not by age, so fresh ops go too.
+      const result = await service.deleteOldSyncedOpsForAllUsers();
 
-      // Manually set one operation to be "old" (received 100 days ago)
-      const hundredDaysMs = MS_PER_DAY * 100;
-      for (const [id, op] of testState.operations.entries()) {
-        if ((op as any).serverSeq === 1) {
-          (op as any).receivedAt = BigInt(Date.now() - hundredDaysMs);
-        }
-      }
-
-      // Delete operations older than 90 days
-      const ninetyDaysMs = MS_PER_DAY * 90;
-      const cutoff = Date.now() - ninetyDaysMs;
-      const result = await service.deleteOldSyncedOpsForAllUsers(cutoff);
-
-      expect(result.totalDeleted).toBe(1);
+      expect(result.totalDeleted).toBe(2);
       expect(result.affectedUserIds).toContain(userId);
-
-      // Verify correct operation was deleted
       const remainingSeqs = Array.from(testState.operations.values())
         .filter((op) => op.userId === userId)
         .map((op) => op.serverSeq)
         .sort((a, b) => a - b);
-      expect(remainingSeqs).toEqual([2, 3]);
+      expect(remainingSeqs).toEqual([3, 4]);
     });
 
     it('should delete stale devices', async () => {

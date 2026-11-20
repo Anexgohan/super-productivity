@@ -7,7 +7,6 @@ import { OperationLogSyncService } from './operation-log-sync.service';
 import { isFileBasedProvider, isOperationSyncCapable } from './operation-sync.util';
 import { OpLog } from '../../core/log';
 import { DataInitStateService } from '../../core/data-init/data-init-state.service';
-import { handleStorageQuotaError } from './sync-error-utils';
 import { SyncWrapperService } from '../../imex/sync/sync-wrapper.service';
 import { SyncSessionValidationService } from './sync-session-validation.service';
 import { SyncCycleGuardService } from './sync-cycle-guard.service';
@@ -392,9 +391,8 @@ export class ImmediateUploadService implements OnDestroy {
           return;
         }
 
-        // Check for storage quota exceeded - this requires user action
-        const message = e instanceof Error ? e.message : 'Unknown error';
-        handleStorageQuotaError(message);
+        // anex: no storage-full alert here. The upload service already shows it for both server upload calls and
+        // rethrows, so a second one here put the same alert up twice for one refused save (seen on dev, 2026-11-20).
 
         // Validation failure is structural state corruption, not a transient
         // network/throttle error — surface ERROR even though the upload

@@ -13,6 +13,7 @@ import { Logger } from '../../logger';
 import { parsePositiveIntegerEnv, storageLimitFromEnv } from '../../util/env';
 import { APPROX_BYTES_PER_OP } from '../sync.const';
 import { CAUSAL_FULL_STATE_OPERATION_WHERE } from '../sync.types';
+import { planCheckpointRetention } from '../checkpoint-retention';
 
 /**
  * Default storage quota per user in bytes (100MB).
@@ -32,6 +33,8 @@ const effectiveQuotaBytes = (
   return Number(storedQuotaBytes ?? DEFAULT_STORAGE_QUOTA_BYTES);
 };
 const OLD_OPS_CLEANUP_DELETE_BATCH_SIZE = 5_000;
+// Checkpoints read per account by the daily cleanup; at most one an hour, so 1,000 reach back weeks past the 7 kept days.
+const MAX_CHECKPOINTS_READ = 1_000;
 const OLD_OPS_CLEANUP_MAX_DELETED_PER_RUN = 25_000;
 // Operator-DoS guardrail: a 1M `take:` materializes 1M ids in Node memory and
 // then sends a 1M-element array param to Postgres — exactly the pressure the
@@ -405,154 +408,88 @@ export class StorageQuotaService {
     }
   }
 
-  async deleteOldSyncedOpsForAllUsers(
-    cutoffTime: number,
-  ): Promise<{ totalDeleted: number; affectedUserIds: number[] }> {
-    // S1: order stalest first so when affectedUserIds.length exceeds the
-    // cleanup reconcile budget (RECONCILE_INTERVAL_MS * maxScheduled per
-    // hour), the most-drifted users are reconciled before fresher ones.
-    // Deterministic ordering replaces an earlier random shuffle, which only
-    // probabilistically prevented starvation.
+  /**
+   * Daily cleanup (anex fork, Stage 7 of the container-authority work): deletes each account's history that syncing
+   * no longer needs and that is not a daily restore point. The rule is in `checkpoint-retention.ts`; accounts with
+   * fewer than two checkpoints keep everything. It replaced the upstream rule (older than the retention period and
+   * covered by the server's readable snapshot), which never ran for encrypted accounts and kept 45 days of history,
+   * far more than the storage limit holds when long notes are saved again on every edit.
+   */
+  async deleteOldSyncedOpsForAllUsers(): Promise<{
+    totalDeleted: number;
+    affectedUserIds: number[];
+  }> {
     const states = await prisma.userSyncState.findMany({
-      where: {
-        lastSnapshotSeq: { not: null },
-        snapshotAt: { not: null },
-      },
-      select: {
-        userId: true,
-        lastSnapshotSeq: true,
-        snapshotAt: true,
-        latestFullStateSeq: true,
-      },
-      orderBy: { snapshotAt: 'asc' },
+      select: { userId: true },
+      orderBy: { userId: 'asc' },
     });
 
     let totalDeleted = 0;
     const affectedUserIds: number[] = [];
     const deleteBatchSize = getOldOpsCleanupDeleteBatchSize();
     let remainingDeleteBudget = getOldOpsCleanupMaxDeletedPerRun();
-    let eligibleUsersWithoutReplayBase = 0;
 
     for (const state of states) {
       if (remainingDeleteBudget <= 0) break;
 
-      const snapshotAt = Number(state.snapshotAt);
-      const lastSnapshotSeq = state.lastSnapshotSeq ?? 0;
+      // Only causal full states count: a legacy REPAIR without a base cursor is refused as a replay boundary
+      // (LegacyRepairReplayUnsupportedError), so history behind it must not be deleted on its account.
+      const checkpoints = await prisma.operation.findMany({
+        where: { userId: state.userId, ...CAUSAL_FULL_STATE_OPERATION_WHERE },
+        orderBy: { serverSeq: 'desc' },
+        take: MAX_CHECKPOINTS_READ,
+        select: { serverSeq: true, receivedAt: true },
+      });
+      const retention = planCheckpointRetention(
+        checkpoints.map((checkpoint) => ({
+          serverSeq: checkpoint.serverSeq,
+          receivedAt: Number(checkpoint.receivedAt),
+        })),
+      );
+      if (!retention) continue;
 
-      // The cached snapshot is only exposed by restore endpoints; normal sync
-      // clients still bootstrap from the operation log. Therefore cleanup may
-      // only remove the superseded prefix before the newest full-state op and
-      // must keep that op plus its complete replay tail.
-      if (!(snapshotAt >= cutoffTime && lastSnapshotSeq > 0)) continue;
-      let protectedFromSeq =
-        typeof state.latestFullStateSeq === 'number' &&
-        state.latestFullStateSeq <= lastSnapshotSeq
-          ? state.latestFullStateSeq
-          : null;
-
-      // The cached `latestFullStateSeq` marker is NOT self-validating. Installs
-      // upgraded from before the causal-marker migration (#8973) may have set it
-      // from a legacy REPAIR (repairBaseServerSeq NULL) through the old
-      // isFullStateOpType gate, and that migration shipped no backfill to clear
-      // stale markers. Trusting it blindly would prune history behind a repair
-      // the replay path deliberately refuses as a boundary
-      // (LegacyRepairReplayUnsupportedError) — permanent, cross-device loss.
-      // Confirm the marked op is actually causal before it can authorize a
-      // DELETE; otherwise drop to the causal-only lookup below (or skip).
-      if (protectedFromSeq !== null) {
-        const markerIsCausal = await prisma.operation.findFirst({
-          where: {
-            userId: state.userId,
-            serverSeq: protectedFromSeq,
-            ...CAUSAL_FULL_STATE_OPERATION_WHERE,
-          },
-          select: { serverSeq: true },
-        });
-        if (!markerIsCausal) {
-          protectedFromSeq = null;
-        }
-      }
-
-      // Existing installations may have full-state rows created before the
-      // marker was introduced, and a snapshot can temporarily lag a newer
-      // marker. Fall back only for those legacy/stale-marker cases.
-      if (protectedFromSeq === null) {
-        const latestCoveredFullStateOp = await prisma.operation.findFirst({
-          where: {
-            userId: state.userId,
-            serverSeq: { lte: lastSnapshotSeq },
-            // Legacy REPAIR rows carry no causal base cursor, so they must never
-            // authorize history pruning (see CAUSAL_FULL_STATE_OPERATION_WHERE).
-            // This is the one query whose result directly authorizes a DELETE;
-            // it must match the five other full-state queries and the primary
-            // `latestFullStateSeq` marker (validated causal just above). A
-            // legacy-repair-only user then yields protectedFromSeq === null →
-            // eligibleUsersWithoutReplayBase++ → skipped (no deletion).
-            ...CAUSAL_FULL_STATE_OPERATION_WHERE,
-          },
-          orderBy: { serverSeq: 'desc' },
-          select: { serverSeq: true },
-        });
-        protectedFromSeq = latestCoveredFullStateOp?.serverSeq ?? null;
-      }
-
-      if (protectedFromSeq === null) {
-        eligibleUsersWithoutReplayBase++;
-        continue;
-      }
-      if (protectedFromSeq <= 1) continue;
-
-      // Drain this user across multiple batches until either they're empty or
-      // the global per-run budget is exhausted. Without this, a single user
-      // with a large backlog would only lose `deleteBatchSize` ops per day
-      // even when budget remains — leaving small-backlog users behind it
-      // unserviced when their snapshotAt is fresher.
+      // Page by serverSeq rather than filtering the kept checkpoints out in the query, so a page made only of kept
+      // checkpoints still moves the cursor on.
       let userDeleted = 0;
+      let afterSeq = 0;
       while (remainingDeleteBudget > 0) {
         const batchLimit = Math.min(deleteBatchSize, remainingDeleteBudget);
-        const deletedCount = await this.deleteOldSyncedOpsBatch(
-          state.userId,
-          protectedFromSeq,
-          cutoffTime,
-          batchLimit,
-        );
-        if (deletedCount === 0) break;
+        const candidates = await prisma.operation.findMany({
+          where: {
+            userId: state.userId,
+            serverSeq: { gt: afterSeq, lt: retention.keepAllFromSeq },
+          },
+          orderBy: { serverSeq: 'asc' },
+          take: batchLimit,
+          select: { id: true, serverSeq: true },
+        });
+        if (candidates.length === 0) break;
+        afterSeq = candidates[candidates.length - 1].serverSeq;
 
-        // Mark on the *first* successful batch (not after the loop) so that
-        // if a later batch throws, the counter still self-heals. Without
-        // this, batch-1 commits would leave the counter stale-high until the
-        // next daily pass or process restart.
-        //
-        // Deliberately leave storageUsedBytes stale-high here. A count-based
-        // approximate decrement can undercount users with many tiny ops and
-        // let them bypass quota indefinitely. The marker tells the next
-        // request to run an exact reconcile so drift self-heals.
-        //
-        // NOTE: the marker is in-memory (process-local). A persistent
-        // `users.storage_needs_reconcile` column would survive restarts; see
-        // TODO below.
-        // TODO: persist the reconcile marker in a DB column so it survives
-        // restarts of a single-instance deployment and works correctly across
-        // a multi-instance deployment behind a load balancer.
-        if (userDeleted === 0) {
-          affectedUserIds.push(state.userId);
-          this.markNeedsReconcile(state.userId);
+        const doomedIds = candidates
+          .filter((op) => !retention.keptCheckpointSeqs.has(op.serverSeq))
+          .map((op) => op.id);
+        if (doomedIds.length > 0) {
+          const { count } = await prisma.operation.deleteMany({
+            where: { userId: state.userId, id: { in: doomedIds } },
+          });
+          // Marked on the first deleting batch, not after the loop, so a later batch that throws still leaves the
+          // counter to self-heal. storageUsedBytes stays stale-high until that exact reconcile: an approximate
+          // decrement could undercount and let an account bypass its quota.
+          if (userDeleted === 0 && count > 0) {
+            affectedUserIds.push(state.userId);
+            this.markNeedsReconcile(state.userId);
+          }
+          userDeleted += count;
+          totalDeleted += count;
+          remainingDeleteBudget -= count;
         }
-
-        userDeleted += deletedCount;
-        totalDeleted += deletedCount;
-        remainingDeleteBudget -= deletedCount;
-        // Short-circuit when the batch returned fewer rows than asked for: the
-        // user is empty and another findMany would only confirm zero rows.
-        if (deletedCount < batchLimit) break;
+        if (candidates.length < batchLimit) break;
       }
-    }
 
-    if (eligibleUsersWithoutReplayBase > 0) {
-      Logger.warn(
-        `Cleanup [old-ops]: skipped ${eligibleUsersWithoutReplayBase} eligible user(s) ` +
-          'without a full-state replay base; their operation histories were left intact.',
-      );
+      if (userDeleted > 0) {
+        await this.clearSnapshotCacheBefore(state.userId, retention.keepAllFromSeq);
+      }
     }
 
     if (remainingDeleteBudget <= 0) {
@@ -566,33 +503,31 @@ export class StorageQuotaService {
     return { totalDeleted, affectedUserIds };
   }
 
-  private async deleteOldSyncedOpsBatch(
+  /**
+   * The server's readable snapshot is a replay base for restores; one older than `keepAllFromSeq` now has changes
+   * missing after it, so it is dropped (encrypted accounts never have one).
+   */
+  private async clearSnapshotCacheBefore(
     userId: number,
-    protectedFromSeq: number,
-    cutoffTime: number,
-    limit: number,
-  ): Promise<number> {
-    const doomedOps = await prisma.operation.findMany({
-      where: {
-        userId,
-        serverSeq: { lt: protectedFromSeq },
-        receivedAt: { lt: BigInt(cutoffTime) },
-      },
-      orderBy: { serverSeq: 'asc' },
-      take: limit,
-      select: { id: true },
+    keepAllFromSeq: number,
+  ): Promise<void> {
+    const cachedRow = await prisma.userSyncState.findUnique({
+      where: { userId },
+      select: { lastSnapshotSeq: true },
     });
-
-    if (doomedOps.length === 0) return 0;
-
-    const result = await prisma.operation.deleteMany({
-      where: {
-        userId,
-        id: { in: doomedOps.map((op) => op.id) },
-      },
+    if (
+      cachedRow?.lastSnapshotSeq == null ||
+      cachedRow.lastSnapshotSeq >= keepAllFromSeq
+    ) {
+      return;
+    }
+    await prisma.userSyncState.update({
+      where: { userId },
+      data: { snapshotData: null, lastSnapshotSeq: null, snapshotAt: null },
     });
-
-    return result.count;
+    Logger.info(
+      `[user:${userId}] Cleared stale snapshot cache (was at seq ${cachedRow.lastSnapshotSeq}, history kept from ${keepAllFromSeq})`,
+    );
   }
 
   /**

@@ -99,7 +99,7 @@ const mapOperationRow = (row: OperationDownloadRow): ServerOperation => ({
  * to the legacy `_computeSnapshotVectorClock` aggregate path rather than
  * silently dropping invalid entries and serving a partial clock.
  */
-const parsePersistedVectorClock = (value: unknown): VectorClock | undefined => {
+export const parsePersistedVectorClock = (value: unknown): VectorClock | undefined => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return undefined;
   }

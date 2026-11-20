@@ -73,4 +73,40 @@ describe('SnackService', () => {
     expect(openSnackSpy).toHaveBeenCalledTimes(2);
     expect(service.hasPendingPersistentAction()).toBeFalse();
   });
+
+  describe('a message kept visible', () => {
+    beforeEach(() => jasmine.clock().install());
+    afterEach(() => jasmine.clock().uninstall());
+
+    it('reports itself kept for its duration, then no longer', () => {
+      jasmine.clock().mockDate(new Date(1_000_000));
+      service.open({
+        msg: 'Checkpoint taken',
+        isKeptVisible: true,
+        config: { duration: 8000 },
+      });
+      expect(service.isKeepingMessageVisible()).toBeTrue();
+      jasmine.clock().mockDate(new Date(1_008_001));
+      expect(service.isKeepingMessageVisible()).toBeFalse();
+    });
+
+    it('stops being kept once another snack replaces it, or on close', () => {
+      jasmine.clock().mockDate(new Date(1_000_000));
+      service.open({
+        msg: 'Checkpoint taken',
+        isKeptVisible: true,
+        config: { duration: 8000 },
+      });
+      service.open({ msg: 'Something failed', type: 'ERROR' });
+      expect(service.isKeepingMessageVisible()).toBeFalse();
+
+      service.open({
+        msg: 'Checkpoint taken',
+        isKeptVisible: true,
+        config: { duration: 8000 },
+      });
+      service.close();
+      expect(service.isKeepingMessageVisible()).toBeFalse();
+    });
+  });
 });

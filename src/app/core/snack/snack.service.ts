@@ -24,6 +24,8 @@ export class SnackService {
 
   private _ref?: MatSnackBarRef<SnackCustomComponent | SimpleSnackBar>;
   private _hasPendingPersistentAction = false;
+  /** Until when a snack opened with `isKeptVisible` holds back routine feedback (ms since epoch). */
+  private _keptVisibleUntil = 0;
 
   constructor() {
     const _onWorkContextChange$: Observable<unknown> = this._actions$.pipe(
@@ -52,6 +54,10 @@ export class SnackService {
     // value matches the snack it will actually render — including the case
     // where a non-persistent snack supersedes a persistent one.
     this._hasPendingPersistentAction = isPersistentAction;
+    // Any other snack replaces a kept one, so it no longer holds anything back.
+    this._keptVisibleUntil = params.isKeptVisible
+      ? Date.now() + (params.config?.duration ?? DEFAULT_SNACK_CFG.duration)
+      : 0;
     this._openSnack(params);
   }
 
@@ -59,8 +65,14 @@ export class SnackService {
     return this._hasPendingPersistentAction;
   }
 
+  /** True while a snack opened with `isKeptVisible` is still within its duration. */
+  isKeepingMessageVisible(): boolean {
+    return Date.now() < this._keptVisibleUntil;
+  }
+
   close(): void {
     this._hasPendingPersistentAction = false;
+    this._keptVisibleUntil = 0;
     if (this._ref) {
       this._ref.dismiss();
     }
@@ -137,6 +149,7 @@ export class SnackService {
       .subscribe(() => {
         if (this._ref === openedRef) {
           this._hasPendingPersistentAction = false;
+          this._keptVisibleUntil = 0;
         }
       });
 

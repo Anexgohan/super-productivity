@@ -20,4 +20,10 @@ export interface SnackParams {
   isSpinner?: boolean;
   promise?: Promise<unknown>;
   showWhile$?: Observable<unknown>;
+  /**
+   * Routine feedback (the sync button's "synced") does not replace this snack while it shows; checked with
+   * `SnackService.isKeepingMessageVisible()`. For messages the user must get to read, e.g. a checkpoint taken with
+   * unsent edits kept.
+   */
+  isKeptVisible?: boolean;
 }

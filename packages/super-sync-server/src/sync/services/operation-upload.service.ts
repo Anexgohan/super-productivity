@@ -38,6 +38,7 @@ import {
   pruneVectorClockForStorage,
   resolveConflictForExistingOp,
 } from '../conflict';
+import { parsePersistedVectorClock } from './operation-download.service';
 import {
   ALLOWED_ENTITY_TYPES,
   ValidationService,
@@ -210,8 +211,14 @@ export class OperationUploadService {
    * Aggregate the prior vector clock, merge the full-state op's clock into it
    * (max per client) and persist it as the user's latest-full-state marker.
    * Shared by the batch and legacy per-op paths so the aggregate-and-merge
-   * semantics cannot drift between them. Costs 2 DB round trips (the aggregate
-   * scan + the userSyncState update).
+   * semantics cannot drift between them. Costs 3 DB round trips (the aggregate
+   * scan, the previous marker read and the userSyncState update).
+   *
+   * anex: the previous persisted clock is merged in as well. The daily cleanup
+   * deletes history behind the checkpoints (checkpoint-retention.ts), so the
+   * aggregate alone would forget devices only seen there; the previous clock
+   * still holds them. Over a complete history this adds nothing the aggregate
+   * lacks, since clocks only grow; a clean slate resets the marker to null.
    */
   private async persistMergedFullStateClock(
     tx: Prisma.TransactionClient,
@@ -220,9 +227,17 @@ export class OperationUploadService {
     opClock: VectorClock,
   ): Promise<void> {
     const priorAggregate = await this._aggregatePriorVectorClock(tx, userId, serverSeq);
-    const mergedClock: VectorClock = { ...priorAggregate };
-    for (const [clientId, counter] of Object.entries(opClock)) {
-      mergedClock[clientId] = Math.max(mergedClock[clientId] ?? 0, counter);
+    const previousMarker = await tx.userSyncState.findUnique({
+      where: { userId },
+      select: { latestFullStateVectorClock: true },
+    });
+    const mergedClock: VectorClock = {
+      ...(parsePersistedVectorClock(previousMarker?.latestFullStateVectorClock) ?? {}),
+    };
+    for (const clock of [priorAggregate, opClock]) {
+      for (const [clientId, counter] of Object.entries(clock)) {
+        mergedClock[clientId] = Math.max(mergedClock[clientId] ?? 0, counter);
+      }
     }
     await tx.userSyncState.update({
       where: { userId },
