@@ -234,9 +234,9 @@ export class OperationLogHydratorService {
         //   re-runs ONLY the outstanding archive side effects.
         // - rejected ops: every rejection path appends its compensation AFTER
         //   them in seq order, so replay converges to post-resolution runtime
-        //   state — server-rejected local ops are followed by merged ops
-        //   (SupersededOperationResolver) or keep their effect (permanent
-        //   rejections never revert state), and LWW-losing remote ops are
+        //   state — server-rejected local ops keep their effect (permanent
+        //   rejections never revert state; a rejected stale repair is followed
+        //   by its rebased replacement), and LWW-losing remote ops are
         //   followed by the local-win op that overwrites them
         //   (ConflictResolutionService).
         // - reducerRejectedAt ops: conversion, schema migration, or reducer

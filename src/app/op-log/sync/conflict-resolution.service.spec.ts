@@ -8049,7 +8049,7 @@ describe('ConflictResolutionService', () => {
     // The lwwUpdateMetaReducer bails with "Entity data has no id" when an LWW
     // Update payload lacks a top-level id. createLWWUpdateOp is the choke point
     // for two of three LWW Update producers (_createLocalWinUpdateOp and the
-    // superseded-operation-resolver). Both pass the canonical entityId — so the
+    // server-order bring-back saves). Both pass the canonical entityId — so the
     // payload should always carry it, even when entityState was malformed.
 
     it('should backfill payload.id from entityId when entityState lacks id', () => {

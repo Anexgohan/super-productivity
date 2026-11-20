@@ -10,7 +10,7 @@
 import type { UploadResult } from '../sync.types';
 import type { Operation } from '../sync.types';
 import { createHash } from 'node:crypto';
-import { stableJsonStringify } from '../conflict';
+import { stableJsonStringify } from '../stored-operation';
 
 /**
  * Maximum entries in deduplication cache to prevent unbounded memory growth.

@@ -21,7 +21,13 @@ import {
   type ServerOrderedOp,
   type ServerOrderPlan,
 } from '@sp/sync-core';
-import { EntityType, FULL_STATE_OP_TYPES, Operation } from '../core/operation.types';
+import {
+  EntityType,
+  FULL_STATE_OP_TYPES,
+  Operation,
+  OpType,
+} from '../core/operation.types';
+import { bringBackTaskStates } from './server-order-bring-back.util';
 import { OperationLogStoreService } from '../persistence/operation-log-store.service';
 import { OperationLogSnapshotService } from '../persistence/operation-log-snapshot.service';
 import { OperationLogDownloadService } from './operation-log-download.service';
@@ -270,28 +276,39 @@ export class ServerOrderService {
       [(await this.opLogStore.getVectorClock()) ?? {}],
       clientId,
     );
-    const saves: Operation[] = [];
-    for (const [taskId, edits] of editsByTask) {
-      const task = tasks?.entities[taskId];
-      if (!task) continue;
-      const timestamp = Math.max(...edits.map((op) => op.timestamp));
+    const deletedTaskIds = new Set<string>();
+    for (const { op } of downloaded) {
+      if (op.entityType === 'TASK' && op.opType === OpType.Delete) {
+        [op.entityId, ...(op.entityIds ?? [])].forEach(
+          (id) => id && deletedTaskIds.add(id),
+        );
+      }
+    }
+    const lastEditAt = (taskId: string): number =>
+      Math.max(
+        ...(editsByTask.get(taskId) ?? [...editsByTask.values()].flat()).map(
+          (op) => op.timestamp,
+        ),
+      );
+    // Only task saves, no copies of project or parent lists (server-order-bring-back.util.ts).
+    const saves: Operation[] = bringBackTaskStates(
+      editsByTask.keys(),
+      deletedTaskIds,
+      tasks,
+    ).map((task) => {
       const save = resolver.createLWWUpdateOp(
         'TASK' as EntityType,
-        taskId,
+        task.id,
         task,
         clientId,
         clock,
-        timestamp,
+        lastEditAt(task.id),
       );
-      const bringBack: Operation = {
+      return {
         ...save,
         payload: { ...(save.payload as object), recreatesEntityAfterDelete: true },
       } as Operation;
-      saves.push(
-        bringBack,
-        ...(await resolver.createTaskRecreationFollowUpOps(bringBack)),
-      );
-    }
+    });
     if (saves.length === 0) return [];
 
     // The batch rebases each save on the stored clock, so the written ops are the ones to apply and upload.

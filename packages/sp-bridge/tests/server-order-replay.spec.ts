@@ -32,6 +32,8 @@ import {
   type BulkReplayReducerFailure,
 } from '../../../src/app/op-log/apply/bulk-replay-failure-collector';
 import { convertOpToAction } from '../../../src/app/op-log/apply/operation-converter.util';
+import { bringBackTaskStates } from '../../../src/app/op-log/sync/server-order-bring-back.util';
+import type { Task, TaskState } from '../../../src/app/features/tasks/task.model';
 import type { Operation } from '../../../src/app/op-log/core/operation.types';
 import type { PersistentAction } from '../../../src/app/op-log/core/persistent-action.interface';
 
@@ -83,10 +85,47 @@ const rename = (clientId: string, id: string, title: string): Operation =>
     task: { id, changes: { title } },
   });
 
+const addSubTask = (
+  clientId: string,
+  id: string,
+  title: string,
+  parentId: string,
+): Operation =>
+  makeOp(clientId, '[Task] Add SubTask', 'CRT', id, {
+    task: { ...buildTaskEntity({ title, parentId }), id },
+    parentId,
+  });
+
+const deleteTask = (clientId: string, task: Task, subTasks: Task[] = []): Operation => ({
+  ...makeOp(clientId, '[Task Shared] deleteTask', 'DEL', task.id, {
+    task: { ...task, subTasks },
+  }),
+  entityIds: [task.id, ...subTasks.map((sub) => sub.id)],
+});
+
+/** A whole-entity save as ConflictResolutionService.createLWWUpdateOp builds it, marked as bringing the entity back. */
+const lwwSave = (
+  clientId: string,
+  entityType: 'TASK' | 'PROJECT',
+  entity: { id: string },
+  lwwUpdateMode: 'replace' | 'patch' = 'replace',
+): Operation =>
+  ({
+    ...makeOp(clientId, `[${entityType}] LWW Update`, 'UPD', entity.id, {}),
+    entityType,
+    payload: {
+      actionPayload: entity,
+      entityChanges: [],
+      lwwUpdateMode,
+      recreatesEntityAfterDelete: true,
+    },
+  }) as unknown as Operation;
+
 const apply = (state: State | undefined, ops: Operation[], localClientId = A): State =>
   root(state, bulkApplyOperations({ operations: ops, localClientId }));
 
 const tasks = (state: State): Tasks => state.tasks as Tasks;
+const taskState = (state: State): TaskState => state.tasks as TaskState;
 const inboxOrder = (state: State): string[] =>
   (state.projects as { entities: Record<string, { taskIds: string[] }> }).entities
     .INBOX_PROJECT.taskIds;
@@ -146,6 +185,84 @@ describe('server-order replay', () => {
     expect(synced(takeReplayedConfirmedState() as State)).toEqual(
       synced(apply(confirmed, [b1], 'sp-bridge')),
     );
+  });
+
+  it("brings back a task deleted on another browser without dropping that browser's new task", () => {
+    const confirmed = start();
+    const t1 = taskState(confirmed).entities.t1 as Task;
+    // B deleted t1 (10) and added b1 (11); A renamed t1 offline, so its edit lands after the delete.
+    const deleted = deleteTask(B, t1);
+    const b1 = addTask(B, 'b1', 'from B');
+    const edit = rename(A, 't1', 'one, edited by A');
+    const shown = apply(confirmed, [edit]);
+
+    const states = bringBackTaskStates(['t1'], new Set(['t1']), taskState(shown));
+    const saves = states.map((task) => lwwSave(A, 'TASK', task));
+    const after = root(
+      shown,
+      serverOrderReplay({
+        confirmed,
+        ordered: [deleted, b1],
+        onTop: [edit, ...saves],
+        downloadedOpIds: [deleted.id, b1.id],
+        localClientId: A,
+      }),
+    );
+    const bridge = apply(confirmed, [deleted, b1, edit, ...saves], 'sp-bridge');
+
+    expect(inboxOrder(bridge)).toEqual(['b1', 't1']);
+    expect(tasks(bridge).entities.t1.title).toBe('one, edited by A');
+    expect(synced(after)).toEqual(synced(bridge));
+    // Seen on dev 2026-11-20: a copy of the project's list taken before the download dropped b1 everywhere.
+    const listCopy = lwwSave(
+      A,
+      'PROJECT',
+      { id: 'INBOX_PROJECT', taskIds: inboxOrder(shown), backlogTaskIds: [] } as {
+        id: string;
+      },
+      'patch',
+    );
+    expect(inboxOrder(apply(bridge, [listCopy], 'sp-bridge'))).toEqual(['t1']);
+  });
+
+  it('brings back an edited subtask with its deleted parent, and only that subtask', () => {
+    const confirmed = apply(
+      start(),
+      [
+        addTask(B, 'p', 'parent'),
+        addSubTask(B, 's1', 'sub one', 'p'),
+        addSubTask(B, 's2', 'sub two', 'p'),
+      ],
+      B,
+    );
+    const entities = taskState(confirmed).entities;
+    const deleted = deleteTask(B, entities.p as Task, [
+      entities.s1 as Task,
+      entities.s2 as Task,
+    ]);
+    const edit = rename(A, 's1', 'sub one, edited by A');
+    const shown = apply(confirmed, [edit]);
+
+    const states = bringBackTaskStates(
+      ['s1'],
+      new Set(['p', 's1', 's2']),
+      taskState(shown),
+    );
+    expect(states.map((task) => [task.id, task.subTaskIds])).toEqual([
+      ['p', []],
+      ['s1', []],
+    ]);
+    const bridge = apply(
+      confirmed,
+      [deleted, edit, ...states.map((task) => lwwSave(A, 'TASK', task))],
+      'sp-bridge',
+    );
+
+    const after = tasks(bridge).entities as unknown as Record<string, Task>;
+    expect(after.p.subTaskIds).toEqual(['s1']);
+    expect(after.s1.title).toBe('sub one, edited by A');
+    expect(after.s2).toBeUndefined();
+    expect(inboxOrder(bridge)).toEqual(['t1', 'p']);
   });
 
   it('puts an unsent edit on top of a downloaded edit to the same field', () => {

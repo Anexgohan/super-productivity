@@ -29,7 +29,6 @@ import { LockService } from './lock.service';
 import { OperationLogCompactionService } from '../persistence/operation-log-compaction.service';
 import { SyncImportFilterService } from './sync-import-filter.service';
 import { ServerMigrationService } from './server-migration.service';
-import { SupersededOperationResolverService } from './superseded-operation-resolver.service';
 import { RemoteOpsProcessingService } from './remote-ops-processing.service';
 import { ConflictJournalService } from './conflict-journal.service';
 import { RejectedOpsHandlerService } from './rejected-ops-handler.service';
@@ -343,12 +342,6 @@ describe('OperationLogSyncService', () => {
           ]),
         },
         { provide: ServerMigrationService, useValue: serverMigrationServiceSpy },
-        {
-          provide: SupersededOperationResolverService,
-          useValue: jasmine.createSpyObj('SupersededOperationResolverService', [
-            'resolveSupersededLocalOps',
-          ]),
-        },
         { provide: RemoteOpsProcessingService, useValue: remoteOpsProcessingServiceSpy },
         {
           provide: ConflictJournalService,
@@ -4159,9 +4152,6 @@ describe('OperationLogSyncService', () => {
 
   // NOTE: Old _handleServerMigration state validation tests (600+ lines) have been moved to
   // server-migration.service.spec.ts. The OperationLogSyncService now delegates to ServerMigrationService.
-
-  // Tests for _resolveSupersededLocalOps have been moved to superseded-operation-resolver.service.spec.ts
-  // The functionality is now in SupersededOperationResolverService
 
   describe('forceUploadLocalState', () => {
     let uploadServiceSpy: jasmine.SpyObj<OperationLogUploadService>;

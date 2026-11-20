@@ -16,7 +16,6 @@ import { LockService } from './lock.service';
 import { OperationLogCompactionService } from '../persistence/operation-log-compaction.service';
 import { SyncImportFilterService } from './sync-import-filter.service';
 import { ServerMigrationService } from './server-migration.service';
-import { SupersededOperationResolverService } from './superseded-operation-resolver.service';
 import { RemoteOpsProcessingService } from './remote-ops-processing.service';
 import { RejectedOpsHandlerService } from './rejected-ops-handler.service';
 import { OperationWriteFlushService } from './operation-write-flush.service';
@@ -349,12 +348,6 @@ describe('OperationLogSyncService + OperationLogUploadService — piggyback seq 
           provide: SyncImportFilterService,
           useValue: jasmine.createSpyObj('SyncImportFilterService', [
             'filterOpsInvalidatedBySyncImport',
-          ]),
-        },
-        {
-          provide: SupersededOperationResolverService,
-          useValue: jasmine.createSpyObj('SupersededOperationResolverService', [
-            'resolveSupersededLocalOps',
           ]),
         },
         {

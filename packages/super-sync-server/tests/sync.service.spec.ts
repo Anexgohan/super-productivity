@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { uuidv7 } from 'uuidv7';
 import { Prisma } from '@prisma/client';
-import { prefetchLatestEntityOpsForBatch } from '../src/sync/conflict';
 import { testState, resetTestState } from './sync.service.test-state';
 
 // Mock the database module with Prisma mocks
@@ -83,9 +82,7 @@ vi.mock('../src/db', async () => {
       }),
       findFirst: vi.fn().mockImplementation(async (args: any) => {
         // Shape of the full-state author query — counted so tests can pin that it
-        // stays one-per-upload rather than one-per-op. Selecting clientId ALONE is
-        // what separates it from the entity-conflict lookup, which also filters on
-        // OR + orders by serverSeq but selects the whole row.
+        // stays one-per-upload rather than one-per-op.
         if (
           Array.isArray(args.where?.OR) &&
           args.where?.entityType === undefined &&
@@ -137,23 +134,6 @@ vi.mock('../src/db', async () => {
                     alternative,
                   ),
                 ),
-            )
-            .sort((a: any, b: any) => b.serverSeq - a.serverSeq);
-          return applyOperationSelect(ops[0], args.select) || null;
-        }
-        if (args.where?.entityType && Array.isArray(args.where?.OR)) {
-          const targetEntityId =
-            args.where.OR.find((condition: any) => condition.entityId !== undefined)
-              ?.entityId ??
-            args.where.OR.find((condition: any) => condition.entityIds?.has !== undefined)
-              ?.entityIds.has;
-          const ops = Array.from(state.operations.values())
-            .filter(
-              (op: any) =>
-                op.userId === args.where.userId &&
-                op.entityType === args.where.entityType &&
-                (op.entityId === targetEntityId ||
-                  op.entityIds?.includes(targetEntityId)),
             )
             .sort((a: any, b: any) => b.serverSeq - a.serverSeq);
           return applyOperationSelect(ops[0], args.select) || null;
@@ -437,44 +417,6 @@ vi.mock('../src/db', async () => {
         });
         state.serverSeqCounter = Math.max(state.serverSeqCounter, lastSeq);
         return [{ lastSeq }];
-      }
-      if (sql.includes('JOIN (VALUES')) {
-        // Params are [touchedRows (VALUES join), userId, idArray, idArray]: userId
-        // is the only number; the VALUES join is the first Sql fragment, whose
-        // .values hold the flattened (entity_type, entity_id) touched pairs. The
-        // idArray prefilter params (#8334) are not needed by the mock. (Previously
-        // userId was the last param and the join the only fragment.)
-        const txUserId = params.find((p: unknown) => typeof p === 'number') as number;
-        const valuesParam = params.find(
-          (p: unknown) =>
-            !!p &&
-            typeof p === 'object' &&
-            Array.isArray((p as { values?: unknown[] }).values),
-        ) as { values: unknown[] } | undefined;
-        const touchedParams = valuesParam?.values ?? [];
-        const touchedPairs = new Set<string>();
-        for (let i = 0; i < touchedParams.length; i += 2) {
-          touchedPairs.add(`${touchedParams[i]}\u0000${touchedParams[i + 1]}`);
-        }
-
-        const latestByEntity = new Map<string, any>();
-        for (const op of state.operations.values()) {
-          if (op.userId !== txUserId || !op.entityId) continue;
-          const key = `${op.entityType}\u0000${op.entityId}`;
-          if (!touchedPairs.has(key)) continue;
-          const existing = latestByEntity.get(key);
-          if (!existing || op.serverSeq > existing.serverSeq) {
-            latestByEntity.set(key, op);
-          }
-        }
-
-        return Array.from(latestByEntity.values()).map((op: any) => ({
-          entityType: op.entityType,
-          entityId: op.entityId,
-          clientId: op.clientId,
-          vectorClock: op.vectorClock,
-          serverSeq: op.serverSeq,
-        }));
       }
       if (sql.includes('jsonb_each_text(vector_clock)')) {
         const [txUserId, beforeServerSeq] = params;
@@ -1474,24 +1416,6 @@ describe('SyncService', () => {
 
       expect(results.every((result) => result.accepted)).toBe(true);
       expect(testState.operations.size).toBe(2);
-    });
-
-    it('should chunk large batch entity prefetch queries', async () => {
-      const entityPairs = Array.from({ length: 250 }, (_, index) => ({
-        entityType: 'TASK',
-        entityId: `task-${index}`,
-      }));
-      const tx = {
-        $queryRaw: vi.fn().mockResolvedValue([]),
-      };
-
-      await prefetchLatestEntityOpsForBatch(
-        userId,
-        entityPairs,
-        tx as unknown as Prisma.TransactionClient,
-      );
-
-      expect(tx.$queryRaw).toHaveBeenCalledTimes(3);
     });
 
     it('should create user sync state for first-time batch uploads', async () => {

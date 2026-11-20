@@ -63,8 +63,6 @@ export const SYNC_ERROR_CODES = {
   INVALID_CLIENT_ID: 'INVALID_CLIENT_ID',
 
   // Conflict errors (409)
-  CONFLICT_CONCURRENT: 'CONFLICT_CONCURRENT',
-  CONFLICT_SUPERSEDED: 'CONFLICT_SUPERSEDED',
   REPAIR_STALE: 'REPAIR_STALE',
   DUPLICATE_OPERATION: 'DUPLICATE_OPERATION',
 
@@ -82,19 +80,6 @@ export const SYNC_ERROR_CODES = {
 } as const;
 
 export type SyncErrorCode = (typeof SYNC_ERROR_CODES)[keyof typeof SYNC_ERROR_CODES];
-
-export type ConflictType =
-  | 'concurrent'
-  | 'superseded'
-  | 'equal_different_client'
-  | 'unknown';
-
-export interface ConflictResult {
-  hasConflict: boolean;
-  reason?: string;
-  conflictType?: ConflictType;
-  existingClock?: VectorClock;
-}
 
 // Operation types - single source of truth
 export const OP_TYPES = SUPER_SYNC_OP_TYPES;
@@ -243,18 +228,6 @@ export const DUPLICATE_OP_SELECT = {
   repairBaseServerSeq: true,
 } satisfies Prisma.OperationSelect;
 
-export interface LatestEntityOperationRow {
-  entityId: string;
-  clientId: string;
-  actionType: string;
-  vectorClock: unknown;
-  serverSeq?: number;
-}
-
-export interface LatestBatchEntityOperationRow extends LatestEntityOperationRow {
-  entityType: string;
-}
-
 export interface BatchUploadCandidate {
   op: Operation;
   resultIndex: number;
@@ -272,10 +245,6 @@ export interface AcceptedBatchOperation extends BatchUploadCandidate {
   serverSeq: number;
   storageBytes: number;
 }
-
-// Conservative enough to avoid planner-heavy BitmapOr + Sort plans on large
-// histories while still replacing up to 100 per-entity round trips with one query.
-export const CONFLICT_DETECTION_ENTITY_BATCH_SIZE = 100;
 
 export interface ServerOperation {
   serverSeq: number;

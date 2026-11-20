@@ -91,11 +91,15 @@ only for as long as you are the one signed in.
 > change that reaches the server last wins, and the server no longer refuses a
 > save because another device changed the same item. One exception keeps typed
 > work: an edit that lands on a task another device deleted first is sent again
-> as a save that brings the task back with the edit. A browser that does not
-> know the confirmed state (after a reload, or when another tab saved) rebuilds
-> it from the newest checkpoint and the changes after it; going back does not
+> as a save that brings the task back with the edit, at the end of its list. A
+> browser that does not know the confirmed state (after a reload, or when
+> another tab saved) rebuilds it from the newest checkpoint and the changes
+> after it; going back does not
 > undo archive writes, so archiving in one browser while editing in another can
-> differ until the next checkpoint.
+> differ until the next checkpoint. The file-based sync options (WebDAV, Dropbox,
+> Nextcloud, OneDrive, local file) have no server order, so they still merge by
+> upstream's clock and timestamp rules with its conflict dialogs; that code stays
+> for them.
 
 **Preferences follow the account, not the browser profile.** Upstream keeps
 things like theme, dark mode, sort order, and which lists are collapsed in

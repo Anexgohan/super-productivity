@@ -129,8 +129,8 @@ export interface UploadResult {
   localWinOpsCreated?: number;
   /**
    * Number of operations that were permanently rejected (validation errors, etc.).
-   * Transient errors (INTERNAL_ERROR) and resolved conflicts (CONFLICT_CONCURRENT)
-   * are NOT counted here. Only operations that will never sync successfully.
+   * Transient errors (INTERNAL_ERROR) and duplicates are NOT counted here.
+   * Only operations that will never sync successfully.
    * Set by OperationLogSyncService.uploadPendingOps from RejectedOpsHandlerService.
    */
   permanentRejectionCount?: number;

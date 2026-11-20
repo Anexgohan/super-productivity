@@ -27,7 +27,7 @@ import {
   isSameDuplicateOperation,
   isSameIncomingOperation,
   pruneVectorClockForStorage,
-} from '../conflict';
+} from '../stored-operation';
 import { parsePersistedVectorClock } from './operation-download.service';
 import {
   ALLOWED_ENTITY_TYPES,
@@ -319,7 +319,7 @@ export class OperationUploadService {
     let dbRoundtrips = 0;
 
     // Pipeline: validate+clamp -> intra-batch dedupe -> classify existing
-    // duplicates -> conflict-detect -> reserve seq + insert -> full-state
+    // duplicates -> reserve seq + insert -> full-state
     // clock. Each stage writes terminal rejections into `results` by index
     // and passes the surviving candidates forward; the two empty-set guards
     // short-circuit exactly as the original single function did.
@@ -466,7 +466,7 @@ export class OperationUploadService {
    * an id collision with different content (INVALID_OP_ID). If quota cleanup
    * removed a row after the route's occupancy check, the request-start set
    * still rejects that ID rather than letting it consume unestimated storage.
-   * Survivors are returned for conflict detection.
+   * Survivors are returned for storage.
    */
   private async classifyExistingDuplicates(
     userId: number,
@@ -616,8 +616,7 @@ export class OperationUploadService {
         opType: candidate.op.opType,
         entityType: candidate.op.entityType,
         entityId: candidate.op.entityId ?? null,
-        // Persist the full entity set for multi-entity ops so conflict detection
-        // can match a write to any touched entity across uploads, not just
+        // Persist the full entity set for multi-entity ops, not just
         // entityIds[0]; single-entity ops store [] and use the scalar (#8334).
         entityIds: getStoredEntityIds(candidate.op),
         payload: candidate.op.payload as Prisma.InputJsonValue,
@@ -666,7 +665,7 @@ export class OperationUploadService {
 
   /**
    * Process a single operation within a transaction.
-   * Handles validation, conflict detection, and persistence.
+   * Handles validation, the duplicate check, and persistence.
    */
   async processOperation(
     userId: number,
@@ -736,9 +735,8 @@ export class OperationUploadService {
       ? { ...op.vectorClock }
       : undefined;
 
-    // Check for duplicate operation before conflict checks and sequence allocation.
-    // This avoids expensive conflict work on retries and prevents rejected duplicates
-    // from advancing lastSeq.
+    // Check for a duplicate operation before sequence allocation, so rejected
+    // duplicates do not advance lastSeq.
     const existingOp = await tx.operation.findUnique({
       where: { id: op.id },
       select: DUPLICATE_OP_SELECT,
@@ -797,13 +795,7 @@ export class OperationUploadService {
     });
     const serverSeq = updatedState.lastSeq;
 
-    // Prune vector clock AFTER conflict detection but BEFORE storage.
-    // Moved from ValidationService to here so that the full (unpruned) clock is used
-    // for conflict comparison. This prevents false CONCURRENT results when the client
-    // builds a merged clock with MAX+1 entries during conflict resolution (all entity
-    // clock IDs + its own client ID). Pruning before comparison would drop an entity
-    // clock ID, causing the comparison to return CONCURRENT instead of GREATER_THAN,
-    // leading to an infinite rejection loop.
+    // Prune the vector clock just before storage.
     const beforeSize = Object.keys(op.vectorClock).length;
     // Note this op's own authorship first: a causal full-state op is its own
     // active author, so the memo answers without a query (and later ops in the
@@ -837,8 +829,7 @@ export class OperationUploadService {
           opType: op.opType,
           entityType: op.entityType,
           entityId: op.entityId ?? null,
-          // Persist the full entity set for multi-entity ops so conflict detection
-          // can match a write to any touched entity across uploads, not just
+          // Persist the full entity set for multi-entity ops, not just
           // entityIds[0]; single-entity ops store [] and use the scalar (#8334).
           entityIds: getStoredEntityIds(op),
           payload: op.payload as Prisma.InputJsonValue,

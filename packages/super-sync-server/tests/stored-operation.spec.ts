@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  getConflictEntityIds,
+  getStoredEntityIds,
   isSameDuplicateOperation,
   isSameIncomingOperation,
   isSameDuplicateTimestamp,
   pruneVectorClockForStorage,
-  resolveConflictForExistingOp,
   stableJsonStringify,
-} from '../src/sync/conflict';
+} from '../src/sync/stored-operation';
 import {
   DuplicateOperationCandidate,
   MAX_VECTOR_CLOCK_SIZE,
@@ -50,7 +49,7 @@ const duplicateCandidate = (
   ...overrides,
 });
 
-describe('conflict helpers', () => {
+describe('stored-operation helpers', () => {
   it('matches causal REPAIR retries with the same base cursor', () => {
     const repair = op({
       opType: 'REPAIR',
@@ -68,42 +67,6 @@ describe('conflict helpers', () => {
       ),
     ).toBe(true);
   });
-
-  it('includes a divergent scalar entityId in the incoming conflict set', () => {
-    expect(
-      getConflictEntityIds(op({ entityId: 'task-scalar', entityIds: ['task-array'] })),
-    ).toEqual(['task-scalar', 'task-array']);
-  });
-
-  it.each([false, true])(
-    'aliases legacy misc config writes to tasks when encrypted=%s',
-    (isPayloadEncrypted) => {
-      expect(
-        getConflictEntityIds(
-          op({
-            entityType: 'GLOBAL_CONFIG',
-            entityId: 'misc',
-            schemaVersion: 1,
-            isPayloadEncrypted,
-          }),
-        ),
-      ).toEqual(['misc', 'tasks']);
-    },
-  );
-
-  it.each([2, 3, 4])(
-    'does NOT alias a post-split (v%i) misc write to tasks',
-    (schemaVersion) => {
-      // The misc→tasks split was the v1→v2 migration; v2+ misc writes touch only
-      // misc. The legacy boundary must stay fixed at v2 so schema bumps do not
-      // fabricate conflicts between disjoint settings (regression: v3→v4 bump).
-      expect(
-        getConflictEntityIds(
-          op({ entityType: 'GLOBAL_CONFIG', entityId: 'misc', schemaVersion }),
-        ),
-      ).toEqual(['misc']);
-    },
-  );
 
   it('accepts matching duplicate operations regardless of JSON key order', () => {
     const incoming = op({
@@ -238,69 +201,6 @@ describe('conflict helpers', () => {
     );
   });
 
-  it('classifies concurrent vector clocks as conflicts', () => {
-    const result = resolveConflictForExistingOp(
-      op({ vectorClock: { 'client-a': 1 } }),
-      'task-1',
-      { clientId: 'client-b', vectorClock: { 'client-b': 1 } },
-    );
-
-    expect(result).toMatchObject({
-      hasConflict: true,
-      conflictType: 'concurrent',
-      existingClock: { 'client-b': 1 },
-    });
-  });
-
-  it('accepts concurrent additive task-time deltas for the same task', () => {
-    const result = resolveConflictForExistingOp(
-      op({
-        actionType: '[TimeTracking] Sync time spent',
-        vectorClock: { 'client-a': 1 },
-      }),
-      'task-1',
-      {
-        actionType: '[TimeTracking] Sync time spent',
-        clientId: 'client-b',
-        vectorClock: { 'client-b': 1 },
-      },
-    );
-
-    expect(result).toEqual({ hasConflict: false });
-  });
-
-  it('still rejects a causally stale additive task-time delta', () => {
-    const result = resolveConflictForExistingOp(
-      op({
-        actionType: '[TimeTracking] Sync time spent',
-        vectorClock: { 'client-a': 1 },
-      }),
-      'task-1',
-      {
-        actionType: '[TimeTracking] Sync time spent',
-        clientId: 'client-a',
-        vectorClock: { 'client-a': 2 },
-      },
-    );
-
-    expect(result.hasConflict).toBe(true);
-    expect(result.conflictType).toBe('superseded');
-  });
-
-  it('classifies less-than vector clocks as superseded', () => {
-    const result = resolveConflictForExistingOp(
-      op({ vectorClock: { 'client-a': 1 } }),
-      'task-1',
-      { clientId: 'client-a', vectorClock: { 'client-a': 2 } },
-    );
-
-    expect(result).toMatchObject({
-      hasConflict: true,
-      conflictType: 'superseded',
-      existingClock: { 'client-a': 2 },
-    });
-  });
-
   it('stable-stringifies object keys recursively', () => {
     expect(stableJsonStringify({ z: 1, a: { b: 2, a: 1 } })).toBe(
       '{"a":{"a":1,"b":2},"z":1}',
@@ -341,5 +241,34 @@ describe('conflict helpers', () => {
     expect(Object.keys(incoming.vectorClock)).toHaveLength(MAX_VECTOR_CLOCK_SIZE);
     expect(incoming.vectorClock[fullStateAuthor]).toBe(1);
     expect(incoming.vectorClock['upload-client']).toBe(2);
+  });
+});
+
+describe('#8334 getStoredEntityIds', () => {
+  const op = (over: Partial<Operation>): Operation => over as unknown as Operation;
+
+  it('stores [] for a single-entity op (covered by the scalar)', () => {
+    expect(getStoredEntityIds(op({ entityId: 'task-1' }))).toEqual([]);
+    expect(getStoredEntityIds(op({ entityId: 'task-1', entityIds: ['task-1'] }))).toEqual(
+      [],
+    );
+  });
+
+  it('stores the full set for a multi-entity op', () => {
+    expect(
+      getStoredEntityIds(op({ entityId: 'task-1', entityIds: ['task-1', 'task-2'] })),
+    ).toEqual(['task-1', 'task-2']);
+  });
+
+  it('stores [] for an entity-less op', () => {
+    expect(getStoredEntityIds(op({}))).toEqual([]);
+  });
+
+  it('stores the id when a batch op dedups to one value that differs from entityId', () => {
+    // The server does not enforce entityId === entityIds[0]; without this the
+    // stored row would lose that entity (#8334).
+    expect(
+      getStoredEntityIds(op({ entityId: 'task-Z', entityIds: ['task-A', 'task-A'] })),
+    ).toEqual(['task-A']);
   });
 });

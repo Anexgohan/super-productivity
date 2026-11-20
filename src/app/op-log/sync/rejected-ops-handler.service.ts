@@ -1,17 +1,12 @@
 import { inject, Injectable } from '@angular/core';
 import { OperationLogStoreService } from '../persistence/operation-log-store.service';
-import { Operation, OpType, RepairSummary, VectorClock } from '../core/operation.types';
+import { OpType, RepairSummary } from '../core/operation.types';
 import { OpLog } from '../../core/log';
 import { SnackService } from '../../core/snack/snack.service';
 import { T } from '../../t.const';
-import { SupersededOperationResolverService } from './superseded-operation-resolver.service';
 import { DownloadCallback, RejectedOpInfo } from '../core/types/sync-results.types';
 import { handleStorageQuotaError } from './sync-error-utils';
-import {
-  MAX_CONCURRENT_RESOLUTION_ATTEMPTS,
-  REPAIR_STALE_ERROR_CODE,
-} from '../core/operation-log.const';
-import { toEntityKey } from '../util/entity-key.util';
+import { REPAIR_STALE_ERROR_CODE } from '../core/operation-log.const';
 import { RepairOperationService } from '../validation/repair-operation.service';
 
 const REPAIR_SUMMARY_KEYS: readonly (keyof RepairSummary)[] = [
@@ -60,7 +55,7 @@ export type {
 export type RejectionHandlingResult =
   | {
       kind: 'completed';
-      /** Number of merged ops created from conflict resolution (these need to be uploaded) */
+      /** Number of replacement ops created (rebased repairs; these need to be uploaded) */
       mergedOpsCreated: number;
       /** Number of operations that were permanently rejected (validation errors, etc.) */
       permanentRejectionCount: number;
@@ -70,24 +65,16 @@ export type RejectionHandlingResult =
       kind: 'cancelled';
     };
 
-type ConcurrentResolutionResult =
-  | {
-      kind: 'completed';
-      mergedOpsCreated: number;
-      retryExceededCount: number;
-    }
-  | {
-      kind: 'cancelled';
-    };
-
 /**
  * Handles operations that were rejected by the server during upload.
  *
  * Responsibilities:
- * - Categorizing rejections (permanent vs concurrent modification)
+ * - Categorizing rejections (transient, duplicate, stale repair, permanent)
  * - Marking permanent rejections as rejected
- * - Resolving concurrent modifications by downloading and merging clocks
- * - Creating merged operations for superseded local ops
+ * - Rebasing a repair that was based on a stale server cursor
+ *
+ * anex fork, Stage 9: the server stores every valid op in arrival order and no longer refuses saves as conflicts, so
+ * the merge-and-retry for CONFLICT_* rejections was removed; such a code would now be a permanent rejection.
  *
  * This service is used by OperationLogSyncService after upload to handle
  * any operations that the server rejected.
@@ -98,46 +85,22 @@ type ConcurrentResolutionResult =
 export class RejectedOpsHandlerService {
   private opLogStore = inject(OperationLogStoreService);
   private snackService = inject(SnackService);
-  private supersededOperationResolver = inject(SupersededOperationResolverService);
   private repairOperationService = inject(RepairOperationService);
-
-  /**
-   * Tracks resolution attempts per entity key (entityType:entityId) to prevent infinite loops.
-   * When the same entity keeps getting rejected after concurrent modification resolution
-   * (e.g., due to vector clock pruning making domination impossible), this counter detects
-   * the loop and marks ops as permanently rejected after MAX_CONCURRENT_RESOLUTION_ATTEMPTS.
-   * Cleared when a sync cycle has no rejections (healthy state).
-   */
-  private _resolutionAttemptsByEntity = new Map<string, number>();
 
   /**
    * Handles operations that were rejected by the server.
    *
-   * This is called AFTER processing piggybacked ops to ensure that:
-   * 1. Conflicts are detected properly (local ops still in pending list)
-   * 2. User has had a chance to resolve conflicts via the dialog
-   * 3. Only ops that weren't resolved via conflict dialog get marked rejected
-   *
-   * Special handling for CONCURRENT MODIFICATION rejections:
-   * - These indicate the server has a conflicting operation from another client
-   * - We try to download any new ops first
-   * - If download returns new ops, conflict detection happens automatically
-   * - If download returns nothing (we already have the conflicting ops), we:
-   *   1. Mark the old pending ops as rejected
-   *   2. Create NEW ops with current state and merged vector clocks
-   *   3. The new ops will be uploaded on next sync cycle
+   * This is called AFTER processing piggybacked ops, so ops those already settled are skipped.
    *
    * @param rejectedOps - Operations rejected by the server with error messages
-   * @param downloadCallback - Callback to trigger download for concurrent modification resolution
-   * @returns Result with merged ops count and permanent rejection count
+   * @param downloadCallback - Callback to download the server suffix before rebasing a stale repair
+   * @returns Result with replacement ops count and permanent rejection count
    */
   async handleRejectedOps(
     rejectedOps: RejectedOpInfo[],
     downloadCallback?: DownloadCallback,
   ): Promise<RejectionHandlingResult> {
     if (rejectedOps.length === 0) {
-      // No rejections = sync is healthy, reset resolution attempt counters
-      this._resolutionAttemptsByEntity.clear();
       return {
         kind: 'completed',
         mergedOpsCreated: 0,
@@ -147,13 +110,6 @@ export class RejectedOpsHandlerService {
 
     let mergedOpsCreated = 0;
 
-    // Separate concurrent modification rejections from permanent failures
-    // For concurrent mods, we collect the full operation and existingClock for later processing
-    const concurrentModificationOps: Array<{
-      opId: string;
-      op: Operation;
-      existingClock?: VectorClock;
-    }> = [];
     const permanentlyRejectedOps: string[] = [];
     const staleRepairOps: Array<{
       opId: string;
@@ -207,7 +163,7 @@ export class RejectedOpsHandlerService {
       // Skip if:
       // - Op doesn't exist (was somehow removed)
       // - Op is already synced (was accepted after all)
-      // - Op is already rejected (conflict resolution already handled it)
+      // - Op is already rejected
       if (!entry || entry.syncedAt || entry.rejectedAt) {
         continue;
       }
@@ -239,33 +195,10 @@ export class RejectedOpsHandlerService {
         continue;
       }
 
-      // Check if this is a conflict that needs resolution via merge
-      // These happen when another client uploaded a conflicting operation.
-      // Use errorCode for reliable detection (string matching is fragile).
-      // FIX: Also handle CONFLICT_SUPERSEDED the same as CONFLICT_CONCURRENT.
-      // CONFLICT_SUPERSEDED occurs when operations have incomplete vector clocks
-      // (e.g., due to superseded clock bug) and should be resolved via merge, not rejected.
-      const needsConflictResolution =
-        rejected.errorCode === 'CONFLICT_CONCURRENT' ||
-        rejected.errorCode === 'CONFLICT_SUPERSEDED' ||
-        rejected.errorCode === 'CONFLICT_STALE'; // TODO: remove after all servers are updated
-
-      if (needsConflictResolution) {
-        concurrentModificationOps.push({
-          opId: rejected.opId,
-          op: entry.op,
-          existingClock: rejected.existingClock,
-        });
-        OpLog.normal(
-          `RejectedOpsHandlerService: Concurrent modification for ${entry.op.entityType}:${entry.op.entityId}, ` +
-            `will resolve after download check`,
-        );
-      } else {
-        permanentlyRejectedOps.push(rejected.opId);
-        OpLog.normal(
-          `RejectedOpsHandlerService: Marking op ${rejected.opId} as rejected: ${rejected.error || 'unknown error'}`,
-        );
-      }
+      permanentlyRejectedOps.push(rejected.opId);
+      OpLog.normal(
+        `RejectedOpsHandlerService: Marking op ${rejected.opId} as rejected: ${rejected.error || 'unknown error'}`,
+      );
     }
 
     // Mark permanent rejections (validation errors, etc.) as rejected
@@ -310,301 +243,10 @@ export class RejectedOpsHandlerService {
       mergedOpsCreated += staleRepairOps.length;
     }
 
-    // For concurrent modifications: try download first, then resolve locally if needed
-    let retryExceededCount = 0;
-    if (concurrentModificationOps.length > 0 && downloadCallback) {
-      const result = await this._resolveConcurrentModifications(
-        concurrentModificationOps,
-        downloadCallback,
-      );
-      if (result.kind === 'cancelled') {
-        return result;
-      }
-      mergedOpsCreated += result.mergedOpsCreated;
-      retryExceededCount = result.retryExceededCount;
-    }
-
     return {
       kind: 'completed',
       mergedOpsCreated,
-      permanentRejectionCount: permanentlyRejectedOps.length + retryExceededCount,
+      permanentRejectionCount: permanentlyRejectedOps.length,
     };
-  }
-
-  /**
-   * Resolves concurrent modification rejections by downloading and merging.
-   */
-  private async _resolveConcurrentModifications(
-    concurrentModificationOps: Array<{
-      opId: string;
-      op: Operation;
-      existingClock?: VectorClock;
-    }>,
-    downloadCallback: DownloadCallback,
-  ): Promise<ConcurrentResolutionResult> {
-    let mergedOpsCreated = 0;
-
-    // Check resolution attempt counts per entity to prevent infinite loops.
-    // When vector clock pruning makes it impossible to create a dominating clock,
-    // the cycle "upload → reject → merge → upload → reject" repeats forever.
-    // After MAX_CONCURRENT_RESOLUTION_ATTEMPTS, we give up and reject permanently.
-    const opsToResolve: Array<{
-      opId: string;
-      op: Operation;
-      existingClock?: VectorClock;
-    }> = [];
-    const opsExceededRetries: Array<{
-      opId: string;
-      op: Operation;
-      existingClock?: VectorClock;
-    }> = [];
-
-    // Increment once per unique entity in this batch, not once per op.
-    // Without dedup, 4 ops for the same entity would burn 4 attempts in one cycle.
-    const entityKeysInBatch = new Set<string>();
-    for (const item of concurrentModificationOps) {
-      const entityKey = this._getEntityKey(item.op);
-      if (!entityKeysInBatch.has(entityKey)) {
-        entityKeysInBatch.add(entityKey);
-        const attempts = (this._resolutionAttemptsByEntity.get(entityKey) ?? 0) + 1;
-        this._resolutionAttemptsByEntity.set(entityKey, attempts);
-      }
-    }
-
-    // Classify each op based on its entity's attempt count
-    for (const item of concurrentModificationOps) {
-      const entityKey = this._getEntityKey(item.op);
-      const attempts = this._resolutionAttemptsByEntity.get(entityKey) ?? 0;
-      if (attempts > MAX_CONCURRENT_RESOLUTION_ATTEMPTS) {
-        opsExceededRetries.push(item);
-      } else {
-        opsToResolve.push(item);
-      }
-    }
-
-    // Mark exceeded-limit ops as permanently rejected before downloading. Keeping
-    // them pending would let conflict resolution replace them with fresh ops and
-    // silently reset the per-entity retry budget.
-    if (opsExceededRetries.length > 0) {
-      OpLog.err(
-        `RejectedOpsHandlerService: ${opsExceededRetries.length} ops exceeded max concurrent resolution attempts ` +
-          `(${MAX_CONCURRENT_RESOLUTION_ATTEMPTS}). Marking as permanently rejected to break sync loop.`,
-      );
-      const exceededOpIds = opsExceededRetries.map(({ opId }) => opId);
-      await this.opLogStore.markRejected(exceededOpIds);
-      this.snackService.open({
-        type: 'ERROR',
-        msg: T.F.SYNC.S.CONFLICT_RESOLUTION_FAILED,
-      });
-      for (const item of opsExceededRetries) {
-        this._resolutionAttemptsByEntity.delete(this._getEntityKey(item.op));
-      }
-    }
-
-    if (opsToResolve.length === 0) {
-      return {
-        kind: 'completed',
-        mergedOpsCreated: 0,
-        retryExceededCount: opsExceededRetries.length,
-      };
-    }
-
-    OpLog.normal(
-      `RejectedOpsHandlerService: ${opsToResolve.length} ops had concurrent modifications. ` +
-        `Triggering download to check for new remote ops...`,
-    );
-
-    try {
-      // Try to download new remote ops - if there are any, conflict detection will handle them.
-      // Validation failure (if any during the nested download) is on the
-      // session-validation latch — wrapper reads it. (#7330)
-      const downloadResult = await downloadCallback();
-      if (downloadResult.kind === 'cancelled') {
-        this._rollbackResolutionAttempts(opsToResolve);
-        return { kind: 'cancelled' };
-      }
-
-      // Helper to check which ops are still pending, preserving existingClock from rejection
-      const getStillPendingOps = async (): Promise<
-        Array<{ opId: string; op: Operation; existingClock?: VectorClock }>
-      > => {
-        const pending: Array<{
-          opId: string;
-          op: Operation;
-          existingClock?: VectorClock;
-        }> = [];
-        for (const { opId, op, existingClock } of opsToResolve) {
-          const entry = await this.opLogStore.getOpById(opId);
-          if (entry && !entry.syncedAt && !entry.rejectedAt) {
-            pending.push({ opId, op, existingClock });
-          }
-        }
-        return pending;
-      };
-
-      // Helper to extract entity clocks from still-pending ops for merging
-      const extractEntityClocks = (
-        ops: Array<{ existingClock?: VectorClock }>,
-      ): VectorClock[] => {
-        return ops
-          .map((item) => item.existingClock)
-          .filter((clock): clock is VectorClock => clock !== undefined);
-      };
-
-      // If download got new ops, conflict detection already happened in _processRemoteOps
-      // If download got nothing (newOpsCount === 0), we need to resolve locally
-      if (downloadResult.newOpsCount === 0) {
-        const stillPendingOps = await getStillPendingOps();
-
-        if (stillPendingOps.length > 0) {
-          // Normal download returned 0 ops but concurrent ops still pending.
-          // This means our local clock is likely missing entries the server has.
-          // Try a FORCE download from seq 0 to get ALL op clocks.
-          OpLog.normal(
-            `RejectedOpsHandlerService: Download returned no new ops but ${stillPendingOps.length} ` +
-              `concurrent ops still pending. Forcing full download from seq 0...`,
-          );
-
-          const forceDownloadResult = await downloadCallback({ forceFromSeq0: true });
-          if (forceDownloadResult.kind === 'cancelled') {
-            this._rollbackResolutionAttempts(opsToResolve);
-            return { kind: 'cancelled' };
-          }
-
-          // Use the clocks from force download to resolve superseded ops
-          // Also merge in entity clocks from server rejection responses
-          const entityClocks = extractEntityClocks(stillPendingOps);
-          if (
-            forceDownloadResult.allOpClocks &&
-            forceDownloadResult.allOpClocks.length > 0
-          ) {
-            const allExtraClocks = [...forceDownloadResult.allOpClocks, ...entityClocks];
-            OpLog.normal(
-              `RejectedOpsHandlerService: Got ${forceDownloadResult.allOpClocks.length} clocks from force download` +
-                (entityClocks.length > 0
-                  ? ` + ${entityClocks.length} entity clocks from rejection`
-                  : ''),
-            );
-            mergedOpsCreated +=
-              await this.supersededOperationResolver.resolveSupersededLocalOps(
-                stillPendingOps,
-                allExtraClocks,
-                forceDownloadResult.snapshotVectorClock,
-              );
-          } else if (forceDownloadResult.snapshotVectorClock || entityClocks.length > 0) {
-            // Force download returned no individual clocks but we have snapshot clock or entity clocks
-            OpLog.normal(
-              `RejectedOpsHandlerService: Using ${forceDownloadResult.snapshotVectorClock ? 'snapshotVectorClock' : ''}` +
-                `${forceDownloadResult.snapshotVectorClock && entityClocks.length > 0 ? ' + ' : ''}` +
-                `${entityClocks.length > 0 ? `${entityClocks.length} entity clocks from rejection` : ''}`,
-            );
-            mergedOpsCreated +=
-              await this.supersededOperationResolver.resolveSupersededLocalOps(
-                stillPendingOps,
-                entityClocks.length > 0 ? entityClocks : undefined,
-                forceDownloadResult.snapshotVectorClock,
-              );
-          } else {
-            // Force download returned no clocks but we have concurrent ops.
-            // This is an unrecoverable edge case - cannot safely resolve without server clocks.
-            // Mark ops as rejected to prevent infinite retry loop.
-            OpLog.err(
-              `RejectedOpsHandlerService: Force download returned no clocks. ` +
-                `Cannot safely resolve ${stillPendingOps.length} concurrent ops. Marking as rejected.`,
-            );
-            for (const { opId } of stillPendingOps) {
-              await this.opLogStore.markRejected([opId]);
-            }
-            this.snackService.open({
-              type: 'ERROR',
-              msg: T.F.SYNC.S.CONFLICT_RESOLUTION_FAILED,
-            });
-          }
-        }
-      } else {
-        // Download got new ops - check if our pending ops were resolved by conflict detection
-        const stillPendingOps = await getStillPendingOps();
-
-        if (stillPendingOps.length > 0) {
-          // Ops still pending after download - conflict detection didn't resolve them
-          // This can happen if downloaded ops were for different entities
-          // Merge entity clocks from rejection responses into extraClocks
-          const entityClocks = extractEntityClocks(stillPendingOps);
-          OpLog.normal(
-            `RejectedOpsHandlerService: Download got ${downloadResult.newOpsCount} ops but ${stillPendingOps.length} ` +
-              `concurrent ops still pending. Resolving locally with merged clocks...` +
-              (entityClocks.length > 0
-                ? ` (including ${entityClocks.length} entity clocks from rejection)`
-                : ''),
-          );
-          mergedOpsCreated +=
-            await this.supersededOperationResolver.resolveSupersededLocalOps(
-              stillPendingOps,
-              entityClocks.length > 0 ? entityClocks : undefined,
-              downloadResult.snapshotVectorClock,
-            );
-        }
-      }
-    } catch (e) {
-      OpLog.err(
-        'RejectedOpsHandlerService: Failed to download after concurrent modification detection',
-        e,
-      );
-      // Do NOT markRejected here: a transient download failure (network blip,
-      // partial download) would otherwise permanently drop the user's pending
-      // edit, since rejectedAt is terminal and a rejected op never re-enters
-      // getUnsynced(). Leave the ops pending and re-throw — they re-resolve on
-      // the next sync. (#8331)
-      //
-      // Roll back this cycle's resolution-attempt increment too: a thrown
-      // download yielded no progress information, so it must not consume the
-      // per-entity cap (which would eventually markRejected via the exceeded
-      // branch above — re-introducing the same data loss). The cap still bounds
-      // GENUINE non-progress loops, where the download SUCCEEDS but resolution
-      // can't dominate — that path never reaches this catch.
-      //
-      // shortcut: a *persistently* failing download (vs. a blip) therefore
-      // retries every sync indefinitely instead of giving up — correct for data
-      // safety (never silently drop the edit), but a permanently broken endpoint
-      // keeps re-downloading. Upgrade path if that becomes a problem: a separate
-      // transient-failure budget via markFailed() (retryable, NOT terminal) with
-      // backoff — never markRejected().
-      this._rollbackResolutionAttempts(opsToResolve);
-      throw e;
-    }
-
-    return {
-      kind: 'completed',
-      mergedOpsCreated,
-      retryExceededCount: opsExceededRetries.length,
-    };
-  }
-
-  private _rollbackResolutionAttempts(ops: ReadonlyArray<{ op: Operation }>): void {
-    const rolledBack = new Set<string>();
-    for (const { op } of ops) {
-      const entityKey = this._getEntityKey(op);
-      if (rolledBack.has(entityKey)) {
-        continue;
-      }
-      rolledBack.add(entityKey);
-      const attempts = this._resolutionAttemptsByEntity.get(entityKey) ?? 0;
-      if (attempts > 0) {
-        this._resolutionAttemptsByEntity.set(entityKey, attempts - 1);
-      }
-    }
-  }
-
-  private _getEntityKey(op: Operation): string {
-    const entityId = op.entityId || op.entityIds?.[0];
-    if (!entityId) {
-      OpLog.warn(
-        '[RejectedOpsHandler] Operation has no entityId/entityIds, using wildcard key',
-        op.actionType,
-        op.entityType,
-      );
-      return toEntityKey(op.entityType, '*');
-    }
-    return toEntityKey(op.entityType, entityId);
   }
 }

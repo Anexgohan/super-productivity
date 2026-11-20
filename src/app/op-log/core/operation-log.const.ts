@@ -21,7 +21,6 @@ import { InjectionToken } from '@angular/core';
  * | Retention window | 7 days | COMPACTION_RETENTION_MS | Normal compaction |
  * | Emergency retention | 1 day | EMERGENCY_COMPACTION_RETENTION_MS | When quota exceeded |
  * | Clock drift warning | 5 min | CLOCK_DRIFT_THRESHOLD_MS | Warns user once per session |
- * | Max concurrent resolution | 3 | MAX_CONCURRENT_RESOLUTION_ATTEMPTS | Prevents infinite merge loop |
  * | Post-sync cooldown | 2s | POST_SYNC_COOLDOWN_MS | Suppresses selector effects |
  *
  * ## Known Scalability Notes
@@ -237,16 +236,6 @@ export const MIN_CLIENT_ID_LENGTH = 5;
  * Default: 3
  */
 export const MAX_LWW_REUPLOAD_RETRIES = 3;
-
-/**
- * Maximum consecutive resolution attempts for the same entity in concurrent modification handling.
- * When the server keeps rejecting merged ops for the same entity (e.g., due to vector clock
- * pruning making it impossible to create a dominating clock), this limit prevents an infinite
- * loop of: upload → reject → merge clocks → upload → reject → ...
- * After this many attempts, the ops are marked as permanently rejected.
- * Default: 3
- */
-export const MAX_CONCURRENT_RESOLUTION_ATTEMPTS = 3;
 
 /**
  * Duration in milliseconds to suppress selector-based effects after sync completes.

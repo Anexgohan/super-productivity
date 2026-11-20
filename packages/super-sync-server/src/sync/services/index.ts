@@ -4,7 +4,7 @@
  * These services were extracted from the monolithic SyncService
  * for better separation of concerns and testability.
  *
- * OperationUploadService owns upload validation, conflict checks, sequence
+ * OperationUploadService owns upload validation, duplicate checks, sequence
  * reservation, and operation persistence inside the SyncService transaction.
  * SnapshotGenerationService owns snapshot replay/generation transactions while
  * SnapshotService keeps cache access and per-user generation locks.

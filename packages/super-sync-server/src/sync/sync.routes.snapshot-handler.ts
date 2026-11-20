@@ -12,7 +12,7 @@ import {
   SYNC_ERROR_CODES,
   UploadResult,
 } from './sync.types';
-import { isSameIncomingOperation } from './conflict';
+import { isSameIncomingOperation } from './stored-operation';
 import {
   isSingleTokenGzipEncoding,
   parseCompressedJsonBody,
