@@ -250,6 +250,94 @@ describe('planLwwConflictResolutions', () => {
     ]);
   });
 
+  describe('localEditWinsOverRemoteDelete (anex Stage 8)', () => {
+    const olderLocalEdit = (): Operation =>
+      createOp({ id: 'local-update', timestamp: 1_000 });
+    const newerRemoteDelete = (): Operation =>
+      createOp({ id: 'remote-delete', opType: OpType.Delete, timestamp: 2_000 });
+
+    it('lets an older local edit beat a newer remote delete when the host asks', () => {
+      const conflict = createConflict([olderLocalEdit()], [newerRemoteDelete()]);
+
+      expect(
+        planLwwConflictResolutions([conflict], {
+          isArchiveAction,
+          localEditWinsOverRemoteDelete: () => true,
+        }),
+      ).toEqual([
+        {
+          conflict,
+          winner: 'local',
+          reason: 'local-edit-over-delete',
+          localWinOperationKind: 'update',
+        },
+      ]);
+    });
+
+    it('keeps the timestamp rule when the host declines the conflict', () => {
+      const conflict = createConflict([olderLocalEdit()], [newerRemoteDelete()]);
+
+      const [plan] = planLwwConflictResolutions([conflict], {
+        isArchiveAction,
+        localEditWinsOverRemoteDelete: () => false,
+      });
+
+      expect(plan.winner).toBe('remote');
+      expect(plan.reason).toBe('remote-timestamp-or-tie');
+    });
+
+    it('is not consulted when the remote side does not delete', () => {
+      const conflict = createConflict(
+        [olderLocalEdit()],
+        [createOp({ id: 'remote-update', timestamp: 2_000 })],
+      );
+      const localEditWinsOverRemoteDelete = vi.fn(() => true);
+
+      const [plan] = planLwwConflictResolutions([conflict], {
+        isArchiveAction,
+        localEditWinsOverRemoteDelete,
+      });
+
+      expect(plan.reason).toBe('remote-timestamp-or-tie');
+    });
+
+    it('does not apply when the local side also deletes', () => {
+      const conflict = createConflict(
+        [createOp({ id: 'local-delete', opType: OpType.Delete, timestamp: 1_000 })],
+        [newerRemoteDelete()],
+      );
+
+      const [plan] = planLwwConflictResolutions([conflict], {
+        isArchiveAction,
+        localEditWinsOverRemoteDelete: () => true,
+      });
+
+      expect(plan.reason).not.toBe('local-edit-over-delete');
+    });
+
+    it('leaves a delete-wins remote action in charge', () => {
+      const conflict = createConflict(
+        [olderLocalEdit()],
+        [
+          createOp({
+            id: 'remote-delete',
+            actionType: '[Test] Delete Wins',
+            opType: OpType.Delete,
+            timestamp: 2_000,
+          }),
+        ],
+      );
+
+      const [plan] = planLwwConflictResolutions([conflict], {
+        isArchiveAction,
+        isDeleteWinsAction,
+        localEditWinsOverRemoteDelete: () => true,
+      });
+
+      expect(plan.reason).toBe('remote-delete-wins');
+    });
+  });
+
   it('keeps timestamp semantics for an unmarked delete', () => {
     const conflict = createConflict(
       [

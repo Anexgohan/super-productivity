@@ -17,6 +17,7 @@ import { OperationLogSnapshotService } from '../persistence/operation-log-snapsh
 import { OpLog } from '../../core/log';
 import { OperationApplierService } from '../apply/operation-applier.service';
 import { ConflictResolutionService } from './conflict-resolution.service';
+import { UnsentEditOnTopService } from './unsent-edit-on-top.service';
 import { ValidateStateService } from '../validation/validate-state.service';
 import { SyncSessionValidationService } from './sync-session-validation.service';
 import { VectorClockService } from './vector-clock.service';
@@ -75,6 +76,7 @@ export class RemoteOpsProcessingService {
   private hydrationStateService = inject(HydrationStateService);
   private providerManager = inject(SyncProviderManager);
   private injector = inject(Injector);
+  private unsentEditOnTop = inject(UnsentEditOnTopService);
 
   /** Flag to show version-incompatibility warnings only once per session */
   private _hasWarnedVersionBlockThisSession = false;
@@ -469,7 +471,12 @@ export class RemoteOpsProcessingService {
         appliedFrontierByEntity,
         retainedOpsByEntity,
       );
-      const { nonConflicting, conflicts } = conflictResult;
+      const { nonConflicting } = conflictResult;
+      // Stage 8 (anex): one conflict per item where an unsent edit goes on top of the downloaded
+      // edits, so the resolver can merge them into one edit (unsent-edit-on-top.service.ts).
+      const conflicts = await this.unsentEditOnTop.joinConflicts(
+        conflictResult.conflicts,
+      );
 
       // ─────────────────────────────────────────────────────────────────────────
       // STEP 5: Handle Results - Auto-Resolve Conflicts with LWW

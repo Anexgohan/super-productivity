@@ -145,6 +145,17 @@ export type {
   LwwResolvedConflict,
 } from './conflict-resolution';
 
+// anex fork, Stage 8: unsent edits on top of what the server confirmed.
+export {
+  isUnsentEditOnTopConflict,
+  isUnsentEditOverRemoteDelete,
+  joinUnsentEditOnTopConflicts,
+  unsentEditOnTopChanges,
+  unsentEditOnTopFields,
+  wholeItemCopyFields,
+} from './unsent-edit-on-top';
+export type { UnsentEditOnTopRules } from './unsent-edit-on-top';
+
 // Entity-frontier and clock-corruption helpers (per-entity vector-clock domain).
 export { adjustForClockCorruption, buildEntityFrontier } from './entity-frontier';
 

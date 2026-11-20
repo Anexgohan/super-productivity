@@ -79,10 +79,18 @@ only for as long as you are the one signed in.
 > **Not true yet.** "Never an authority" is still an overstatement, and this doc
 > used to make it flatly. Container authority settles _whole-state divergence_ -
 > when client and server disagree about the world, the server wins. Concurrent
-> edits still merge at the op level through vector clocks and last-write-wins, so
-> an offline tab can still win an individual field against the container. Closing
-> that would mean giving up offline editing, which is not a trade this stack has
-> chosen to make.
+> edits still merge at the op level, so an offline tab can still win an individual
+> field against the container. Closing that would mean giving up offline editing,
+> which is not a trade this stack has chosen to make.
+>
+> For field edits to tasks, projects and tags, the edit that reaches the server
+> last wins, whatever the device clocks say. Where a downloaded change meets an
+> edit the browser has not sent yet, the browser keeps the downloaded change's
+> other fields and puts its own edit on top, also when that change is a whole
+> copy of the item another browser re-sent after a refused upload. It stores the
+> result as one new edit with a clock that covers both, so the server accepts it.
+> A task deleted on another device comes back with the edit. Other edits, tracked
+> time among them, still go by vector clocks and timestamps.
 
 **Preferences follow the account, not the browser profile.** Upstream keeps
 things like theme, dark mode, sort order, and which lists are collapsed in

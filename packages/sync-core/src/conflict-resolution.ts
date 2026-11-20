@@ -19,6 +19,7 @@ export type LwwConflictResolutionReason =
   | 'remote-delete-wins'
   | 'local-delete-wins'
   | 'local-timestamp'
+  | 'local-edit-over-delete'
   | 'remote-timestamp-or-tie';
 
 const DEFAULT_MAX_DEEP_EQUAL_DEPTH = 50;
@@ -46,6 +47,12 @@ export interface LwwConflictResolutionPlanningOptions<
   isArchiveAction: (op: TOperation) => boolean;
   isDeleteWinsAction?: (op: TOperation) => boolean;
   toEntityKey?: (entityType: string, entityId: string) => string;
+  /**
+   * anex fork (Stage 8 of the container-authority work): true for a conflict whose local edit must
+   * win over a concurrent remote delete whatever the timestamps, so the host brings the entity back
+   * with the edit. Only consulted when the remote side deletes and the local side does not.
+   */
+  localEditWinsOverRemoteDelete?: (conflict: EntityConflictLike<TOperation>) => boolean;
 }
 
 export interface LocalDeleteRemoteUpdateConversionOptions<
@@ -428,6 +435,19 @@ export const planLwwConflictResolutions = <
         winner: 'local',
         reason: 'local-delete-wins',
         localWinOperationKind: 'delete-win',
+      };
+    }
+
+    if (
+      options.localEditWinsOverRemoteDelete?.(conflict) &&
+      conflict.remoteOps.some((op) => op.opType === OpType.Delete) &&
+      !conflict.localOps.some((op) => op.opType === OpType.Delete)
+    ) {
+      return {
+        conflict,
+        winner: 'local',
+        reason: 'local-edit-over-delete',
+        localWinOperationKind: 'update',
       };
     }
 

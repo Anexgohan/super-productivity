@@ -16,8 +16,10 @@ import {
   partitionLwwResolutions,
   planLwwConflictResolutions,
   suggestConflictResolution,
+  unsentEditOnTopChanges,
   type LwwConflictResolutionPlan,
   type LwwResolvedConflict,
+  type UnsentEditOnTopRules,
 } from '@sp/sync-core';
 import { PROJECT_DELETE_WINS_SCHEMA_VERSION } from '@sp/shared-schema';
 import {
@@ -86,6 +88,7 @@ import {
 } from './conflict-disjoint-merge.util';
 import { NOISE_FIELDS } from './conflict-journal.model';
 import { RECREATE_FALLBACK } from '../core/recreate-fallback.const';
+import { UnsentEditOnTopService } from './unsent-edit-on-top.service';
 
 /**
  * Represents the result of LWW (Last-Write-Wins) conflict resolution.
@@ -401,6 +404,7 @@ export class ConflictResolutionService {
   private injector = inject(Injector);
   private conflictJournal = inject(ConflictJournalService);
   private syncConflictBanner = inject(SyncConflictBannerService);
+  private unsentEditOnTop = inject(UnsentEditOnTopService); // anex Stage 8
 
   /**
    * SPAP-13 (observe-only): conflicts whose CONCURRENT status was FORCED by
@@ -1920,7 +1924,10 @@ export class ConflictResolutionService {
     const mergedResolutions: MergedResolution[] = [];
     const lwwPlans: LwwConflictResolutionPlan<EntityConflict>[] = [];
 
+    const unsentOnTop = await this.unsentEditOnTop.rulesForBatch(); // anex Stage 8
     const plans = planLwwConflictResolutions(conflicts, {
+      localEditWinsOverRemoteDelete: (c) =>
+        this.unsentEditOnTop.isTaskEditOverRemoteDelete(c as EntityConflict, unsentOnTop),
       isArchiveAction: (op) => op.actionType === ActionType.TASK_SHARED_MOVE_TO_ARCHIVE,
       isDeleteWinsAction: isProjectDeleteWinsOperation,
       toEntityKey: (entityType, entityId) =>
@@ -1968,7 +1975,7 @@ export class ConflictResolutionService {
       const mergedOp =
         disableDisjointMerge || (conflictCountByEntity.get(entityKey) ?? 0) > 1
           ? undefined
-          : await this._tryCreateDisjointMergeOp(plan);
+          : await this._tryCreateDisjointMergeOp(plan, unsentOnTop);
       if (mergedOp) {
         // NOT journaled here: a `merged` entry claims "both sides kept", which
         // is only true once the merged op enters state. All journal entries are
@@ -2382,6 +2389,7 @@ export class ConflictResolutionService {
    */
   private async _tryCreateDisjointMergeOp(
     plan: LwwConflictResolutionPlan<EntityConflict>,
+    unsentOnTop: UnsentEditOnTopRules<Operation>,
   ): Promise<Operation | undefined> {
     if (this._isWholeEntityWinPlan(plan)) {
       return undefined;
@@ -2407,7 +2415,10 @@ export class ConflictResolutionService {
       return undefined;
     }
 
+    // anex Stage 8: unsent edits against downloaded ones merge with the unsent edit on top.
+    const isOnTop = this.unsentEditOnTop.isOnTopMerge(conflict, unsentOnTop);
     if (
+      !isOnTop &&
       !isDisjointMergeEligible({
         localOps: conflict.localOps,
         remoteOps: conflict.remoteOps,
@@ -2438,16 +2449,9 @@ export class ConflictResolutionService {
       return undefined;
     }
 
-    const localChanges = mergeChangedFields(
-      conflict.localOps,
-      payloadKey,
-      conflict.entityId,
-    );
-    const remoteChanges = mergeChangedFields(
-      conflict.remoteOps,
-      payloadKey,
-      conflict.entityId,
-    );
+    const readFields = isOnTop ? this.unsentEditOnTop.changedFields : mergeChangedFields;
+    const localChanges = readFields(conflict.localOps, payloadKey, conflict.entityId);
+    const remoteChanges = readFields(conflict.remoteOps, payloadKey, conflict.entityId);
     const localTs = Math.max(...conflict.localOps.map((op) => op.timestamp));
     const remoteTs = Math.max(...conflict.remoteOps.map((op) => op.timestamp));
 
@@ -2458,12 +2462,14 @@ export class ConflictResolutionService {
     // that can differ between clients under staggered sync and diverge forever.
     // The lwwUpdateMetaReducer applies it via `updateOne` (a shallow merge), so
     // fields outside the delta keep their own values. See `synthesizeMergedChanges`.
-    const mergedChanges = synthesizeMergedChanges(
-      localChanges,
-      remoteChanges,
-      { timestamp: localTs, clientId: conflict.localOps[0]?.clientId ?? clientId },
-      { timestamp: remoteTs, clientId: conflict.remoteOps[0]?.clientId ?? '' },
-    );
+    const mergedChanges = isOnTop
+      ? unsentEditOnTopChanges(localChanges, remoteChanges)
+      : synthesizeMergedChanges(
+          localChanges,
+          remoteChanges,
+          { timestamp: localTs, clientId: conflict.localOps[0]?.clientId ?? clientId },
+          { timestamp: remoteTs, clientId: conflict.remoteOps[0]?.clientId ?? '' },
+        );
 
     // Clock dominates BOTH sides so the merged op supersedes them and propagates
     // through normal sync. No client-side pruning (mirrors _createLocalWinUpdateOp).
