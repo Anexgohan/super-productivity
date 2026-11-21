@@ -181,6 +181,47 @@ describe('app rules board', () => {
     expect(b.status.archiveFailures).toBe(0);
   }, 60_000);
 
+  it('takes a card dragged to another column out of the old column order in the same op', async () => {
+    const worker = newWorker();
+    const log = new Log();
+    const b = board(worker, 'container', tempDir());
+    await b.open();
+    await log.importInitialState();
+    const task = buildTaskEntity({ title: 'dragged card' });
+    const id = task.id as string;
+    log.push(await browser.addTask(task, afterImport()));
+    log.push(await browser.updatePanelTaskIds('TODO', [id], afterImport()));
+    log.push({
+      id: uuidv7(),
+      clientId: BROWSER,
+      actionType: '[Boards] Update Panel Cfg TaskIds',
+      opType: 'UPD',
+      entityType: 'BOARD',
+      entityId: 'IN_PROGRESS',
+      payload: await encrypt(
+        JSON.stringify({
+          actionPayload: { panelId: 'IN_PROGRESS', taskIds: [id], movedTaskId: id },
+          entityChanges: [],
+        }),
+        PASSWORD,
+      ),
+      isPayloadEncrypted: true,
+      vectorClock: afterImport(),
+      timestamp: Date.now(),
+      schemaVersion: 4,
+    } as SuperSyncOperation);
+    await sync(b, log);
+
+    const kanban = (
+      b.view.BOARD as {
+        boardCfgs: { id: string; panels: { id: string; taskIds: string[] }[] }[];
+      }
+    ).boardCfgs.find((cfg) => cfg.id === 'KANBAN_DEFAULT')!;
+    const order = Object.fromEntries(kanban.panels.map((p) => [p.id, p.taskIds]));
+    expect(order.IN_PROGRESS).toEqual([id]);
+    expect(order.TODO).not.toContain(id);
+  }, 60_000);
+
   it('drops a change made without knowledge of the import, as every browser does', async () => {
     const worker = newWorker();
     const log = new Log();

@@ -106,6 +106,25 @@ describe('board state changes', () => {
     expect(out[1]).toBe(boards[1]);
   });
 
+  it('takes a dropped card out of the other panels of its board only', () => {
+    const boards = [
+      board('a', [
+        panel('todo', { taskIds: ['t1', 't2'] }),
+        panel('doing', { taskIds: ['t3'] }),
+      ]),
+      board('b', [panel('other', { taskIds: ['t1'] })]),
+    ];
+    const out = updatePanelTaskIdsInState(boards, 'doing', ['t1', 't3'], 't1');
+    expect(out[0].panels.map((p) => p.taskIds)).toEqual([['t2'], ['t1', 't3']]);
+    expect(out[1]).toBe(boards[1]);
+  });
+
+  it('leaves the other panels alone when no card was dropped', () => {
+    const boards = [board('a', [panel('todo', { taskIds: ['t1'] }), panel('doing')])];
+    const out = updatePanelTaskIdsInState(boards, 'doing', ['t1']);
+    expect(out[0].panels[0]).toBe(boards[0].panels[0]);
+  });
+
   it('returns the same array when no board holds the panel', () => {
     const boards = [board('a', [panel('p')])];
     expect(updatePanelTaskIdsInState(boards, 'zz', ['t1'])).toBe(boards);

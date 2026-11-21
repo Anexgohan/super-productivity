@@ -165,11 +165,15 @@ export const sortBoardsInState = (boardCfgs: BoardCfg[], ids: string[]): BoardCf
   return [...ordered, ...boardCfgs.filter((b) => !seen.has(b.id))];
 };
 
-/** Only the first board holding `panelId` is touched; duplicate panel ids are a load-time repair, not something to fan out to. */
+/**
+ * Only the first board holding `panelId` is touched; duplicate panel ids are a load-time repair, not something to fan out to.
+ * `movedTaskId` is the card dropped into the panel: it leaves the stored order of that board's other panels in the same pass.
+ */
 export const updatePanelTaskIdsInState = (
   boardCfgs: BoardCfg[],
   panelId: string,
   taskIds: string[],
+  movedTaskId?: string,
 ): BoardCfg[] => {
   const owner = boardCfgs.find((cfg) => cfg.panels.some((p) => p.id === panelId));
   if (!owner) return boardCfgs;
@@ -177,7 +181,17 @@ export const updatePanelTaskIdsInState = (
     cfg === owner
       ? {
           ...cfg,
-          panels: cfg.panels.map((p) => (p.id === panelId ? { ...p, taskIds } : p)),
+          panels: cfg.panels.map((p) => {
+            if (p.id === panelId) return { ...p, taskIds };
+            if (
+              movedTaskId &&
+              Array.isArray(p.taskIds) &&
+              p.taskIds.includes(movedTaskId)
+            ) {
+              return { ...p, taskIds: p.taskIds.filter((id) => id !== movedTaskId) };
+            }
+            return p;
+          }),
         }
       : cfg,
   );

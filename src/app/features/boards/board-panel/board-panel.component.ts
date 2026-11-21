@@ -305,6 +305,7 @@ export class BoardPanelComponent {
       BoardsActions.updatePanelCfgTaskIds({
         panelId: panelCfg.id,
         taskIds,
+        movedTaskId: task.id,
       }),
     );
 

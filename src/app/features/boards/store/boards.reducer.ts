@@ -95,8 +95,13 @@ export const boardsReducer = createReducer(
     boardCfgs: sortBoardsInState(state.boardCfgs, ids),
   })),
 
-  on(BoardsActions.updatePanelCfgTaskIds, (state, { panelId, taskIds }) => {
-    const boardCfgs = updatePanelTaskIdsInState(state.boardCfgs, panelId, taskIds);
+  on(BoardsActions.updatePanelCfgTaskIds, (state, { panelId, taskIds, movedTaskId }) => {
+    const boardCfgs = updatePanelTaskIdsInState(
+      state.boardCfgs,
+      panelId,
+      taskIds,
+      movedTaskId,
+    );
     return boardCfgs === state.boardCfgs ? state : { ...state, boardCfgs };
   }),
 );

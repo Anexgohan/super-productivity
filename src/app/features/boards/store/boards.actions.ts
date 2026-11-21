@@ -57,7 +57,7 @@ export const updatePanelCfg = createAction(
 
 export const updatePanelCfgTaskIds = createAction(
   '[Boards] Update Panel Cfg TaskIds',
-  (actionProps: { panelId: string; taskIds: string[] }) => ({
+  (actionProps: { panelId: string; taskIds: string[]; movedTaskId?: string }) => ({
     ...actionProps,
     meta: {
       isPersistent: true,
