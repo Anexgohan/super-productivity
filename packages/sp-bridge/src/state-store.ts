@@ -55,6 +55,9 @@ export class StateStore {
   ) {
     this._client = new SyncClient(cfg, opts?.mintToken, opts?.clientId);
     const key = opts?.cacheKey;
+    this._checkpoints = new CheckpointTracker(
+      join(cfg.dataDir, key ? `checkpoint-state.${key}.json` : 'checkpoint-state.json'),
+    );
     this._board = new AppRulesBoard(_worker, {
       board: key ?? 'container',
       clientId: this._clientId,
@@ -63,11 +66,9 @@ export class StateStore {
         key ? `app-rules-cache.${key}.json` : 'app-rules-cache.json',
       ),
       encryptionPassword: cfg.encryptionPassword,
+      checkpointHeldBack: this._checkpoints.state.heldBack,
       onReopened: () => void this.refresh().catch(() => undefined),
     });
-    this._checkpoints = new CheckpointTracker(
-      join(cfg.dataDir, key ? `checkpoint-state.${key}.json` : 'checkpoint-state.json'),
-    );
   }
 
   /** True while live push is active (see /api/status). */
@@ -204,6 +205,7 @@ export class StateStore {
         ({ latestSeq } = await this._client.downloadOpsSince(since, async (page) => {
           await this._board.apply(page);
           this._checkpoints.observe(page);
+          this._checkpoints.setHeldBack(this._board.status.checkpointHeldBack);
         }));
         // Reads after this see every change just applied, including the caller's own write.
         await this._board.updateView();

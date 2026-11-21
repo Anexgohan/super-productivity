@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   SuperSyncDeleteTimesRequestSchema,
+  SuperSyncStoredSeqsRequestSchema,
   SuperSyncDownloadOpsQuerySchema,
 } from '@sp/shared-schema';
 import { authenticate, getAuthUser, requireWriteScope } from '../middleware';
@@ -368,6 +369,38 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         return reply.send({ deleted });
       } catch (err) {
         Logger.error(`Get delete times error: ${errorMessage(err)}`);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    },
+  );
+
+  // POST /api/sync/stored - The numbers the asked saves were stored under; a read, sent as POST for its list
+  fastify.post<{ Body: unknown }>(
+    '/stored',
+    {
+      config: {
+        rateLimit: {
+          max: 200,
+          timeWindow: '1 minute',
+        },
+      },
+    },
+    async (req, reply) => {
+      try {
+        const userId = getAuthUser(req).userId;
+        const parseResult = SuperSyncStoredSeqsRequestSchema.safeParse(req.body);
+        if (!parseResult.success) {
+          return reply
+            .status(400)
+            .send(createValidationErrorResponse(parseResult.error.issues));
+        }
+        const stored = await getSyncService().getStoredServerSeqs(
+          userId,
+          parseResult.data.opIds,
+        );
+        return reply.send({ stored });
+      } catch (err) {
+        Logger.error(`Get stored numbers error: ${errorMessage(err)}`);
         return reply.status(500).send({ error: 'Internal server error' });
       }
     },

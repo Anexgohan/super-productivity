@@ -4,6 +4,7 @@
   "include": [
     "./server-order-replay.spec.ts",
     "./app-rules-day.spec.ts",
+    "./server-order-stored-seqs.spec.ts",
     "../../../src/app/core/window-ea.d.ts"
   ]
 }

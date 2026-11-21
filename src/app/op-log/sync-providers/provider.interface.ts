@@ -1,9 +1,13 @@
 import {
   isDeleteTimesCapable,
+  isStoredServerSeqsCapable,
   isFileSyncProvider as isGenericFileSyncProvider,
   type DeleteTimesCapable,
   type DeleteTimesResponse,
   type EntityDeleteTime,
+  type StoredServerSeq,
+  type StoredServerSeqsCapable,
+  type StoredServerSeqsResponse,
   type FileDownloadResponse as GenericFileDownloadResponse,
   type FileRevResponse as GenericFileRevResponse,
   type FileSnapshotOpDownloadResponse as GenericFileSnapshotOpDownloadResponse,
@@ -73,5 +77,12 @@ export type RestorePointsResponse = GenericRestorePointsResponse<RestorePointTyp
 export type RestoreSnapshotResponse = GenericRestoreSnapshotResponse;
 export type RestoreCapable = GenericRestoreCapable<RestorePointType>;
 
-export { isDeleteTimesCapable };
-export type { DeleteTimesCapable, DeleteTimesResponse, EntityDeleteTime };
+export { isDeleteTimesCapable, isStoredServerSeqsCapable };
+export type {
+  DeleteTimesCapable,
+  DeleteTimesResponse,
+  EntityDeleteTime,
+  StoredServerSeq,
+  StoredServerSeqsCapable,
+  StoredServerSeqsResponse,
+};

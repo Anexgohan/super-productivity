@@ -41,7 +41,10 @@ import {
   itemsRemovedBy,
   recreatesItem,
 } from './server-order-delete-rule.util';
-import { isDeleteTimesCapable } from '../sync-providers/provider.interface';
+import {
+  isDeleteTimesCapable,
+  isStoredServerSeqsCapable,
+} from '../sync-providers/provider.interface';
 import { OperationApplierService } from '../apply/operation-applier.service';
 import { historyBeforeBatch, opsAsDownloadApplies } from './server-order-rebuild.util';
 import { SchemaMigrationService } from '../persistence/schema-migration.service';
@@ -342,6 +345,26 @@ export class ServerOrderService {
       new Set(deletes.filter((d) => d.entityType === 'TASK').map((d) => d.entityId)),
       state,
     );
+  }
+
+  /**
+   * Before a checkpoint is applied: asks the server for the numbers of the unsent saves whose number this browser does not know.
+   * A save stored before the checkpoint's base is in it already; a reload or a lost upload answer leaves its number unknown here.
+   * Throws when the server cannot answer, so this apply stops before anything changes and the next sync retries it.
+   */
+  async learnUnsentServerSeqs(): Promise<void> {
+    const provider = this.providerManager.getActiveProvider();
+    if (!isStoredServerSeqsCapable(provider)) return;
+    this.syncEpoch();
+    const unknown = new Set(
+      (await this.readUnsent())
+        .map((op) => op.id)
+        .filter((opId) => !this.ownSeqByOpId.has(opId)),
+    );
+    if (unknown.size === 0) return;
+    for (const { opId, serverSeq } of await provider.getStoredServerSeqs([...unknown])) {
+      if (unknown.has(opId)) rememberSeq(this.ownSeqByOpId, opId, serverSeq);
+    }
   }
 
   /**

@@ -30,6 +30,8 @@ export interface CheckpointState {
    * so the board may never have been checkpointed and the first chance is taken.
    */
   countsComplete: boolean;
+  /** Why the board may not be checkpointed until the next full import or checkpoint, or null; kept here so a restart keeps the hold. */
+  heldBack: string | null;
 }
 
 const FRESH: CheckpointState = {
@@ -40,6 +42,7 @@ const FRESH: CheckpointState = {
   lastAttemptAt: 0,
   lastError: null,
   countsComplete: false,
+  heldBack: null,
 };
 
 /** Full-state ops the server and browsers treat as a boundary; a REPAIR only with its base seq. */
@@ -98,6 +101,13 @@ export class CheckpointTracker {
     this._state.lastError = reason;
     this._save();
     return true;
+  }
+
+  /** Keeps the board's current hold, written only when it changes. */
+  setHeldBack(reason: string | null): void {
+    if (this._state.heldBack === reason) return;
+    this._state.heldBack = reason;
+    this._save();
   }
 
   markAttempt(now: number, error: string | null): void {

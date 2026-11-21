@@ -5,6 +5,7 @@ import {
   SuperSyncRestorePointsResponseSchema,
   SuperSyncRestoreSnapshotResponseSchema,
   SuperSyncSnapshotUploadResponseSchema,
+  SuperSyncStoredSeqsResponseSchema,
   SuperSyncUploadOpsResponseSchema,
 } from '@sp/shared-schema';
 import {
@@ -14,6 +15,7 @@ import {
   SnapshotUploadResponse,
   RestorePointsResponse,
   RestoreSnapshotResponse,
+  StoredServerSeqsResponse,
 } from '../provider.interface';
 import { InvalidDataSPError } from '../../core/errors/sync-errors';
 
@@ -141,3 +143,16 @@ export const validateDeleteTimesResponse = (data: unknown): DeleteTimesResponse 
     data,
     'DeleteTimesResponse',
   ) as DeleteTimesResponse;
+
+/**
+ * Validates StoredServerSeqsResponse from server.
+ * Throws InvalidDataSPError if the response structure is invalid.
+ */
+export const validateStoredServerSeqsResponse = (
+  data: unknown,
+): StoredServerSeqsResponse =>
+  parseResponse(
+    SuperSyncStoredSeqsResponseSchema,
+    data,
+    'StoredServerSeqsResponse',
+  ) as StoredServerSeqsResponse;

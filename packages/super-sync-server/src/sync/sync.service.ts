@@ -552,6 +552,13 @@ export class SyncService {
     return this.operationDownloadService.getLatestSeq(userId);
   }
 
+  async getStoredServerSeqs(
+    userId: number,
+    opIds: readonly string[],
+  ): Promise<{ opId: string; serverSeq: number }[]> {
+    return this.operationDownloadService.getStoredServerSeqs(userId, opIds);
+  }
+
   // === Snapshot Management ===
   // Delegated to SnapshotService
 

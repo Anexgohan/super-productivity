@@ -165,6 +165,29 @@ describe('performance migrations', () => {
     expect(migrationSql).not.toMatch(/\bBEGIN\b|\bCOMMIT\b/i);
   });
 
+  it('replaces the client index with one that ends in the server number, as a recoverable concurrent build', () => {
+    const migrationSql = readMigration('20261121000001_add_client_sequence_index');
+
+    expect(migrationSql).toContain(
+      'DROP INDEX CONCURRENTLY IF EXISTS "operations_user_id_client_id_server_seq_idx"',
+    );
+    expect(migrationSql).toContain(
+      'CREATE INDEX CONCURRENTLY "operations_user_id_client_id_server_seq_idx"',
+    );
+    expect(migrationSql).toContain(
+      'ON "operations"("user_id", "client_id", "server_seq")',
+    );
+    expect(migrationSql).not.toMatch(/\bIF\s+NOT\s+EXISTS\b/i);
+    // The old index goes only after the new one is built, so the lookups always have one.
+    const dropOld = migrationSql.indexOf(
+      'DROP INDEX CONCURRENTLY IF EXISTS "operations_user_id_client_id_idx"',
+    );
+    expect(dropOld).toBeGreaterThan(migrationSql.indexOf('CREATE INDEX CONCURRENTLY'));
+    expect(migrationSql).not.toMatch(/\bDROP\s+TABLE\b/i);
+    expect(migrationSql).not.toMatch(/\bALTER\s+TABLE\b/i);
+    expect(migrationSql).not.toMatch(/\bBEGIN\b|\bCOMMIT\b/i);
+  });
+
   it('backfills operation payload bytes with per-user batched updates', () => {
     const script = readFileSync(
       join(currentDir, '../scripts/migrate-payload-bytes.ts'),
@@ -244,5 +267,34 @@ describe('schema bootstrap and drift (#8187)', () => {
 
     const missing = mappedColumns.filter((column) => !migrations.includes(`"${column}"`));
     expect(missing).toEqual([]);
+  });
+
+  it('builds every index schema.prisma declares on operations, under the name Prisma expects', () => {
+    const schema = readFileSync(join(currentDir, '../prisma/schema.prisma'), 'utf8');
+    const model = schema.match(/model Operation \{([\s\S]*?)\n\}/)![1];
+    const column = (field: string): string =>
+      model.match(new RegExp(`^\\s*${field}\\s.*@map\\("([^"]+)"\\)`, 'm'))?.[1] ?? field;
+    const declared = [...model.matchAll(/@@(index|unique)\(\[([^\]]+)\]\)/g)].map(
+      ([, kind, fields]) =>
+        `operations_${fields
+          .split(',')
+          .map((field) => column(field.trim()))
+          .join('_')}_${kind === 'unique' ? 'key' : 'idx'}`,
+    );
+
+    // Replays the chain's index statements in the order migrate deploy applies them.
+    const built = new Set<string>();
+    const statement =
+      /\b(CREATE (?:UNIQUE )?INDEX|DROP INDEX)(?: CONCURRENTLY)?(?: IF NOT EXISTS| IF EXISTS)? "([^"]+)"/g;
+    for (const name of migrationNames()) {
+      for (const [, verb, index] of readMigration(name).matchAll(statement)) {
+        if (verb === 'DROP INDEX') built.delete(index);
+        else built.add(index);
+      }
+    }
+
+    expect(declared).toContain('operations_user_id_client_id_server_seq_idx');
+    expect(declared.filter((index) => !built.has(index))).toEqual([]);
+    expect(built.has('operations_user_id_client_id_idx')).toBe(false);
   });
 });

@@ -431,4 +431,17 @@ export class OperationDownloadService {
     });
     return row?.lastSeq ?? 0;
   }
+
+  /** The numbers the asked saves of this user were stored under; saves the server does not hold are left out. */
+  async getStoredServerSeqs(
+    userId: number,
+    opIds: readonly string[],
+  ): Promise<{ opId: string; serverSeq: number }[]> {
+    if (opIds.length === 0) return [];
+    const rows = await prisma.operation.findMany({
+      where: { userId, id: { in: [...opIds] } },
+      select: { id: true, serverSeq: true },
+    });
+    return rows.map((row) => ({ opId: row.id, serverSeq: row.serverSeq }));
+  }
 }

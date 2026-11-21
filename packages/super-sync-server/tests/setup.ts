@@ -119,7 +119,9 @@ vi.mock('../src/db', async () => {
     }
 
     if (where.userId !== undefined && op.userId !== where.userId) return false;
-    if (where.id !== undefined && op.id !== where.id) return false;
+    if (Array.isArray(where.id?.in)) {
+      if (!where.id.in.includes(op.id)) return false;
+    } else if (where.id !== undefined && op.id !== where.id) return false;
     if (where.entityType !== undefined && op.entityType !== where.entityType) {
       return false;
     }
@@ -191,6 +193,13 @@ vi.mock('../src/db', async () => {
   const createDeletedEntityMock = () =>
     createSharedDeletedEntityMock(() => testData.deletedEntities);
 
+  const findOperations = async (args: any) => {
+    const ops = Array.from(testData.operations.values()).filter((op) =>
+      matchesWhere(op, args.where),
+    );
+    return sortOperations(ops, args.orderBy).map((op) => applySelect(op, args.select));
+  };
+
   // Create Prisma mock with all needed operations
   const prismaMock = {
     $transaction: vi.fn().mockImplementation(async (callback: any) => {
@@ -243,14 +252,7 @@ vi.mock('../src/db', async () => {
             );
             return applySelect(ops[0], args.select) || null;
           }),
-          findMany: vi.fn().mockImplementation(async (args: any) => {
-            const ops = Array.from(testData.operations.values()).filter((op) =>
-              matchesWhere(op, args.where),
-            );
-            return sortOperations(ops, args.orderBy).map((op) =>
-              applySelect(op, args.select),
-            );
-          }),
+          findMany: vi.fn().mockImplementation(findOperations),
           count: vi.fn().mockImplementation(async (args: any) => {
             return Array.from(testData.operations.values()).filter((op) =>
               matchesWhere(op, args.where),
@@ -326,7 +328,7 @@ vi.mock('../src/db', async () => {
       create: vi.fn(),
       createMany: vi.fn(),
       findFirst: vi.fn(),
-      findMany: vi.fn(),
+      findMany: vi.fn().mockImplementation(findOperations),
       count: vi.fn().mockResolvedValue(0),
       aggregate: vi.fn().mockResolvedValue({ _min: { serverSeq: 1 } }),
       deleteMany: vi.fn().mockResolvedValue({ count: 0 }),

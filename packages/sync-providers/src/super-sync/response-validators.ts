@@ -4,6 +4,7 @@ import type {
   RestorePointsResponse,
   RestoreSnapshotResponse,
   SnapshotUploadResponse,
+  StoredServerSeqsResponse,
   SuperSyncOpDownloadResponse,
 } from '../provider-types';
 
@@ -26,4 +27,5 @@ export interface SuperSyncResponseValidators {
   validateRestoreSnapshot(data: unknown): RestoreSnapshotResponse;
   validateDeleteAllData(data: unknown): { success: boolean };
   validateDeleteTimes(data: unknown): DeleteTimesResponse;
+  validateStoredServerSeqs(data: unknown): StoredServerSeqsResponse;
 }

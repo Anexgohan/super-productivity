@@ -13,6 +13,7 @@
     "node_modules",
     "dist",
     "tests/server-order-replay.spec.ts",
-    "tests/app-rules-day.spec.ts"
+    "tests/app-rules-day.spec.ts",
+    "tests/server-order-stored-seqs.spec.ts"
   ]
 }

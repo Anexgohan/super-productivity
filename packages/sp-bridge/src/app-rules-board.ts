@@ -49,6 +49,8 @@ export interface AppRulesBoardOptions {
   clientId: string;
   cachePath: string;
   encryptionPassword: string;
+  /** The hold on checkpoints kept from before a restart. */
+  checkpointHeldBack?: string | null;
   /** Called when the worker came back after a failure and this board is open again; the store syncs it then. */
   onReopened?: () => void;
 }
@@ -97,6 +99,7 @@ export class AppRulesBoard {
     private readonly _worker: AppRulesWorker,
     private readonly _opts: AppRulesBoardOptions,
   ) {
+    this._status.checkpointHeldBack = _opts.checkpointHeldBack ?? null;
     this._unlisten = _worker.listen({
       onFailure: (message) => {
         this._workerDown = message;

@@ -20,6 +20,8 @@ import type { WebFetchFactory } from '../platform/web-fetch-factory';
 import type {
   DeleteTimesCapable,
   EntityDeleteTime,
+  StoredServerSeq,
+  StoredServerSeqsCapable,
   OpUploadResponse,
   OperationSyncCapable,
   RestoreCapable,
@@ -49,6 +51,9 @@ const SUPERSYNC_WEB_MAX_RETRIES = 2;
 
 /** The most items the server answers in one delete-times request. */
 const SUPERSYNC_MAX_DELETE_TIME_ITEMS = 500;
+
+/** The most op ids the server answers in one stored-numbers request. */
+const SUPERSYNC_MAX_STORED_SEQ_IDS = 500;
 
 /** Max chars of server `error` field threaded into thrown `Error.message`. */
 const SERVER_ERROR_REASON_MAX_CHARS = 80;
@@ -122,6 +127,7 @@ export class SuperSyncProvider
     OperationSyncCapable<'superSyncOps'>,
     RestoreCapable,
     DeleteTimesCapable,
+    StoredServerSeqsCapable,
     SuperSyncWebSocketAccess
 {
   readonly id = PROVIDER_ID_SUPER_SYNC;
@@ -470,6 +476,36 @@ export class SuperSyncProvider
       );
     }
     return deleted;
+  }
+
+  // === Stored Numbers ===
+
+  async getStoredServerSeqs(opIds: readonly string[]): Promise<StoredServerSeq[]> {
+    this._deps.logger.debug(`${this._logLabel}: getStoredServerSeqs`, {
+      count: opIds.length,
+    });
+    if (opIds.length === 0) return [];
+    const cfg = await this._cfgOrError();
+
+    const stored: StoredServerSeq[] = [];
+    for (let start = 0; start < opIds.length; start += SUPERSYNC_MAX_STORED_SEQ_IDS) {
+      const chunk = opIds.slice(start, start + SUPERSYNC_MAX_STORED_SEQ_IDS);
+      let response: unknown;
+      try {
+        response = await this._fetchApi<unknown>(cfg, '/api/sync/stored', {
+          method: 'POST',
+          body: JSON.stringify({ opIds: chunk }),
+        });
+      } catch (error) {
+        // A server without the lookup cannot say; the saves are kept as not stored.
+        if (error instanceof SuperSyncHttpStatusError && error.status === 404) return [];
+        throw error;
+      }
+      stored.push(
+        ...this._deps.responseValidators.validateStoredServerSeqs(response).stored,
+      );
+    }
+    return stored;
   }
 
   // === WebSocket Parameters ===

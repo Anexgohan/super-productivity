@@ -62,6 +62,9 @@ export {
   SUPER_SYNC_MAX_DELETE_TIME_ITEMS,
   SuperSyncDeleteTimesRequestSchema,
   SuperSyncDeleteTimesResponseSchema,
+  SUPER_SYNC_MAX_STORED_SEQ_IDS,
+  SuperSyncStoredSeqsRequestSchema,
+  SuperSyncStoredSeqsResponseSchema,
 } from './supersync-http-contract';
 export type {
   SuperSyncOpType,
@@ -85,6 +88,8 @@ export type {
   SuperSyncDeleteAllDataResponse,
   SuperSyncDeleteTimesRequest,
   SuperSyncDeleteTimesResponse,
+  SuperSyncStoredSeqsRequest,
+  SuperSyncStoredSeqsResponse,
 } from './supersync-http-contract';
 
 // Defaults for new tasks, tags and projects (shared so API-created entities match app-created ones)

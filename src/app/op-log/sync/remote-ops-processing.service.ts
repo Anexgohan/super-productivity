@@ -344,7 +344,8 @@ export class RemoteOpsProcessingService {
             const isCheckpoint = validOps
               .filter((op) => FULL_STATE_OP_TYPES.has(op.opType))
               .every(isCheckpointFullStateOp);
-            // Before anything changes: when the server cannot say when an edited item was deleted, this apply stops and the next sync retries it.
+            // Before anything changes: when the server cannot say which saves it holds or when an edited item was deleted, this apply stops.
+            if (isCheckpoint) await this.serverOrder.learnUnsentServerSeqs();
             const bringBack = isCheckpoint
               ? await this.serverOrder.decideCheckpointBringBacks(validOps)
               : NO_CHECKPOINT_BRING_BACK;

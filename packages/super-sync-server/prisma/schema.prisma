@@ -110,7 +110,7 @@ model Operation {
 
   @@unique([userId, serverSeq])
   @@index([userId, entityType, entityId, serverSeq])
-  @@index([userId, clientId])
+  @@index([userId, clientId, serverSeq])
   @@index([userId, receivedAt])
   // Restore-point opType lookups use a raw partial index in the 20260512000000 migration.
   // Multi-entity conflict lookups (#8334) use a raw GIN index on entity_ids in the

@@ -267,6 +267,24 @@ export const SuperSyncDeleteTimesResponseSchema = z
   })
   .passthrough();
 
+export const SUPER_SYNC_MAX_STORED_SEQ_IDS = 500;
+
+/** Saves of this browser whose stored number it asks for, by op id. */
+export const SuperSyncStoredSeqsRequestSchema = z.object({
+  opIds: z.array(z.string().min(1).max(255)).min(1).max(SUPER_SYNC_MAX_STORED_SEQ_IDS),
+});
+
+/** The asked saves the server holds, each with the number it was stored under. */
+export const SuperSyncStoredSeqsResponseSchema = z
+  .object({
+    stored: z.array(
+      z
+        .object({ opId: z.string(), serverSeq: z.number().int().positive() })
+        .passthrough(),
+    ),
+  })
+  .passthrough();
+
 export type SuperSyncOpType = (typeof SUPER_SYNC_OP_TYPES)[number];
 export type SuperSyncImportReason = (typeof SUPER_SYNC_IMPORT_REASONS)[number];
 export type SuperSyncSnapshotReason = (typeof SUPER_SYNC_SNAPSHOT_REASONS)[number];
@@ -304,4 +322,8 @@ export type SuperSyncDeleteTimesRequest = z.infer<
 >;
 export type SuperSyncDeleteTimesResponse = z.infer<
   typeof SuperSyncDeleteTimesResponseSchema
+>;
+export type SuperSyncStoredSeqsRequest = z.infer<typeof SuperSyncStoredSeqsRequestSchema>;
+export type SuperSyncStoredSeqsResponse = z.infer<
+  typeof SuperSyncStoredSeqsResponseSchema
 >;

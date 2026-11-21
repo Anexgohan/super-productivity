@@ -26,6 +26,7 @@ import type {
   RestorePointsResponse,
   RestoreSnapshotResponse,
   SnapshotUploadResponse,
+  StoredServerSeqsResponse,
   SuperSyncOpDownloadResponse,
   SyncOperation,
 } from '../../src/provider-types';
@@ -127,6 +128,7 @@ const createValidatorsPassthrough = (): SuperSyncResponseValidators => ({
   validateRestoreSnapshot: (data) => data as RestoreSnapshotResponse,
   validateDeleteAllData: (data) => data as { success: boolean },
   validateDeleteTimes: (data) => data as DeleteTimesResponse,
+  validateStoredServerSeqs: (data) => data as StoredServerSeqsResponse,
 });
 
 const createLoggerSpy = (): {
@@ -1572,6 +1574,65 @@ describe('SuperSyncProvider', () => {
       const request = nativeHttpExecutor.mock.calls[0][0] as NativeHttpRequestConfig;
       expect(request.method).toBe('POST');
       expect(JSON.parse(request.data as string)).toEqual({ items: [task('t1')] });
+    });
+  });
+
+  describe('getStoredServerSeqs', () => {
+    it('posts the asked op ids and answers the stored numbers', async () => {
+      const { provider, cfgStore, fetchMock } = buildProvider();
+      cfgStore.load.mockResolvedValue(testConfig);
+      const stored = [{ opId: 'op-1', serverSeq: 41 }];
+      fetchMock.mockResolvedValue(okResponse({ stored }));
+
+      expect(await provider.getStoredServerSeqs(['op-1', 'op-2'])).toEqual(stored);
+
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://sync.example.com/api/sync/stored');
+      expect(init.method).toBe('POST');
+      expect(JSON.parse(init.body as string)).toEqual({ opIds: ['op-1', 'op-2'] });
+    });
+
+    it('asks nothing for no op ids', async () => {
+      const { provider, cfgStore, fetchMock } = buildProvider();
+      cfgStore.load.mockResolvedValue(testConfig);
+
+      expect(await provider.getStoredServerSeqs([])).toEqual([]);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('splits a long list into requests the server accepts', async () => {
+      const { provider, cfgStore, fetchMock } = buildProvider();
+      cfgStore.load.mockResolvedValue(testConfig);
+      fetchMock
+        .mockResolvedValueOnce(okResponse({ stored: [{ opId: 'op-0', serverSeq: 1 }] }))
+        .mockResolvedValueOnce(
+          okResponse({ stored: [{ opId: 'op-500', serverSeq: 2 }] }),
+        );
+      const opIds = Array.from({ length: 501 }, (_, i) => `op-${i}`);
+
+      const result = await provider.getStoredServerSeqs(opIds);
+
+      expect(result.map((entry) => entry.opId)).toEqual(['op-0', 'op-500']);
+      const sizes = fetchMock.mock.calls.map(
+        ([, init]) => JSON.parse((init as RequestInit).body as string).opIds.length,
+      );
+      expect(sizes).toEqual([500, 1]);
+    });
+
+    it('answers nothing stored when the server has no such lookup', async () => {
+      const { provider, cfgStore, fetchMock } = buildProvider();
+      cfgStore.load.mockResolvedValue(testConfig);
+      fetchMock.mockResolvedValue(errorResponse(404, 'Not Found', ''));
+
+      expect(await provider.getStoredServerSeqs(['op-1'])).toEqual([]);
+    });
+
+    it('fails on any other error, so the caller can retry', async () => {
+      const { provider, cfgStore, fetchMock } = buildProvider();
+      cfgStore.load.mockResolvedValue(testConfig);
+      fetchMock.mockResolvedValue(errorResponse(500, 'Server Error', ''));
+
+      await expect(provider.getStoredServerSeqs(['op-1'])).rejects.toThrow('HTTP 500');
     });
   });
 

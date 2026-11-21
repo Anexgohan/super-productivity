@@ -290,6 +290,28 @@ export interface DeleteTimesCapable {
 export const isDeleteTimesCapable = (provider: unknown): provider is DeleteTimesCapable =>
   typeof (provider as Partial<DeleteTimesCapable> | null)?.getDeleteTimes === 'function';
 
+/** The number the server stored one of this browser's saves under. */
+export interface StoredServerSeq {
+  opId: string;
+  serverSeq: number;
+}
+
+export interface StoredServerSeqsResponse {
+  stored: StoredServerSeq[];
+}
+
+/** A provider that answers the numbers it stored saves under, for saves whose upload answer never came back. */
+export interface StoredServerSeqsCapable {
+  /** Saves the server does not hold, or a server that cannot answer, are left out of the answer. */
+  getStoredServerSeqs(opIds: readonly string[]): Promise<StoredServerSeq[]>;
+}
+
+export const isStoredServerSeqsCapable = (
+  provider: unknown,
+): provider is StoredServerSeqsCapable =>
+  typeof (provider as Partial<StoredServerSeqsCapable> | null)?.getStoredServerSeqs ===
+  'function';
+
 export interface RestoreCapable<TRestorePointType extends string = string> {
   getRestorePoints(limit?: number): Promise<RestorePoint<TRestorePointType>[]>;
   getStateAtSeq(serverSeq: number): Promise<RestoreSnapshotResponse>;

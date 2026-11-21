@@ -18,6 +18,7 @@ import {
   validateOpUploadResponse,
   validateRestorePointsResponse,
   validateRestoreSnapshotResponse,
+  validateStoredServerSeqsResponse,
   validateSnapshotUploadResponse,
 } from './response-validators';
 
@@ -60,6 +61,7 @@ export const createSuperSyncProvider = (): PackageSuperSyncProvider => {
     validateRestoreSnapshot: validateRestoreSnapshotResponse,
     validateDeleteAllData: validateDeleteAllDataResponse,
     validateDeleteTimes: validateDeleteTimesResponse,
+    validateStoredServerSeqs: validateStoredServerSeqsResponse,
   };
 
   const deps: SuperSyncDeps = {
