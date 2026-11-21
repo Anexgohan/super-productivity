@@ -1,7 +1,7 @@
 import { inject, Injectable, Injector } from '@angular/core';
 import { Store } from '@ngrx/store';
 import { firstValueFrom } from 'rxjs';
-import { applyRemoteOperations, editsNotInCheckpoint } from '@sp/sync-core';
+import { applyRemoteOperations } from '@sp/sync-core';
 import { OperationLogStoreService } from '../persistence/operation-log-store.service';
 import {
   ConflictResult,
@@ -27,6 +27,10 @@ import {
   ServerOrderService,
 } from './server-order.service';
 import { remoteThenLocalStore } from './server-order-delete-rule.util';
+import {
+  checkpointApplyStore,
+  unsentEditsNotInCheckpoint,
+} from './checkpoint-on-top.util';
 import { getDeferredActions } from '../capture/operation-capture.meta-reducer';
 import { reapplyEditsReplacedByCheckpoint } from '../apply/server-order-replay.meta-reducer';
 import { ValidateStateService } from '../validation/validate-state.service';
@@ -353,13 +357,24 @@ export class RemoteOpsProcessingService {
             const bringBack = isCheckpoint
               ? await this.serverOrder.decideCheckpointBringBacks(validOps, lookups)
               : NO_CHECKPOINT_BRING_BACK;
+            const unsentOnTop = isCheckpoint
+              ? unsentEditsNotInCheckpoint({
+                  unsynced: await this.opLogStore.getUnsynced(),
+                  checkpointOps: validOps,
+                  discardablePendingOpIds: options?.getDiscardablePendingOpIds?.() ?? [],
+                  ownServerSeq: (opId) => this.serverOrder.ownServerSeq(opId),
+                })
+              : [];
             let loggedBringBacks: Operation[] = [];
             fullStateApplyResult.committedFullStateOpIds =
               await this.applyNonConflictingOps(validOps, true, {
                 skipDeferredActionDrain: true,
                 // A checkpoint is no user's choice to start over: the open task and the running timer stay.
                 ...(isCheckpoint
-                  ? { createBulkApplyAction: this.serverOrder.checkpointApplyAction() }
+                  ? {
+                      createBulkApplyAction: this.serverOrder.checkpointApplyAction(),
+                      unsentOnTopOfCheckpoint: unsentOnTop.map((op) => op.id),
+                    }
                   : {}),
                 // Logged with the checkpoint, so no crash can leave it without the saves that answer it.
                 localOpsAfter: bringBack.saves,
@@ -368,7 +383,7 @@ export class RemoteOpsProcessingService {
             const onTop = await this._applyUnsentEditsOnTopOfCheckpoint(
               validOps,
               fullStateApplyResult.committedFullStateOpIds,
-              options?.getDiscardablePendingOpIds?.() ?? [],
+              unsentOnTop,
               { ...bringBack, saves: loggedBringBacks },
               shownOnTop,
             );
@@ -773,7 +788,7 @@ export class RemoteOpsProcessingService {
   private async _applyUnsentEditsOnTopOfCheckpoint(
     validOps: Operation[],
     committedFullStateOpIds: string[],
-    discardablePendingOpIds: readonly string[],
+    unsent: Operation[],
     bringBack: CheckpointBringBack,
     shownOnTop: Operation[],
   ): Promise<{ kept: number; broughtBack: number }> {
@@ -785,22 +800,6 @@ export class RemoteOpsProcessingService {
     ) {
       return { kept: 0, broughtBack: 0 };
     }
-    const discardable = new Set(discardablePendingOpIds);
-    // Saves the server accepted but whose answer is not processed yet are still unsent here.
-    const unsent = editsNotInCheckpoint({
-      unsent: (await this.opLogStore.getUnsynced())
-        .filter(
-          (entry) =>
-            entry.source === 'local' &&
-            !discardable.has(entry.op.id) &&
-            !FULL_STATE_OP_TYPES.has(entry.op.opType),
-        )
-        .map((entry) => entry.op),
-      checkpointBaseSeq:
-        committedFullStateOps[committedFullStateOps.length - 1].repairBaseServerSeq ?? 0,
-      ownServerSeq: (opId) => this.serverOrder.ownServerSeq(opId),
-    });
-
     const result = await this.operationApplier.applyOperations(unsent, {
       skipDeferredLocalActions: true,
     });
@@ -852,6 +851,8 @@ export class RemoteOpsProcessingService {
       localOpsAfter?: Operation[];
       /** Receives `localOpsAfter` as logged, their clocks rebased; those are the ones to apply. */
       onLocalOpsLogged?: (ops: Operation[]) => void;
+      /** For a checkpoint: the ids of the unsent edits put on top of it, recorded on its log entry in the same write. */
+      unsentOnTopOfCheckpoint?: readonly string[];
     } = {},
   ): Promise<string[]> {
     const locallyReplayableOps =
@@ -871,9 +872,11 @@ export class RemoteOpsProcessingService {
       // validation, and user notifications stay in this service.
       const result = await applyRemoteOperations({
         ops: locallyReplayableOps,
-        store: options.localOpsAfter?.length
-          ? remoteThenLocalStore(this.opLogStore)
-          : this.opLogStore,
+        store: options.unsentOnTopOfCheckpoint
+          ? checkpointApplyStore(this.opLogStore, options.unsentOnTopOfCheckpoint)
+          : options.localOpsAfter?.length
+            ? remoteThenLocalStore(this.opLogStore)
+            : this.opLogStore,
         localOpsAfter: options.localOpsAfter,
         applier: {
           applyOperations: (opsToApply, applyOptions) =>

@@ -10,7 +10,10 @@ import {
   SchemaMigrationService,
 } from './schema-migration.service';
 import { OperationLogSnapshotService } from './operation-log-snapshot.service';
-import { withUnsentEditsAfterCheckpoint } from './unsent-after-checkpoint.util';
+import {
+  newestCheckpointEntry,
+  withUnsentEditsAfterCheckpoint,
+} from './unsent-after-checkpoint.util';
 import { OperationLogRecoveryService } from './operation-log-recovery.service';
 import { SyncHydrationService } from './sync-hydration.service';
 import { ArchiveMigrationService } from './archive-migration.service';
@@ -242,12 +245,13 @@ export class OperationLogHydratorService {
         // - reducerRejectedAt ops: conversion, schema migration, or reducer
         //   application could not produce state, so replay must not try them
         //   again on every startup.
-        // Unsent edits logged before a checkpoint replay after it (anex/checkpoints).
+        // The edits the newest checkpoint's apply put on top of it replay after it.
+        const tail = (
+          await this.opLogStore.getOpsAfterSeq(snapshot.lastAppliedOpSeq)
+        ).filter((entry) => entry.reducerRejectedAt === undefined);
         const tailOps = withUnsentEditsAfterCheckpoint(
-          (await this.opLogStore.getOpsAfterSeq(snapshot.lastAppliedOpSeq)).filter(
-            (entry) => entry.reducerRejectedAt === undefined,
-          ),
-          await this.opLogStore.getUnsynced(),
+          tail,
+          await this._entriesToMoveAfterCheckpoint(tail),
         );
 
         if (tailOps.length > 0) {
@@ -343,12 +347,13 @@ export class OperationLogHydratorService {
         // We must replay ALL operations from the beginning of the log.
         // Status-blind except for durable reducer rejections — see the replay
         // policy note in the snapshot branch above.
-        // Unsent edits logged before a checkpoint replay after it (anex/checkpoints).
+        // The edits the newest checkpoint's apply put on top of it replay after it.
+        const logged = (await this.opLogStore.getOpsAfterSeq(0)).filter(
+          (entry) => entry.reducerRejectedAt === undefined,
+        );
         const allOps = withUnsentEditsAfterCheckpoint(
-          (await this.opLogStore.getOpsAfterSeq(0)).filter(
-            (entry) => entry.reducerRejectedAt === undefined,
-          ),
-          await this.opLogStore.getUnsynced(),
+          logged,
+          await this._entriesToMoveAfterCheckpoint(logged),
         );
 
         if (allOps.length === 0) {
@@ -480,6 +485,22 @@ export class OperationLogHydratorService {
    * Replays a hydration batch and durably records its reducer outcome before
    * startup can retry archive side effects or save a snapshot past the batch.
    */
+  /** The entries `withUnsentEditsAfterCheckpoint` moves from: those the checkpoint's record names, or without one the unsent ones. */
+  private async _entriesToMoveAfterCheckpoint(
+    entries: OperationLogEntry[],
+  ): Promise<OperationLogEntry[]> {
+    const checkpoint = newestCheckpointEntry(entries);
+    if (!checkpoint) return [];
+    if (!checkpoint.unsentOnTopOpIds) return this.opLogStore.getUnsynced();
+    const found = await Promise.all(
+      checkpoint.unsentOnTopOpIds.map((id) => this.opLogStore.getOpById(id)),
+    );
+    return found.filter(
+      (entry): entry is OperationLogEntry =>
+        entry !== undefined && entry.reducerRejectedAt === undefined,
+    );
+  }
+
   private async _dispatchHydrationReplay(
     replayBatch: HydrationReplayBatch,
     localClientId: string | undefined,

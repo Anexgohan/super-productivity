@@ -221,6 +221,7 @@ describe('edits typed while a checkpoint applies', () => {
 const checkpointHarness = (
   saves: Operation[],
   unsent: Operation[],
+  ownServerSeqs: Record<string, number> = {},
 ): {
   service: RemoteOpsProcessingService;
   events: string[];
@@ -239,9 +240,17 @@ const checkpointHarness = (
       return { seqs: ops.map(() => ++seq), writtenOps: ops, skippedCount: 0 };
     },
     appendMixedSourceBatchSkipDuplicates: async (
-      batches: { ops: Operation[]; source: string }[],
+      batches: {
+        ops: Operation[];
+        source: string;
+        options?: { unsentOnTopOpIds?: readonly string[] };
+      }[],
     ) => {
-      events.push(`write ${batches.map((b) => `${b.source} ${ids(b.ops)}`).join(' + ')}`);
+      const onTop = (b: (typeof batches)[number]): string =>
+        b.options?.unsentOnTopOpIds ? ` (on top: ${b.options.unsentOnTopOpIds})` : '';
+      events.push(
+        `write ${batches.map((b) => `${b.source} ${ids(b.ops)}${onTop(b)}`).join(' + ')}`,
+      );
       const written = batches.flatMap((b) =>
         b.ops.map((o) => ({ seq: ++seq, op: o, source: b.source })),
       );
@@ -335,6 +344,7 @@ const checkpointHarness = (
     ],
   });
   const serverOrder = injector.get(ServerOrderService);
+  vi.spyOn(serverOrder, 'ownServerSeq').mockImplementation((id) => ownServerSeqs[id]);
   const lookups = { notStored: new Set<string>(), deleteTimes: new Map() };
   vi.spyOn(serverOrder, 'askBeforeLocks').mockImplementation(async () => {
     order.push('ask the server');
@@ -373,10 +383,24 @@ describe('a checkpoint with a "bring it back" save', () => {
     await service.processRemoteOps([checkpoint]);
 
     expect(events).toEqual([
-      'write remote checkpoint + local bring-back',
+      'write remote checkpoint (on top: unsent) + local bring-back',
       'apply checkpoint',
       'apply unsent',
       'apply bring-back',
+    ]);
+  });
+
+  it('records on the checkpoint, in the same write, the unsent edits it puts on top, leaving out those the server holds in it', async () => {
+    const held = { ...rename(A, 'held'), id: 'held' } as Operation;
+    // The checkpoint's base is 7: the server stored "held" at 5, before it.
+    const { service, events } = checkpointHarness([], [held, unsent], { held: 5 });
+
+    await service.processRemoteOps([checkpoint]);
+
+    expect(events).toEqual([
+      'write remote checkpoint (on top: unsent)',
+      'apply checkpoint',
+      'apply unsent',
     ]);
   });
 
@@ -440,5 +464,74 @@ describe('a startup without the snapshot saved after a checkpoint', () => {
       'unsent-time',
       'bring-back',
     ]);
+  });
+
+  it('replays the edits its apply put on top after the checkpoint, however late or soon their upload was acknowledged', () => {
+    const sameTick = {
+      ...rename(A, 'acknowledged in the same tick'),
+      id: 'same-tick',
+    } as Operation;
+    const later = { ...rename(A, 'kept edit'), id: 'later' } as Operation;
+    const cp = checkpointOf(start());
+    const shown = apply(start(), [cp, sameTick, later]);
+    const log: OperationLogEntry[] = [
+      { seq: 1, op: sameTick, appliedAt: 1000, source: 'local', syncedAt: 2000 },
+      { seq: 2, op: later, appliedAt: 1001, source: 'local', syncedAt: 3000 },
+      {
+        seq: 3,
+        op: cp,
+        appliedAt: 2000,
+        source: 'remote',
+        syncedAt: 2000,
+        unsentOnTopOpIds: ['same-tick', 'later'],
+      },
+    ];
+
+    const replayed = withUnsentEditsAfterCheckpoint(log, log);
+
+    expect(replayed.map((e) => e.op.id)).toEqual(['checkpoint', 'same-tick', 'later']);
+    expect(
+      titleOf(
+        apply(
+          start(),
+          replayed.map((e) => e.op),
+        ),
+      ),
+    ).toBe(titleOf(shown));
+  });
+
+  it('leaves in place the edits the server already held in the checkpoint, acknowledged after it', () => {
+    const olderTitle = rename(A, 'A older title');
+    const time = makeOp(A, '[TimeTracking] Sync time spent', 'UPD', 't1', {
+      taskId: 't1',
+      date: '2026-11-21',
+      duration: 60000,
+    });
+    const cp = checkpointOf(
+      apply(start(), [olderTitle, rename(B, 'B later title'), time]),
+    );
+    const log: OperationLogEntry[] = [
+      { seq: 1, op: olderTitle, appliedAt: 1000, source: 'local', syncedAt: 3000 },
+      { seq: 2, op: time, appliedAt: 1001, source: 'local', syncedAt: 3000 },
+      {
+        seq: 3,
+        op: cp,
+        appliedAt: 2000,
+        source: 'remote',
+        syncedAt: 2000,
+        unsentOnTopOpIds: [],
+      },
+    ];
+
+    const after = apply(
+      start(),
+      withUnsentEditsAfterCheckpoint(log, log).map((e) => e.op),
+    );
+
+    expect(titleOf(after)).toBe('B later title');
+    const tasks = after.tasks as {
+      entities: Record<string, { timeSpentOnDay: Record<string, number> }>;
+    };
+    expect(tasks.entities.t1.timeSpentOnDay['2026-11-21']).toBe(60000);
   });
 });

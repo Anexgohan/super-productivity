@@ -25,7 +25,7 @@ describe('withUnsentEditsAfterCheckpoint (anex/checkpoints, Stage 6)', () => {
     o: Operation,
     overrides: Partial<OperationLogEntry> = {},
   ): OperationLogEntry => ({ seq, op: o, appliedAt: seq, source: 'local', ...overrides });
-  const checkpoint = (seq: number, base: number | undefined = 100): OperationLogEntry =>
+  const checkpoint = (seq: number, base: number | null = 100): OperationLogEntry =>
     entry(
       seq,
       op(`cp-${seq}`, {
@@ -33,7 +33,7 @@ describe('withUnsentEditsAfterCheckpoint (anex/checkpoints, Stage 6)', () => {
         actionType: ActionType.LOAD_ALL_DATA,
         entityType: 'ALL',
         clientId: 'sp-bridge',
-        repairBaseServerSeq: base,
+        repairBaseServerSeq: base ?? undefined,
       }),
       { source: 'remote', syncedAt: seq },
     );
@@ -64,7 +64,7 @@ describe('withUnsentEditsAfterCheckpoint (anex/checkpoints, Stage 6)', () => {
 
   it('keeps log order for a full import or a REPAIR without its base', () => {
     const unsent = entry(1, op('unsent'));
-    const legacy = checkpoint(2, undefined);
+    const legacy = checkpoint(2, null);
     expect(ids(withUnsentEditsAfterCheckpoint([unsent, legacy], [unsent]))).toEqual([
       'unsent',
       'cp-2',

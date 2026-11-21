@@ -86,6 +86,11 @@ export interface Operation extends Omit<LibOperation, 'actionType' | 'entityType
 
 export interface OperationLogEntry extends Omit<LibOperationLogEntry, 'op'> {
   op: Operation;
+  /**
+   * On a checkpoint this browser applied: the ids of its unsent edits the apply put on top, which the startup rebuild replays after it.
+   * Kept only in this browser's change log; never uploaded.
+   */
+  unsentOnTopOpIds?: string[];
 }
 
 export interface EntityChange extends Omit<LibEntityChange, 'entityType'> {

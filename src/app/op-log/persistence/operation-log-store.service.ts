@@ -5,6 +5,7 @@ import {
   Operation,
   OperationLogEntry,
   VectorClock,
+  isCheckpointFullStateOp,
   isFullStateOpType,
   FULL_STATE_OP_TYPES,
 } from '../core/operation.types';
@@ -72,7 +73,7 @@ interface VectorClockEntry {
 export interface MixedSourceOperationBatch {
   ops: readonly Operation[];
   source: 'local' | 'remote';
-  options?: { pendingApply?: boolean };
+  options?: { pendingApply?: boolean; unsentOnTopOpIds?: readonly string[] };
 }
 
 export interface MixedSourceWrittenOperation {
@@ -155,6 +156,7 @@ interface StoredOperationLogEntry {
   reducerRejectedAt?: number;
   applicationStatus?: 'pending' | 'archive_pending' | 'applied' | 'failed';
   retryCount?: number;
+  unsentOnTopOpIds?: string[];
 }
 
 /**
@@ -173,6 +175,7 @@ const decodeStoredEntry = (stored: StoredOperationLogEntry): OperationLogEntry =
     reducerRejectedAt: stored.reducerRejectedAt,
     applicationStatus: stored.applicationStatus,
     retryCount: stored.retryCount,
+    ...(stored.unsentOnTopOpIds ? { unsentOnTopOpIds: stored.unsentOnTopOpIds } : {}),
   };
 };
 
@@ -541,7 +544,7 @@ export class OperationLogStoreService implements RemoteOperationApplyStorePort<O
   private _buildStoredEntry(
     op: Operation,
     source: 'local' | 'remote',
-    options?: { pendingApply?: boolean },
+    options?: MixedSourceOperationBatch['options'],
   ): Omit<StoredOperationLogEntry, 'seq'> {
     return {
       op: encodeOperation(op),
@@ -550,6 +553,9 @@ export class OperationLogStoreService implements RemoteOperationApplyStorePort<O
       syncedAt: source === 'remote' ? Date.now() : undefined,
       applicationStatus:
         source === 'remote' ? (options?.pendingApply ? 'pending' : 'applied') : undefined,
+      ...(options?.unsentOnTopOpIds && isCheckpointFullStateOp(op)
+        ? { unsentOnTopOpIds: [...options.unsentOnTopOpIds] }
+        : {}),
     };
   }
 
