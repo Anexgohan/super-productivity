@@ -307,6 +307,13 @@ export class RemoteOpsProcessingService {
         'RemoteOpsProcessingService: Full-state operation detected, skipping conflict detection.',
       );
       const callerHoldsOperationLogLock = options?.callerHoldsOperationLogLock ?? false;
+      const isCheckpoint = validOps
+        .filter((op) => FULL_STATE_OP_TYPES.has(op.opType))
+        .every(isCheckpointFullStateOp);
+      // Asked before the locks, so no edit held back during the apply waits on a request.
+      const lookups = isCheckpoint
+        ? await this.serverOrder.askBeforeLocks(validOps)
+        : undefined;
       const applyAndValidateWithOperationLogLockHeld = async (): Promise<{
         committedFullStateOpIds: string[];
         blockedByLocalConflict: boolean;
@@ -341,13 +348,10 @@ export class RemoteOpsProcessingService {
           ) {
             fullStateApplyResult.blockedByLocalConflict = true;
           } else {
-            const isCheckpoint = validOps
-              .filter((op) => FULL_STATE_OP_TYPES.has(op.opType))
-              .every(isCheckpointFullStateOp);
-            // Before anything changes: when the server cannot say which saves it holds or when an edited item was deleted, this apply stops.
-            if (isCheckpoint) await this.serverOrder.learnUnsentServerSeqs();
+            // Asks only about anything new; when the server cannot say which saves it holds or when an edited item was deleted, this apply stops.
+            if (isCheckpoint) await this.serverOrder.learnUnsentServerSeqs(lookups);
             const bringBack = isCheckpoint
-              ? await this.serverOrder.decideCheckpointBringBacks(validOps)
+              ? await this.serverOrder.decideCheckpointBringBacks(validOps, lookups)
               : NO_CHECKPOINT_BRING_BACK;
             let loggedBringBacks: Operation[] = [];
             fullStateApplyResult.committedFullStateOpIds =

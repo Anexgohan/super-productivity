@@ -25,6 +25,7 @@ import {
 } from '../sync-providers/provider.interface';
 import { syncOpToOperation } from './operation-sync.util';
 import { ServerOrderService } from './server-order.service';
+import { bringsItemBack } from './server-order-delete-rule.util';
 import { OperationEncryptionService } from './operation-encryption.service';
 import { SyncProviderManager } from '../sync-providers/provider-manager.service';
 import {
@@ -690,6 +691,7 @@ export class OperationLogUploadService {
       ...(entry.op.repairBaseServerSeq !== undefined
         ? { repairBaseServerSeq: entry.op.repairBaseServerSeq }
         : {}),
+      ...(bringsItemBack(entry.op) ? { recreatesEntityAfterDelete: true } : {}),
     };
   }
 

@@ -9,6 +9,7 @@
  */
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { SuperSyncServerOperation } from '@sp/shared-schema';
+import type { AppRulesApplyResult } from './app-rules-protocol';
 
 export const CHECKPOINT_EVERY_CHANGES = 1000;
 export const CHECKPOINT_EVERY_BYTES = 20 * 1024 * 1024;
@@ -30,7 +31,7 @@ export interface CheckpointState {
    * so the board may never have been checkpointed and the first chance is taken.
    */
   countsComplete: boolean;
-  /** Why the board may not be checkpointed until the next full import or checkpoint, or null; kept here so a restart keeps the hold. */
+  /** Why the board may not be checkpointed until the next full import or checkpoint, or null; a copy of the hold the worker saves with its cache. */
   heldBack: string | null;
 }
 
@@ -50,6 +51,38 @@ export const isFullStatePoint = (op: Record<string, unknown>): boolean =>
   op.opType === 'SYNC_IMPORT' ||
   op.opType === 'BACKUP_IMPORT' ||
   (op.opType === 'REPAIR' && typeof op.repairBaseServerSeq === 'number');
+
+/** True when a full import or checkpoint among the rows was applied: handled, not dropped, and its reducer did not fail. */
+const replacesArchive = (
+  r: Pick<AppRulesApplyResult, 'seq' | 'filteredOpIds' | 'reducerFailures'>,
+  rows: readonly { serverSeq: number; op: unknown }[],
+): boolean => {
+  const skipped = new Set([...r.filteredOpIds, ...r.reducerFailures.map((f) => f.opId)]);
+  return rows.some((row) => {
+    const op = row.op as Record<string, unknown>;
+    return (
+      row.serverSeq <= r.seq && isFullStatePoint(op) && !skipped.has(op.id as string)
+    );
+  });
+};
+
+/**
+ * Why no checkpoint may be written after one applied page, given the hold before it.
+ * An archive failure can leave this archive unlike a browser's, so it holds them back until a full import or checkpoint replaces the archive.
+ */
+export const nextCheckpointHold = (
+  heldBack: string | null,
+  r: Pick<
+    AppRulesApplyResult,
+    'seq' | 'filteredOpIds' | 'reducerFailures' | 'archiveFailure'
+  >,
+  rows: readonly { serverSeq: number; op: unknown }[],
+): string | null => {
+  if (r.archiveFailure) {
+    return `archive handling failed on op ${r.archiveFailure.opId} (${r.archiveFailure.actionType})`;
+  }
+  return replacesArchive(r, rows) ? null : heldBack;
+};
 
 const payloadBytes = (op: Record<string, unknown>): number =>
   typeof op.payload === 'string'

@@ -3673,6 +3673,14 @@ describe('SyncService', () => {
         timestamp: Date.now() - 60_000,
         ...overrides,
       });
+    const bringBack = (overrides: Partial<Operation> = {}): Operation =>
+      makeOp({
+        actionType: '[TASK] LWW Update',
+        opType: 'UPD',
+        payload: { id: overrides.entityId, recreatesEntityAfterDelete: true },
+        recreatesEntityAfterDelete: true,
+        ...overrides,
+      });
     const storedRows = (): {
       entityType: string;
       entityId: string;
@@ -3751,6 +3759,71 @@ describe('SyncService', () => {
 
         await service.uploadOps(userId, clientId, [deleteOp({ timestamp: 9_000 })]);
         expect(storedRows()[0].deletedAt).toBe(9_000);
+      });
+
+      it('refuses a bring-back older than a recorded delete or tied with it, and stores one later than it', async () => {
+        await service.uploadOps(userId, clientId, [
+          deleteOp({ entityId: 't1', timestamp: 5_000 }),
+          deleteOp({ entityId: 't2', timestamp: 5_000 }),
+          deleteOp({ entityId: 't3', timestamp: 5_000 }),
+          deleteOp({
+            actionType: '[Note] Delete Note',
+            entityType: 'NOTE',
+            entityId: 'n1',
+            payload: { id: 'n1' },
+            timestamp: 5_000,
+          }),
+        ]);
+
+        const ops = [
+          bringBack({ entityId: 't1', timestamp: 4_000 }),
+          bringBack({ entityId: 't2', timestamp: 5_000 }),
+          bringBack({ entityId: 't3', timestamp: 6_000 }),
+          bringBack({ entityType: 'NOTE', entityId: 'n1', timestamp: 4_000 }),
+          bringBack({ entityId: 't4', timestamp: 1_000 }),
+          // A stale tab sends no marker, so its bring-back is stored as before.
+          bringBack({
+            entityId: 't1',
+            timestamp: 4_000,
+            recreatesEntityAfterDelete: undefined,
+          }),
+        ];
+        const results = await service.uploadOps(userId, clientId, ops);
+
+        expect(results.map(({ accepted, errorCode }) => [accepted, errorCode])).toEqual([
+          [false, 'DELETED_LATER'],
+          [false, 'DELETED_LATER'],
+          [true, undefined],
+          [false, 'DELETED_LATER'],
+          [true, undefined],
+          [true, undefined],
+        ]);
+        expect(ops.map((op) => testState.operations.has(op.id))).toEqual([
+          false,
+          false,
+          true,
+          false,
+          true,
+          true,
+        ]);
+      });
+
+      it('answers a stored bring-back as a duplicate even after a later delete', async () => {
+        const save = bringBack({ entityId: 't1', timestamp: 4_000 });
+        const [first] = await service.uploadOps(userId, clientId, [save]);
+        await service.uploadOps(userId, clientId, [
+          deleteOp({ entityId: 't1', timestamp: 5_000 }),
+        ]);
+
+        const [retry] = await service.uploadOps(userId, clientId, [{ ...save }]);
+
+        expect(retry).toEqual(
+          expect.objectContaining({
+            accepted: false,
+            errorCode: 'DUPLICATE_OPERATION',
+            serverSeq: first.serverSeq,
+          }),
+        );
       });
     });
 

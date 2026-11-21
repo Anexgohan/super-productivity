@@ -76,6 +76,7 @@ import type {
 } from '../src/app-rules-protocol';
 import { buildRootReducer, type RootState } from './root-reducer';
 import { logicalDayChange } from './logical-day';
+import { nextCheckpointHold } from '../src/checkpoints';
 
 /** Bump when the cache shape changes; an older cache is then discarded and the app rules rebuild from seq 0. */
 export const APP_RULES_CACHE_VERSION = 2;
@@ -92,6 +93,8 @@ export interface AppRulesCache {
   filteredEntityIds: string[];
   /** Component-wise max of every handled op's vector clock: the basis for the API's own write clocks. */
   mergedClock: Record<string, number>;
+  /** Why no checkpoint may be written as of `seq`; saved with it, so no restart resumes past an archive failure without its hold. */
+  checkpointHeldBack?: string | null;
 }
 
 /** The one stand-in for IndexedDB. Clones on the way in and out, as a database round trip would. */
@@ -137,6 +140,7 @@ export class AppRules {
   private _latestFullStateOp: Operation | undefined;
   private _sawArchiveOp = false;
   private _mergedClock: Record<string, number> = {};
+  private _checkpointHeldBack: string | null = null;
   private _filteredEntityIds = new Set<string>();
   private readonly _archive = new MemoryArchiveStore();
 
@@ -202,7 +206,12 @@ export class AppRules {
     return this._sawArchiveOp;
   }
 
-  restore(cache: AppRulesCache): void {
+  get checkpointHeldBack(): string | null {
+    return this._checkpointHeldBack;
+  }
+
+  /** `heldBack` is the hold saved beside a cache that does not keep one yet. */
+  restore(cache: AppRulesCache, heldBack: string | null = null): void {
     this._state = cache.state;
     this._seq = cache.seq;
     this._archive.young = cache.archiveYoung;
@@ -211,6 +220,8 @@ export class AppRules {
     this._sawArchiveOp = cache.sawArchiveOp;
     this._mergedClock = cache.mergedClock ?? {};
     this._filteredEntityIds = new Set(cache.filteredEntityIds ?? []);
+    this._checkpointHeldBack =
+      cache.checkpointHeldBack === undefined ? heldBack : cache.checkpointHeldBack;
   }
 
   toCache(): AppRulesCache {
@@ -224,6 +235,7 @@ export class AppRules {
       sawArchiveOp: this._sawArchiveOp,
       mergedClock: this._mergedClock,
       filteredEntityIds: [...this._filteredEntityIds],
+      checkpointHeldBack: this._checkpointHeldBack,
     };
   }
 
@@ -241,6 +253,7 @@ export class AppRules {
       reducerFailures: [],
       sawArchiveOp: this._sawArchiveOp,
       mergedClock: { ...this._mergedClock },
+      checkpointHeldBack: this._checkpointHeldBack,
     };
     if (fresh.length === 0) return result;
     const dayChange = logicalDayChange(this._state, Date.now());
@@ -363,6 +376,12 @@ export class AppRules {
     result.mergedClock = { ...this._mergedClock };
     result.seq = this._seq;
     result.sawArchiveOp = this._sawArchiveOp;
+    this._checkpointHeldBack = nextCheckpointHold(
+      this._checkpointHeldBack,
+      result,
+      fresh,
+    );
+    result.checkpointHeldBack = this._checkpointHeldBack;
     return result;
   }
 

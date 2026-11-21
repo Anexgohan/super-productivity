@@ -1,6 +1,7 @@
 import { Logger } from '../logger';
 import { Prisma } from '@prisma/client';
 import {
+  SUPER_SYNC_DELETED_LATER_ERROR_CODE,
   SUPER_SYNC_OP_TYPES,
   SUPER_SYNC_SNAPSHOT_OP_TYPES,
   type SuperSyncOpType,
@@ -65,6 +66,7 @@ export const SYNC_ERROR_CODES = {
   // Conflict errors (409)
   REPAIR_STALE: 'REPAIR_STALE',
   DUPLICATE_OPERATION: 'DUPLICATE_OPERATION',
+  DELETED_LATER: SUPER_SYNC_DELETED_LATER_ERROR_CODE,
 
   // Rate limiting (429)
   RATE_LIMITED: 'RATE_LIMITED',
@@ -175,6 +177,8 @@ export interface Operation {
   isPayloadEncrypted?: boolean; // True if payload is E2E encrypted
   syncImportReason?: string;
   repairBaseServerSeq?: number;
+  /** Sent, never stored: the save brings back a task or note after a delete, which the payload's encryption hides. */
+  recreatesEntityAfterDelete?: boolean;
 }
 
 export const isCausalFullStateOperation = (

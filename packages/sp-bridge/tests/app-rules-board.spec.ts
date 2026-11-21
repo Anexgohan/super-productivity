@@ -4,7 +4,7 @@
  *
  * Runs against dist/app-rules-worker.js, the file that ships; `npm test` builds it first (build:app-rules).
  */
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -363,5 +363,35 @@ describe('app rules board', () => {
     const b = board(worker, 'container', dir);
     await expect(b.open()).rejects.toThrow();
     expect(() => b.view).toThrow(AppRulesUnavailableError);
+  }, 60_000);
+});
+
+describe('app rules board: the checkpoint hold in the worker cache', () => {
+  it('takes the hold saved beside a cache that does not keep one yet, then saves it in the cache', async () => {
+    const dir = tempDir();
+    const log = new Log();
+    await log.importInitialState();
+    const first = board(newWorker(), 'container', dir);
+    await first.open();
+    await sync(first, log);
+    const cachePath = join(dir, 'container.json');
+    const cache = JSON.parse(readFileSync(cachePath, 'utf-8')) as Record<string, unknown>;
+    delete cache.checkpointHeldBack;
+    writeFileSync(cachePath, JSON.stringify(cache));
+
+    const hold = 'archive handling failed on op op-x ([Task Shared] moveToArchive)';
+    const reopened = new AppRulesBoard(newWorker(), {
+      board: 'container',
+      clientId: 'sp-bridge',
+      cachePath,
+      encryptionPassword: PASSWORD,
+      checkpointHeldBack: hold,
+    });
+    await reopened.open();
+    expect(reopened.status.checkpointHeldBack).toBe(hold);
+
+    log.push(await browser.addTask(buildTaskEntity({ title: 'next' }), afterImport()));
+    await sync(reopened, log);
+    expect(JSON.parse(readFileSync(cachePath, 'utf-8')).checkpointHeldBack).toBe(hold);
   }, 60_000);
 });

@@ -21,6 +21,7 @@ import {
 } from '@sp/sync-core';
 import {
   EntityType,
+  extractActionPayload,
   extractFullStateFromPayload,
   FULL_STATE_OP_TYPES,
   Operation,
@@ -30,6 +31,7 @@ import { bulkApplyOperations } from '../apply/bulk-hydration.action';
 import { bringBackTaskStates } from './server-order-bring-back.util';
 import {
   bringBackNoteStates,
+  type CheckpointCandidate,
   editsShown,
   itemsMissingFromCheckpoint,
   itemsRemovedBy,
@@ -106,6 +108,36 @@ export const NO_CHECKPOINT_BRING_BACK: CheckpointBringBack = {
   missingKeys: new Set(),
 };
 
+/** What the server answered for one checkpoint apply, so it asks again only about saves and items new since. */
+export interface CheckpointLookups {
+  /** Unsent saves the server said it does not hold. */
+  notStored: Set<string>;
+  /** Delete times by item, as `TYPE:id`; an empty list for an item without a record. */
+  deleteTimes: Map<string, ItemDelete[]>;
+}
+
+const noLookups = (): CheckpointLookups => ({
+  notStored: new Set(),
+  deleteTimes: new Map(),
+});
+
+type CheckpointItem = { entityType: 'TASK' | 'NOTE'; entityId: string };
+
+/** What a checkpoint removes from the state shown, as decideCheckpointBringBacks weighs it. */
+interface CheckpointDeletes {
+  state: Record<string, unknown>;
+  tasks: TaskState | undefined;
+  missing: CheckpointCandidate[];
+  deleteOpsAfter: Operation[];
+  deletedAfter: ItemDelete[];
+  missingKeys: Set<string>;
+  own: Operation[];
+  /** The missing items this browser edited, whose delete times decide them. */
+  candidates: CheckpointCandidate[];
+  /** Those items and their parents, as asked of the server. */
+  asked: CheckpointItem[];
+}
+
 const itemKeyOf = (op: { entityType: string; entityId?: string }): string =>
   `${op.entityType}:${op.entityId ?? ''}`;
 
@@ -120,9 +152,32 @@ const putsItemBack = (op: Operation): boolean =>
   RESTORE_ACTION_TYPES.has(op.actionType) ||
   recreatesItem(op);
 
+const idsIn = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.flatMap((item) => {
+        const id = (item as { id?: unknown } | undefined)?.id;
+        return typeof id === 'string' ? [id] : [];
+      })
+    : [];
+
+/** The items one change puts back, as `TYPE:id`: an undo puts back every task it lists, a create or a full save only the item it names. */
+const keysPutBackBy = (op: Operation): string[] => {
+  if (!putsItemBack(op)) return [];
+  const action = extractActionPayload(op.payload);
+  const restored =
+    op.actionType === '[Task Shared] restoreDeletedTask'
+      ? Object.keys((action['deletedTaskEntities'] as object | undefined) ?? {})
+      : op.actionType === '[Task Shared] restoreTask'
+        ? idsIn(action['subTasks'])
+        : [];
+  return [op.entityId, ...(op.entityIds ?? []), ...restored]
+    .filter((id): id is string => !!id)
+    .map((entityId) => itemKeyOf({ entityType: op.entityType, entityId }));
+};
+
 /** The keys of the items the changes put back, as `TYPE:id`. */
 const itemsPutBackBy = (ops: readonly Operation[]): Set<string> =>
-  new Set(ops.filter(putsItemBack).map(itemKeyOf));
+  new Set(ops.flatMap(keysPutBackBy));
 
 const deletedTaskIdsOf = (deletes: readonly ItemDelete[]): Set<string> =>
   new Set(deletes.filter((d) => d.entityType === 'TASK').map((d) => d.entityId));
@@ -135,7 +190,6 @@ const itemsStillDeleted = (
 ): ItemDelete[] =>
   deleteOps.flatMap((deleteOp) => {
     const putBack = itemsPutBackBy(ops.slice(ops.indexOf(deleteOp) + 1));
-    if (putBack.has(itemKeyOf(deleteOp))) return [];
     return itemsRemovedBy([deleteOp], shownTasks).filter(
       (item) => !putBack.has(itemKeyOf(item)),
     );
@@ -364,78 +418,62 @@ export class ServerOrderService {
   /**
    * Before a checkpoint is applied: asks the server for the numbers of the unsent saves whose number this browser does not know.
    * A save stored before the checkpoint's base is in it already; a reload or a lost upload answer leaves its number unknown here.
+   * Saves `lookups` holds an answer for are not asked again.
    * Throws when the server cannot answer, so this apply stops before anything changes and the next sync retries it.
    */
-  async learnUnsentServerSeqs(): Promise<void> {
+  async learnUnsentServerSeqs(lookups: CheckpointLookups = noLookups()): Promise<void> {
     const provider = this.providerManager.getActiveProvider();
     if (!isStoredServerSeqsCapable(provider)) return;
     this.syncEpoch();
     const unknown = new Set(
       (await this.readUnsent())
         .map((op) => op.id)
-        .filter((opId) => !this.ownSeqByOpId.has(opId)),
+        .filter((opId) => !this.ownSeqByOpId.has(opId) && !lookups.notStored.has(opId)),
     );
     if (unknown.size === 0) return;
     for (const { opId, serverSeq } of await provider.getStoredServerSeqs([...unknown])) {
       if (unknown.has(opId)) rememberSeq(this.ownSeqByOpId, opId, serverSeq);
     }
+    // A save the server stores after this answer is numbered past the downloaded checkpoint, so it goes on top either way.
+    for (const opId of unknown) {
+      if (!this.ownSeqByOpId.has(opId)) lookups.notStored.add(opId);
+    }
+  }
+
+  /**
+   * Before a checkpoint apply takes its locks: asks the server what the apply needs, so no lock or held edit waits on a request.
+   * Inside the locks the apply asks only about the saves and items new since; a failed request stops it either way.
+   */
+  async askBeforeLocks(validOps: readonly Operation[]): Promise<CheckpointLookups> {
+    const lookups = noLookups();
+    await this.learnUnsentServerSeqs(lookups);
+    const found = await this.findCheckpointDeletes(validOps);
+    if (found) await this.deleteTimesOf(found.asked, lookups);
+    return lookups;
   }
 
   /**
    * Before a checkpoint is applied: asks the server when the shown tasks and notes the checkpoint lacks, and this browser edited, were deleted.
    * Those and the items deleted after the checkpoint in the same download, unless a later change puts them back, are its deletes.
    * Each item edited later than its delete gets a "bring it back" save, logged with the checkpoint and applied after it.
+   * Items `lookups` already holds an answer for are not asked again.
    * Throws when the server cannot answer, so this apply stops before anything changes and the next sync retries it.
    */
   async decideCheckpointBringBacks(
     validOps: readonly Operation[],
+    lookups: CheckpointLookups = noLookups(),
   ): Promise<CheckpointBringBack> {
-    const checkpointAt = validOps
-      .map((op) => FULL_STATE_OP_TYPES.has(op.opType))
-      .lastIndexOf(true);
-    const provider = this.providerManager.getActiveProvider();
-    if (checkpointAt < 0 || !isDeleteTimesCapable(provider))
-      return NO_CHECKPOINT_BRING_BACK;
-    const afterCheckpoint = validOps.slice(checkpointAt + 1);
-    const state = await this.readState();
-    const tasks = state[TASK_FEATURE_NAME] as TaskState | undefined;
-    const putBack = itemsPutBackBy(afterCheckpoint);
-    const missing = itemsMissingFromCheckpoint(
-      { tasks, notes: state[NOTE_FEATURE_NAME] as NoteState | undefined },
-      extractFullStateFromPayload(validOps[checkpointAt].payload),
-    ).filter((item) => !putBack.has(itemKeyOf(item)));
-    const deleteOpsAfter = await this.newItemDeletes(afterCheckpoint);
-    const deletedAfter = itemsStillDeleted(afterCheckpoint, deleteOpsAfter, tasks);
-    const missingKeys = new Set([...missing, ...deletedAfter].map(itemKeyOf));
+    const found = await this.findCheckpointDeletes(validOps);
+    if (!found) return NO_CHECKPOINT_BRING_BACK;
+    const { state, tasks, missing, deleteOpsAfter, deletedAfter, missingKeys, own } =
+      found;
     if (missingKeys.size === 0 && deleteOpsAfter.length === 0) {
       return { saves: [], missingKeys };
     }
-
-    const own = await this.readOwnChanges();
-    // An update is an edit of every item it names, as findEditsThatBeatDeletes counts it.
-    const edited = new Set(
-      own
-        .filter((op) => op.opType === OpType.Update)
-        .flatMap((op) =>
-          [op.entityId, ...(op.entityIds ?? [])]
-            .filter((id): id is string => !!id)
-            .map((entityId) => itemKeyOf({ entityType: op.entityType, entityId })),
-        ),
+    const missingDeletes = deleteTimesWithParents(
+      found.candidates,
+      await this.deleteTimesOf(found.asked, lookups),
     );
-    const candidates = missing.filter((item) => edited.has(itemKeyOf(item)));
-    const asked = new Map<string, { entityType: 'TASK' | 'NOTE'; entityId: string }>();
-    for (const { entityType, entityId, parentId } of candidates) {
-      asked.set(itemKeyOf({ entityType, entityId }), { entityType, entityId });
-      if (parentId) {
-        asked.set(itemKeyOf({ entityType, entityId: parentId }), {
-          entityType,
-          entityId: parentId,
-        });
-      }
-    }
-    const records =
-      asked.size > 0 ? await provider.getDeleteTimes([...asked.values()]) : [];
-    const missingDeletes = deleteTimesWithParents(candidates, records);
     await this.withdrawBeatenRecreations([
       ...missingDeletes,
       ...itemsRemovedBy(deleteOpsAfter, tasks),
@@ -666,6 +704,84 @@ export class ServerOrderService {
       );
     }
     return saves;
+  }
+
+  /** What the newest checkpoint of a download removes from the state shown, and which of those items to ask the server about. */
+  private async findCheckpointDeletes(
+    validOps: readonly Operation[],
+  ): Promise<CheckpointDeletes | undefined> {
+    const checkpointAt = validOps
+      .map((op) => FULL_STATE_OP_TYPES.has(op.opType))
+      .lastIndexOf(true);
+    if (
+      checkpointAt < 0 ||
+      !isDeleteTimesCapable(this.providerManager.getActiveProvider())
+    ) {
+      return undefined;
+    }
+    const afterCheckpoint = validOps.slice(checkpointAt + 1);
+    const state = await this.readState();
+    const tasks = state[TASK_FEATURE_NAME] as TaskState | undefined;
+    const putBack = itemsPutBackBy(afterCheckpoint);
+    const missing = itemsMissingFromCheckpoint(
+      { tasks, notes: state[NOTE_FEATURE_NAME] as NoteState | undefined },
+      extractFullStateFromPayload(validOps[checkpointAt].payload),
+    ).filter((item) => !putBack.has(itemKeyOf(item)));
+    const deleteOpsAfter = await this.newItemDeletes(afterCheckpoint);
+    const deletedAfter = itemsStillDeleted(afterCheckpoint, deleteOpsAfter, tasks);
+    const missingKeys = new Set([...missing, ...deletedAfter].map(itemKeyOf));
+    const own =
+      missingKeys.size === 0 && deleteOpsAfter.length === 0
+        ? []
+        : await this.readOwnChanges();
+    // An update is an edit of every item it names, as findEditsThatBeatDeletes counts it.
+    const edited = new Set(
+      own
+        .filter((op) => op.opType === OpType.Update)
+        .flatMap((op) =>
+          [op.entityId, ...(op.entityIds ?? [])]
+            .filter((id): id is string => !!id)
+            .map((entityId) => itemKeyOf({ entityType: op.entityType, entityId })),
+        ),
+    );
+    const candidates = missing.filter((item) => edited.has(itemKeyOf(item)));
+    const asked = new Map<string, CheckpointItem>();
+    for (const { entityType, entityId, parentId } of candidates) {
+      for (const id of parentId ? [entityId, parentId] : [entityId]) {
+        asked.set(itemKeyOf({ entityType, entityId: id }), { entityType, entityId: id });
+      }
+    }
+    return {
+      state,
+      tasks,
+      missing,
+      deleteOpsAfter,
+      deletedAfter,
+      missingKeys,
+      own,
+      candidates,
+      asked: [...asked.values()],
+    };
+  }
+
+  /** The delete times of the given items: those already in `lookups`, and the server's answer for the rest, kept there. */
+  private async deleteTimesOf(
+    items: readonly CheckpointItem[],
+    lookups: CheckpointLookups,
+  ): Promise<ItemDelete[]> {
+    const provider = this.providerManager.getActiveProvider();
+    const unasked = items.filter((item) => !lookups.deleteTimes.has(itemKeyOf(item)));
+    if (unasked.length > 0 && isDeleteTimesCapable(provider)) {
+      const records = await provider.getDeleteTimes(unasked);
+      for (const item of unasked) {
+        const key = itemKeyOf(item);
+        lookups.deleteTimes.set(
+          key,
+          records.filter((record) => itemKeyOf(record) === key),
+        );
+      }
+    }
+    return items.flatMap((item) => lookups.deleteTimes.get(itemKeyOf(item)) ?? []);
   }
 
   /** Withdraws this browser's unsent recreations of items whose delete is later, before they are sent. */

@@ -16,6 +16,7 @@
     "tests/app-rules-day.spec.ts",
     "tests/server-order-stored-seqs.spec.ts",
     "tests/server-order-bring-backs.spec.ts",
-    "tests/checkpoint-apply.spec.ts"
+    "tests/checkpoint-apply.spec.ts",
+    "tests/bring-back-refusal.spec.ts"
   ]
 }

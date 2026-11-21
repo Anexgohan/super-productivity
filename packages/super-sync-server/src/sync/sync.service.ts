@@ -26,6 +26,7 @@ import {
 import type { ValidationResult } from './services/validation.service';
 import {
   deleteOldDeleteRecords,
+  findBeatenBringBacks,
   getDeleteTimes,
   type EntityDeleteTime,
 } from './deleted-entities';
@@ -283,6 +284,21 @@ export class SyncService {
             });
 
             Logger.info(`[user:${userId}] Clean slate completed - all data deleted`);
+          }
+
+          // Refused, not stored, so no device brings back an item a later delete keeps deleted.
+          for (const op of await findBeatenBringBacks(
+            tx,
+            userId,
+            ops,
+            now + this.config.maxClockDriftMs,
+          )) {
+            if (prevalidatedResults.get(op)?.valid === false) continue;
+            prevalidatedResults.set(op, {
+              valid: false,
+              error: 'A later delete of this item is on record',
+              errorCode: SYNC_ERROR_CODES.DELETED_LATER,
+            });
           }
 
           // Track the delta-bytes for accepted ops so we can write

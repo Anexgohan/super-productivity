@@ -101,6 +101,8 @@ export interface SyncOperation {
   isPayloadEncrypted?: boolean;
   syncImportReason?: string;
   repairBaseServerSeq?: number;
+  /** Upload only: the save brings back a task or note after a delete, said in the clear because the payload may be encrypted. */
+  recreatesEntityAfterDelete?: boolean;
 }
 
 export interface ServerSyncOperation {

@@ -99,7 +99,12 @@ const SuperSyncUploadOperationSchema = SuperSyncOperationSchema.extend({
     .optional(),
   vectorClock: z.record(z.string(), z.unknown()),
   schemaVersion: z.number(),
+  /** A save that brings back a task or note after a delete, said in the clear because the payload may be encrypted. */
+  recreatesEntityAfterDelete: z.boolean().optional(),
 });
+
+/** The upload answer for a bring-back that a delete at or after its device time beats; the browser withdraws it. */
+export const SUPER_SYNC_DELETED_LATER_ERROR_CODE = 'DELETED_LATER';
 
 export const SuperSyncUploadOpsRequestSchema = z.object({
   ops: z.array(SuperSyncUploadOperationSchema).min(1).max(SUPER_SYNC_MAX_OPS_PER_UPLOAD),

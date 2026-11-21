@@ -17,7 +17,6 @@ import type {
   AppRulesRow,
 } from './app-rules-protocol';
 import type { AppRulesWorker } from './app-rules-worker';
-import { isFullStatePoint } from './checkpoints';
 import { normalizeFullState, type EntityMap } from './state-view';
 
 export class AppRulesUnavailableError extends Error {
@@ -49,7 +48,7 @@ export interface AppRulesBoardOptions {
   clientId: string;
   cachePath: string;
   encryptionPassword: string;
-  /** The hold on checkpoints kept from before a restart. */
+  /** The hold on checkpoints saved beside the cache, for a worker cache that does not keep one yet. */
   checkpointHeldBack?: string | null;
   /** Called when the worker came back after a failure and this board is open again; the store syncs it then. */
   onReopened?: () => void;
@@ -75,20 +74,6 @@ const decryptRows = async (
     }
   }
   return out;
-};
-
-/** True when a full import or checkpoint in the page was applied: handled, not dropped, and its reducer did not fail. */
-const replacesArchive = (
-  r: AppRulesApplyResult,
-  rows: SuperSyncServerOperation[],
-): boolean => {
-  const skipped = new Set([...r.filteredOpIds, ...r.reducerFailures.map((f) => f.opId)]);
-  return rows.some((row) => {
-    const op = row.op as unknown as Record<string, unknown>;
-    return (
-      row.serverSeq <= r.seq && isFullStatePoint(op) && !skipped.has(op.id as string)
-    );
-  });
 };
 
 export class AppRulesBoard {
@@ -162,12 +147,18 @@ export class AppRulesBoard {
     const res = await this._worker.request({
       kind: 'init',
       board: this._opts.board,
-      init: { clientId: this._opts.clientId, cachePath: this._opts.cachePath },
+      init: {
+        clientId: this._opts.clientId,
+        cachePath: this._opts.cachePath,
+        checkpointHeldBack: this._status.checkpointHeldBack,
+      },
     });
     if (res.kind !== 'init') throw new Error('unexpected init reply');
     this._workerDown = null;
     this._status.seq = res.seq;
     this._mergedClock = res.mergedClock;
+    // The worker saves the hold with its seq, so its hold is the one that matches where it resumes.
+    this._status.checkpointHeldBack = res.checkpointHeldBack;
     // The view is rebuilt from the reopened worker before the board answers again.
     this._viewSeq = -1;
     this._refreshState();
@@ -183,7 +174,7 @@ export class AppRulesBoard {
       rows: decrypted,
     });
     if (res.kind !== 'apply') throw new Error('unexpected apply reply');
-    this._record(res.result, rows);
+    this._record(res.result);
   }
 
   /** Rebuilds the view when the app rules moved on since it was last built. After it, reads see every applied change. */
@@ -222,7 +213,7 @@ export class AppRulesBoard {
       .catch(() => undefined);
   }
 
-  private _record(r: AppRulesApplyResult, rows: SuperSyncServerOperation[]): void {
+  private _record(r: AppRulesApplyResult): void {
     this._status.seq = r.seq;
     this._mergedClock = r.mergedClock;
     this._status.droppedOps += r.filteredOpIds.length;
@@ -240,14 +231,11 @@ export class AppRulesBoard {
     }
     if (r.archiveFailure) {
       this._status.archiveFailures++;
-      this._status.checkpointHeldBack = `archive handling failed on op ${r.archiveFailure.opId} (${r.archiveFailure.actionType})`;
       console.warn(
         `${tag} archive handling failed on op ${r.archiveFailure.opId} (${r.archiveFailure.actionType}): ${r.archiveFailure.error}`,
       );
-    } else if (replacesArchive(r, rows)) {
-      // A full import or checkpoint replaces the archive, so it no longer differs.
-      this._status.checkpointHeldBack = null;
     }
+    this._status.checkpointHeldBack = r.checkpointHeldBack;
     if (r.blocked) {
       // A browser stops at a change it cannot read and waits for an update; so does the server.
       this._blocked = `stopped at op ${r.blocked.opId} (${r.blocked.reason}): a newer bridge build is needed`;

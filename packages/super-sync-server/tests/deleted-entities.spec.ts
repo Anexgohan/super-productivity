@@ -10,6 +10,7 @@ import {
   deleteOldDeleteRecords,
   deletesNamedBy,
   DELETED_ENTITY_RETENTION_MS,
+  findBeatenBringBacks,
   recordDeletes,
 } from '../src/sync/deleted-entities';
 import { Operation } from '../src/sync/sync.types';
@@ -144,6 +145,84 @@ describe('recording deletes', () => {
     expect(await storedRows()).toEqual([
       { userId, entityType: 'TASK', entityId: 't1', deletedAt: now - 1_000 },
     ]);
+  });
+});
+
+describe('finding beaten bring-backs', () => {
+  const bringBack = (overrides: Partial<Operation>): Operation =>
+    op({
+      actionType: '[TASK] LWW Update',
+      opType: 'UPD',
+      payload: { id: overrides.entityId ?? 't1' },
+      recreatesEntityAfterDelete: true,
+      ...overrides,
+    });
+  const recordingTx = (deletedAt: number) => {
+    const calls: string[] = [];
+    const tx = {
+      userSyncState: {
+        upsert: vi.fn(async () => {
+          calls.push('ensure row');
+          return {};
+        }),
+      },
+      $queryRaw: vi.fn(async (sql: TemplateStringsArray) => {
+        calls.push(sql.join('?').includes('FOR UPDATE') ? 'lock row' : 'other query');
+        return [];
+      }),
+      operation: {
+        findMany: vi.fn(async () => {
+          calls.push('read stored');
+          return [];
+        }),
+      },
+      deletedEntity: {
+        findMany: vi.fn(async () => {
+          calls.push('read records');
+          return [{ entityType: 'TASK', entityId: 't1', deletedAt: BigInt(deletedAt) }];
+        }),
+      },
+    };
+    return { calls, tx: tx as unknown as Prisma.TransactionClient };
+  };
+
+  it("locks the user's sequence row before it reads the delete records", async () => {
+    const { calls, tx } = recordingTx(5_000);
+    const beaten = bringBack({ entityId: 't1', timestamp: 4_000 });
+
+    const found = await findBeatenBringBacks(
+      tx,
+      userId,
+      [beaten, bringBack({ entityId: 't2', timestamp: 4_000 })],
+      Date.now(),
+    );
+
+    expect(found).toEqual([beaten]);
+    expect(calls).toEqual(['ensure row', 'lock row', 'read stored', 'read records']);
+  });
+
+  it('locks and reads nothing for an upload without bring-backs', async () => {
+    const { calls, tx } = recordingTx(5_000);
+
+    const found = await findBeatenBringBacks(
+      tx,
+      userId,
+      [
+        op({ actionType: '[TASK] LWW Update', opType: 'UPD', timestamp: 4_000 }),
+        op({ recreatesEntityAfterDelete: true, timestamp: 4_000 }),
+      ],
+      Date.now(),
+    );
+
+    expect(found).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it('compares a time too far ahead as the upload clamps it', async () => {
+    const { tx } = recordingTx(5_000);
+    const ahead = bringBack({ entityId: 't1', timestamp: 9_000 });
+
+    expect(await findBeatenBringBacks(tx, userId, [ahead], 4_500)).toEqual([ahead]);
   });
 });
 

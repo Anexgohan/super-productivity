@@ -12,6 +12,7 @@ import type { AppRulesWorker } from '../src/app-rules-worker';
 import { AppRulesBoard } from '../src/app-rules-board';
 import type { BridgeConfig } from '../src/config';
 import { StateStore } from '../src/state-store';
+import { CheckpointTracker, nextCheckpointHold } from '../src/checkpoints';
 import type { SyncClient } from '../src/sync-client';
 
 let seq = 0;
@@ -30,17 +31,23 @@ const result = (extra: Partial<AppRulesApplyResult> = {}): AppRulesApplyResult =
   reducerFailures: [],
   sawArchiveOp: false,
   mergedClock: {},
+  checkpointHeldBack: null,
   ...extra,
 });
 
-/** A board whose worker answers each apply with the next result given, as of the last row it got. */
+/** A board whose worker answers each apply with the next result given, as of the last row it got, and keeps the hold as the worker does. */
 const boardAnswering = (results: AppRulesApplyResult[]): AppRulesBoard => {
+  let heldBack: string | null = null;
   const worker = {
     listen: () => () => undefined,
-    request: async (req: { rows: { serverSeq: number }[] }) => ({
-      kind: 'apply',
-      result: { ...results.shift(), seq: req.rows[req.rows.length - 1].serverSeq },
-    }),
+    request: async (req: { rows: { serverSeq: number; op: unknown }[] }) => {
+      const applied = {
+        ...(results.shift() as AppRulesApplyResult),
+        seq: req.rows[req.rows.length - 1].serverSeq,
+      };
+      heldBack = nextCheckpointHold(heldBack, applied, req.rows);
+      return { kind: 'apply', result: { ...applied, checkpointHeldBack: heldBack } };
+    },
   } as unknown as AppRulesWorker;
   return new AppRulesBoard(worker, {
     board: 'test',
@@ -112,6 +119,7 @@ describe('checkpoints: when a board holds them back', () => {
 const dirs: string[] = [];
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
@@ -147,33 +155,47 @@ const serveOps = (rows: SuperSyncServerOperation[]): void => {
   });
 };
 
-/** A worker that starts at `startSeq`, fails archive handling on the ops named, and records each request kind. */
+/** What a fake worker keeps in its cache file across restarts: its seq and its checkpoint hold. */
+type WorkerDisk = { seq: number; heldBack: string | null };
+
+/** A worker that resumes from `disk`, fails archive handling on the ops named, and records each request kind. */
 const fakeWorker = (
-  startSeq: number,
+  disk: WorkerDisk,
   failArchiveOn: string[] = [],
 ): { worker: AppRulesWorker; kinds: string[] } => {
   const kinds: string[] = [];
-  let at = startSeq;
   const worker = {
     listen: () => () => undefined,
     exclusive: <T>(task: () => Promise<T>) => task(),
     request: async (req: AppRulesRequest) => {
       kinds.push(req.kind);
       if (req.kind === 'init')
-        return { kind: 'init', seq: at, sawArchiveOp: false, mergedClock: {} };
+        return {
+          kind: 'init',
+          seq: disk.seq,
+          sawArchiveOp: false,
+          mergedClock: {},
+          checkpointHeldBack: disk.heldBack,
+        };
       if (req.kind === 'snapshot')
-        return { kind: 'snapshot', snapshot: { seq: at, appData: {}, heapUsedMb: 0 } };
+        return {
+          kind: 'snapshot',
+          snapshot: { seq: disk.seq, appData: {}, heapUsedMb: 0 },
+        };
       if (req.kind === 'apply') {
-        at = req.rows[req.rows.length - 1].serverSeq;
         const failed = req.rows.find((r) => failArchiveOn.includes(r.op.id as string));
+        const applied = result({
+          seq: req.rows[req.rows.length - 1].serverSeq,
+          ...(failed
+            ? { archiveFailure: { ...archiveFailure, opId: failed.op.id as string } }
+            : {}),
+        });
+        // Saved with the seq before the reply, as the real worker saves its cache.
+        disk.seq = applied.seq;
+        disk.heldBack = nextCheckpointHold(disk.heldBack, applied, req.rows);
         return {
           kind: 'apply',
-          result: result({
-            seq: at,
-            ...(failed
-              ? { archiveFailure: { ...archiveFailure, opId: failed.op.id as string } }
-              : {}),
-          }),
+          result: { ...applied, checkpointHeldBack: disk.heldBack },
         };
       }
       throw new Error(`unexpected ${req.kind}`);
@@ -206,14 +228,15 @@ describe('checkpoints: the hold across a restart', () => {
     dirs.push(dataDir);
     const rows = [serverRow(1)];
     serveOps(rows);
-    const first = await startStore(dataDir, fakeWorker(0, ['op-1']).worker);
+    const disk: WorkerDisk = { seq: 0, heldBack: null };
+    const first = await startStore(dataDir, fakeWorker(disk, ['op-1']).worker);
     expect(first.appRulesStatus.checkpointHeldBack).toBe(
       'archive handling failed on op op-1 ([Task] Move to archive)',
     );
     first.stop();
 
     // The restarted bridge has nothing new to apply and is due for its first checkpoint, but still may not write one.
-    const restarted = fakeWorker(1);
+    const restarted = fakeWorker(disk);
     const second = await startStore(dataDir, restarted.worker);
     expect(second.appRulesStatus).toMatchObject({
       state: 'ready',
@@ -225,14 +248,38 @@ describe('checkpoints: the hold across a restart', () => {
     rows.push(
       serverRow(2, { opType: 'REPAIR', entityType: 'ALL', repairBaseServerSeq: 1 }),
     );
-    const third = await startStore(dataDir, fakeWorker(1).worker);
+    const third = await startStore(dataDir, fakeWorker(disk).worker);
     expect(third.appRulesStatus.checkpointHeldBack).toBeNull();
     third.stop();
     const fourth = new StateStore(
       { dataDir, encryptionPassword: 'unused', clientId: 'B_bridge' } as BridgeConfig,
-      fakeWorker(2).worker,
+      fakeWorker(disk).worker,
     );
     expect(fourth.appRulesStatus.checkpointHeldBack).toBeNull();
     expect(fourth.checkpointStatus.heldBack).toBeNull();
+  });
+
+  it('keeps the hold when the bridge stops after the worker saved its cache and before the hold was written beside it', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'checkpoint-hold-'));
+    dirs.push(dataDir);
+    serveOps([serverRow(1)]);
+    const disk: WorkerDisk = { seq: 0, heldBack: null };
+    vi.spyOn(CheckpointTracker.prototype, 'setHeldBack').mockImplementationOnce(() => {
+      throw new Error('disk full');
+    });
+    const first = await startStore(dataDir, fakeWorker(disk, ['op-1']).worker).catch(
+      () => undefined,
+    );
+    first?.stop();
+    expect(disk.seq).toBe(1);
+
+    // Restarted past the failed archive op, with nothing new to apply and a checkpoint due.
+    const restarted = fakeWorker(disk);
+    const second = await startStore(dataDir, restarted.worker);
+    expect(second.appRulesStatus.checkpointHeldBack).toBe(
+      'archive handling failed on op op-1 ([Task] Move to archive)',
+    );
+    expect(restarted.kinds).not.toContain('checkpoint');
+    second.stop();
   });
 });

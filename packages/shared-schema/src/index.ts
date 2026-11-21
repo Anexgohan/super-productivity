@@ -65,6 +65,7 @@ export {
   SUPER_SYNC_MAX_STORED_SEQ_IDS,
   SuperSyncStoredSeqsRequestSchema,
   SuperSyncStoredSeqsResponseSchema,
+  SUPER_SYNC_DELETED_LATER_ERROR_CODE,
 } from './supersync-http-contract';
 export type {
   SuperSyncOpType,

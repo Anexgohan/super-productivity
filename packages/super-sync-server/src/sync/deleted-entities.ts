@@ -92,6 +92,55 @@ export const recordDeletes = async (
   }
 };
 
+/**
+ * The bring-backs among ops that a recorded delete at or after their device time beats; a tie keeps the delete.
+ * The user's sequence row is locked first, so a delete uploaded at the same moment is either on record here or stored after these saves.
+ * A save already stored is left out, so its retry still gets its duplicate answer.
+ */
+export const findBeatenBringBacks = async (
+  tx: Prisma.TransactionClient,
+  userId: number,
+  ops: readonly Operation[],
+  latestAllowedTimestamp: number,
+): Promise<Operation[]> => {
+  const bringBacks = ops.filter(
+    (op) =>
+      op.recreatesEntityAfterDelete === true &&
+      op.opType === 'UPD' &&
+      DELETED_ENTITY_TYPES.has(op.entityType) &&
+      !!op.entityId,
+  );
+  if (bringBacks.length === 0) return [];
+  await tx.userSyncState.upsert({
+    where: { userId },
+    create: { userId, lastSeq: 0 },
+    update: {},
+  });
+  await tx.$queryRaw`SELECT last_seq FROM user_sync_state WHERE user_id = ${userId} FOR UPDATE`;
+  const stored = await tx.operation.findMany({
+    where: { id: { in: bringBacks.map((op) => op.id) } },
+    select: { id: true },
+  });
+  const storedIds = new Set(stored.map(({ id }) => id));
+  const unstored = bringBacks.filter((op) => !storedIds.has(op.id));
+  if (unstored.length === 0) return [];
+  const records = await tx.deletedEntity.findMany({
+    where: {
+      userId,
+      OR: unstored.map((op) => ({ entityType: op.entityType, entityId: op.entityId })),
+    },
+    select: { entityType: true, entityId: true, deletedAt: true },
+  });
+  const deletedAt = new Map(
+    records.map((row) => [keyOf(row.entityType, row.entityId), Number(row.deletedAt)]),
+  );
+  // Compared as the upload will store it: a time too far ahead is clamped to the latest one allowed.
+  return unstored.filter((op) => {
+    const at = deletedAt.get(keyOf(op.entityType, op.entityId as string));
+    return at !== undefined && at >= Math.min(op.timestamp, latestAllowedTimestamp);
+  });
+};
+
 /** The recorded delete times of the asked items, for this user only; items without a record are left out. */
 export const getDeleteTimes = async (
   userId: number,

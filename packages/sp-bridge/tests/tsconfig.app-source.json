@@ -7,6 +7,7 @@
     "./server-order-stored-seqs.spec.ts",
     "./server-order-bring-backs.spec.ts",
     "./checkpoint-apply.spec.ts",
+    "./bring-back-refusal.spec.ts",
     "../../../src/app/core/window-ea.d.ts"
   ]
 }

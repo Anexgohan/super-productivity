@@ -47,6 +47,21 @@ describe('SuperSync HTTP contract schemas', () => {
     expect('extraOpField' in parsed.ops[0]).toBe(false);
   });
 
+  it('keeps the readable bring-back marker on an uploaded op', () => {
+    const parsed = SuperSyncUploadOpsRequestSchema.parse({
+      ops: [
+        { ...createValidOperation(), recreatesEntityAfterDelete: true },
+        createValidOperation(),
+      ],
+      clientId: 'client_1',
+    });
+
+    expect(parsed.ops.map((op) => op.recreatesEntityAfterDelete)).toEqual([
+      true,
+      undefined,
+    ]);
+  });
+
   it('passes oversized entityIds through for per-operation validation', () => {
     const operation = {
       ...createValidOperation(),

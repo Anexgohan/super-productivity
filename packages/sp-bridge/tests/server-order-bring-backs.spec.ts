@@ -102,6 +102,9 @@ const checkpointWith = (tasks: Record<string, unknown>): Operation =>
     repairBaseServerSeq: 49,
   });
 
+/** What the service asked the server, one list per request. */
+type Asked = { deleteTimes: string[][]; stored: string[][] };
+
 /** The service over a browser showing `shown`, whose change log holds `own` (all unsent unless `sent` names them). */
 const serviceWith = ({
   shown,
@@ -113,11 +116,20 @@ const serviceWith = ({
   own: Operation[];
   sent?: string[];
   deleteTimes?: { entityType: string; entityId: string; deletedAt: number }[];
-}): { service: ServerOrderService; rejected: string[] } => {
+}): { service: ServerOrderService; rejected: string[]; asked: Asked } => {
   const rejected: string[] = [];
+  const asked: Asked = { deleteTimes: [], stored: [] };
   const provider = {
     id: SyncProviderId.SuperSync,
-    getDeleteTimes: async () => deleteTimes,
+    getDeleteTimes: async (items: { entityType: string; entityId: string }[]) => {
+      const keys = items.map((i) => `${i.entityType}:${i.entityId}`);
+      asked.deleteTimes.push(keys);
+      return deleteTimes.filter((d) => keys.includes(`${d.entityType}:${d.entityId}`));
+    },
+    getStoredServerSeqs: async (opIds: string[]) => {
+      asked.stored.push(opIds);
+      return [];
+    },
   };
   const entries = (): { op: Operation; source: string }[] =>
     own.filter((o) => !rejected.includes(o.id)).map((o) => ({ op: o, source: 'local' }));
@@ -181,7 +193,7 @@ const serviceWith = ({
       },
     ],
   });
-  return { service: injector.get(ServerOrderService), rejected };
+  return { service: injector.get(ServerOrderService), rejected, asked };
 };
 
 describe('a checkpoint download with deletes after the checkpoint', () => {
@@ -291,6 +303,39 @@ describe('a download that deletes a task and restores it again', () => {
   });
 });
 
+describe('a download that deletes a parent task and brings back only the parent', () => {
+  it('still brings back its subtask, edited here after the delete', async () => {
+    const { service } = serviceWith({
+      shown: tasksOf(
+        { ...task('P', 'parent'), subTaskIds: ['S'] },
+        { ...task('S', 'edited by A'), parentId: 'P' },
+      ),
+      own: [editBy(A, 'a-edit-S', 'S', 40)],
+    });
+    const deleteParent = op({
+      id: 'b-delete-P',
+      actionType: '[Task Shared] deleteTask',
+      opType: 'DEL',
+      entityId: 'P',
+      payload: { actionPayload: { task: { id: 'P', subTaskIds: ['S'] } } },
+      timestamp: 20,
+    });
+    // Another browser's "bring it back" save of the parent alone, as bringBackTaskStates builds it.
+    const parentBroughtBack = op({
+      id: 'c-bring-back-P',
+      clientId: 'B_browserC',
+      actionType: '[TASK] LWW Update',
+      entityId: 'P',
+      payload: { ...task('P', 'parent'), recreatesEntityAfterDelete: true },
+      timestamp: 30,
+    });
+
+    const saves = await service.decideBringBacks([deleteParent, parentBroughtBack]);
+
+    expect(saves.map((save) => save.entityId)).toEqual(['S']);
+  });
+});
+
 describe('a save of this browser numbered past the confirmed state that it cannot place', () => {
   it('rebuilds instead of replaying without it', async () => {
     const { service } = serviceWith({ shown: tasksOf(task('t1', 'shown')), own: [] });
@@ -308,5 +353,39 @@ describe('a save of this browser numbered past the confirmed state that it canno
     const { plan } = await service.prepare([next], [next]);
 
     expect(plan.kind).toBe('rebuild');
+  });
+});
+
+describe('a checkpoint apply that asked the server before taking its locks', () => {
+  it('asks inside them only about an item edited during the wait, and brings back both', async () => {
+    const own = [editBy(A, 'a-edit-t1', 't1', 120)];
+    const { service, asked } = serviceWith({
+      shown: tasksOf(task('t1', 'edited by A'), task('t3', 'edited by A later')),
+      own,
+      deleteTimes: [
+        { entityType: 'TASK', entityId: 't1', deletedAt: 100 },
+        { entityType: 'TASK', entityId: 't3', deletedAt: 100 },
+      ],
+    });
+    const download = [checkpointWith(tasksOf())];
+
+    const lookups = await service.askBeforeLocks(download);
+    own.push(editBy(A, 'a-edit-t3', 't3', 130));
+    const { saves } = await service.decideCheckpointBringBacks(download, lookups);
+
+    expect(asked.deleteTimes).toEqual([['TASK:t1'], ['TASK:t3']]);
+    expect(saves.map((save) => save.entityId)).toEqual(['t1', 't3']);
+  });
+
+  it('asks inside them only about a save made during the wait', async () => {
+    const own = [editBy(A, 'a-unsent', 't1', 120)];
+    const { service, asked } = serviceWith({ shown: tasksOf(task('t1', 'shown')), own });
+    const download = [checkpointWith(tasksOf(task('t1', 'shown')))];
+
+    const lookups = await service.askBeforeLocks(download);
+    own.push(editBy(A, 'a-unsent-later', 't1', 130));
+    await service.learnUnsentServerSeqs(lookups);
+
+    expect(asked.stored).toEqual([['a-unsent'], ['a-unsent-later']]);
   });
 });

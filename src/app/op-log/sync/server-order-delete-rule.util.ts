@@ -3,7 +3,12 @@
  * The downloaded deletes name only the top task, so a deleted task's subtasks are read from its payload and from the state shown.
  */
 import type { ItemDelete, RemoteOperationApplyStorePort } from '@sp/sync-core';
-import { extractActionPayload, Operation, OpType } from '../core/operation.types';
+import {
+  extractActionPayload,
+  isLwwUpdatePayload,
+  Operation,
+  OpType,
+} from '../core/operation.types';
 import { isLwwUpdateActionType } from '../core/lww-update-action-types';
 import type { OperationLogStoreService } from '../persistence/operation-log-store.service';
 import { Note, NoteState } from '../../features/note/note.model';
@@ -16,6 +21,13 @@ const DELETED_ITEM_TYPES: ReadonlySet<string> = new Set(['TASK', 'NOTE']);
 /** True for a change that recreates a task or note it finds missing. */
 export const recreatesItem = (op: Operation): boolean =>
   DELETED_ITEM_TYPES.has(op.entityType) && isLwwUpdateActionType(op.actionType);
+
+/** True for a "bring it back" save; the upload marks it in the clear, so the server can refuse one that a later delete beats. */
+export const bringsItemBack = (op: Operation): boolean =>
+  op.opType === OpType.Update &&
+  DELETED_ITEM_TYPES.has(op.entityType) &&
+  isLwwUpdatePayload(op.payload) &&
+  op.payload.recreatesEntityAfterDelete === true;
 
 const stringsIn = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];

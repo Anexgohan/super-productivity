@@ -28,6 +28,7 @@ import { OperationApplierService } from '../../../src/app/op-log/apply/operation
 import { SchemaMigrationService } from '../../../src/app/op-log/persistence/schema-migration.service';
 import { SyncImportFilterService } from '../../../src/app/op-log/sync/sync-import-filter.service';
 import { LockService } from '../../../src/app/op-log/sync/lock.service';
+import { LOCK_NAMES } from '../../../src/app/op-log/core/operation-log.const';
 import { OperationWriteFlushService } from '../../../src/app/op-log/sync/operation-write-flush.service';
 import { HydrationStateService } from '../../../src/app/op-log/apply/hydration-state.service';
 import { SyncProviderManager } from '../../../src/app/op-log/sync-providers/provider-manager.service';
@@ -39,7 +40,11 @@ import { SyncSessionValidationService } from '../../../src/app/op-log/sync/sync-
 import { VectorClockService } from '../../../src/app/op-log/sync/vector-clock.service';
 import { OperationLogCompactionService } from '../../../src/app/op-log/persistence/operation-log-compaction.service';
 import { UnsentEditOnTopService } from '../../../src/app/op-log/sync/unsent-edit-on-top.service';
-import type { Operation } from '../../../src/app/op-log/core/operation.types';
+import { withUnsentEditsAfterCheckpoint } from '../../../src/app/op-log/persistence/unsent-after-checkpoint.util';
+import type {
+  Operation,
+  OperationLogEntry,
+} from '../../../src/app/op-log/core/operation.types';
 import type { PersistentAction } from '../../../src/app/op-log/core/persistent-action.interface';
 
 vi.mock(
@@ -216,8 +221,15 @@ describe('edits typed while a checkpoint applies', () => {
 const checkpointHarness = (
   saves: Operation[],
   unsent: Operation[],
-): { service: RemoteOpsProcessingService; events: string[]; dispatched: Action[] } => {
+): {
+  service: RemoteOpsProcessingService;
+  events: string[];
+  dispatched: Action[];
+  order: string[];
+} => {
   const events: string[] = [];
+  // The server lookups and the locks, in the order they happen.
+  const order: string[] = [];
   const dispatched: Action[] = [];
   const ids = (ops: readonly Operation[]): string => ops.map((o) => o.id).join(',');
   let seq = 0;
@@ -286,7 +298,12 @@ const checkpointHarness = (
       },
       {
         provide: LockService,
-        useValue: { request: (_: string, run: () => unknown) => run() },
+        useValue: {
+          request: (name: string, run: () => unknown) => {
+            order.push(name === LOCK_NAMES.UPLOAD ? 'lock the upload' : `lock ${name}`);
+            return run();
+          },
+        },
       },
       {
         provide: OperationWriteFlushService,
@@ -318,18 +335,27 @@ const checkpointHarness = (
     ],
   });
   const serverOrder = injector.get(ServerOrderService);
-  vi.spyOn(serverOrder, 'learnUnsentServerSeqs').mockResolvedValue();
-  vi.spyOn(serverOrder, 'decideCheckpointBringBacks').mockResolvedValue({
-    saves,
-    missingKeys: new Set(saves.map((s) => `TASK:${s.entityId}`)),
+  const lookups = { notStored: new Set<string>(), deleteTimes: new Map() };
+  vi.spyOn(serverOrder, 'askBeforeLocks').mockImplementation(async () => {
+    order.push('ask the server');
+    return lookups;
   });
+  vi.spyOn(serverOrder, 'learnUnsentServerSeqs').mockImplementation(async (answers) => {
+    order.push(answers === lookups ? 'learn with the answers' : 'learn');
+  });
+  vi.spyOn(serverOrder, 'decideCheckpointBringBacks').mockImplementation(
+    async (_ops, answers) => {
+      order.push(answers === lookups ? 'decide with the answers' : 'decide');
+      return { saves, missingKeys: new Set(saves.map((s) => `TASK:${s.entityId}`)) };
+    },
+  );
   const service = injector.get(RemoteOpsProcessingService);
   const internals = service as unknown as Record<string, unknown>;
   internals['_withLocalOnlySyncSettingsForFullStateOps'] = async (ops: Operation[]) =>
     ops;
   internals['_logFullStateApplyDiagnostics'] = async () => undefined;
   internals['validateAfterSync'] = async () => true;
-  return { service, events, dispatched };
+  return { service, events, dispatched, order };
 };
 
 describe('a checkpoint with a "bring it back" save', () => {
@@ -354,6 +380,19 @@ describe('a checkpoint with a "bring it back" save', () => {
     ]);
   });
 
+  it('asks the server before it takes the locks, and decides inside them with those answers', async () => {
+    const { service, order } = checkpointHarness([save], [unsent]);
+
+    await service.processRemoteOps([checkpoint]);
+
+    expect(order).toEqual([
+      'ask the server',
+      'lock the upload',
+      'learn with the answers',
+      'decide with the answers',
+    ]);
+  });
+
   it('reports the save for upload, and puts back the edits under the ones typed meanwhile', async () => {
     const { service, dispatched } = checkpointHarness([save], [unsent]);
 
@@ -366,5 +405,40 @@ describe('a checkpoint with a "bring it back" save', () => {
       onTop: Operation[];
     };
     expect(reapply.onTop.map((o) => o.id)).toEqual(['unsent', 'bring-back']);
+  });
+});
+
+describe('a startup without the snapshot saved after a checkpoint', () => {
+  it('replays an older unsent edit after the checkpoint and its download, and before the "bring it back" save that holds it', () => {
+    const entry = (
+      seq: number,
+      o: Operation,
+      source: 'local' | 'remote',
+    ): OperationLogEntry => ({
+      seq,
+      op: o,
+      appliedAt: seq,
+      source,
+      ...(source === 'remote' ? { syncedAt: seq } : {}),
+    });
+    const timeAdded = { ...rename(A, 'unsent'), id: 'unsent-time' } as Operation;
+    const bringBack = { ...rename(A, 'brought back'), id: 'bring-back' } as Operation;
+    const unsent = entry(1, timeAdded, 'local');
+    const save = entry(4, bringBack, 'local');
+    const log = [
+      unsent,
+      entry(2, checkpointOf(start()), 'remote'),
+      entry(3, { ...rename(B, 'remote'), id: 'remote-after' } as Operation, 'remote'),
+      save,
+    ];
+
+    const replayed = withUnsentEditsAfterCheckpoint(log, [unsent, save]);
+
+    expect(replayed.map((e) => e.op.id)).toEqual([
+      'checkpoint',
+      'remote-after',
+      'unsent-time',
+      'bring-back',
+    ]);
   });
 });

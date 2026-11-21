@@ -24,13 +24,14 @@ const persist = (board: { rules: AppRules; cachePath: string }): void => {
 
 const handle = async (req: AppRulesRequest): Promise<AppRulesResponse> => {
   if (req.kind === 'init') {
-    const { cachePath, clientId } = req.init;
+    const { cachePath, clientId, checkpointHeldBack = null } = req.init;
     const rules = new AppRules(clientId);
     if (existsSync(cachePath)) {
       try {
         const cache = JSON.parse(readFileSync(cachePath, 'utf-8')) as AppRulesCache;
-        if (cache.version === APP_RULES_CACHE_VERSION) rules.restore(cache);
-        else
+        if (cache.version === APP_RULES_CACHE_VERSION) {
+          rules.restore(cache, checkpointHeldBack);
+        } else
           console.warn(
             `sp-bridge app rules: ${req.board}: cache from another version; rebuilding from seq 0`,
           );
@@ -48,6 +49,7 @@ const handle = async (req: AppRulesRequest): Promise<AppRulesResponse> => {
       seq: rules.seq,
       sawArchiveOp: rules.sawArchiveOp,
       mergedClock: rules.mergedClock,
+      checkpointHeldBack: rules.checkpointHeldBack,
     };
   }
   if (req.kind === 'close') {

@@ -5,16 +5,12 @@ import {
 } from '../core/operation.types';
 
 /**
- * Replay order for the startup rebuild (anex/checkpoints, Stage 6): this browser's unsent edits logged before the
- * newest checkpoint are replayed after it, so the rebuilt state is the checkpoint plus the edits still on their way,
- * as it was shown when the checkpoint arrived.
- *
- * In log order the checkpoint, a full state, would wipe them. Normally the snapshot saved right after the checkpoint
- * is applied means it is not replayed at all; this covers a startup without that snapshot (a crash in between, or a
- * snapshot that could not be saved). Edits from before the snapshot the rebuild starts from count too: the snapshot
- * holds them, but the checkpoint replayed after it wipes them. The change log itself is never reordered.
- *
+ * Startup replay order: this browser's unsent edits logged before the newest checkpoint replay after it, where the checkpoint apply put them.
+ * That is after the checkpoint and its download, before this browser's later saves, such as the "bring it back" saves that already hold them.
+ * In log order the checkpoint, a full state, would wipe them; this covers a startup without the snapshot saved after the checkpoint applied.
+ * Edits held by the snapshot the rebuild starts from count too, since the checkpoint replayed after it wipes them.
  * A full import or a REPAIR without its base keeps log order: those replace the state with clean-slate semantics.
+ * The change log itself is never reordered.
  *
  * @param entries the ops the rebuild replays, in log order
  * @param unsynced every op not yet acknowledged by the server (`getUnsynced()`)
@@ -46,5 +42,10 @@ export const withUnsentEditsAfterCheckpoint = (
   if (moved.length === 0) return entries;
 
   const movedIds = new Set(moved.map((entry) => entry.op.id));
-  return [...entries.filter((entry) => !movedIds.has(entry.op.id)), ...moved];
+  const kept = entries.filter((entry) => !movedIds.has(entry.op.id));
+  const firstLocalAfter = kept.findIndex(
+    (entry) => entry.seq > before && entry.source === 'local',
+  );
+  const at = firstLocalAfter < 0 ? kept.length : firstLocalAfter;
+  return [...kept.slice(0, at), ...moved, ...kept.slice(at)];
 };

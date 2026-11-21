@@ -20,6 +20,8 @@ export interface AppRulesInit {
   /** The board's own sync identity, so its round-tripped writes count as its own ops, as a browser's do. */
   clientId: string;
   cachePath: string;
+  /** The hold last saved beside the cache, for a cache saved before it kept the hold itself. */
+  checkpointHeldBack?: string | null;
 }
 
 /** Bridge → worker. Every request carries an id and a board; the worker answers each one, in arrival order. */
@@ -47,6 +49,8 @@ export interface AppRulesApplyResult {
   sawArchiveOp: boolean;
   /** Component-wise max of every vector clock handled so far: the basis for this board's own write clocks. */
   mergedClock: Record<string, number>;
+  /** Why no checkpoint may be written as of `seq`, or null; saved in the cache with the seq. */
+  checkpointHeldBack: string | null;
 }
 
 export interface AppRulesSnapshot {
@@ -76,6 +80,7 @@ export type AppRulesResponse =
       seq: number;
       sawArchiveOp: boolean;
       mergedClock: Record<string, number>;
+      checkpointHeldBack: string | null;
     }
   | { id: number; ok: true; kind: 'apply'; result: AppRulesApplyResult }
   | { id: number; ok: true; kind: 'snapshot'; snapshot: AppRulesSnapshot }

@@ -8,6 +8,7 @@ import { DownloadCallback, RejectedOpInfo } from '../core/types/sync-results.typ
 import { handleStorageQuotaError } from './sync-error-utils';
 import { REPAIR_STALE_ERROR_CODE } from '../core/operation-log.const';
 import { RepairOperationService } from '../validation/repair-operation.service';
+import { SUPER_SYNC_DELETED_LATER_ERROR_CODE } from '@sp/shared-schema';
 
 const REPAIR_SUMMARY_KEYS: readonly (keyof RepairSummary)[] = [
   'entityStateFixed',
@@ -108,6 +109,7 @@ export class RejectedOpsHandlerService {
     let mergedOpsCreated = 0;
 
     const permanentlyRejectedOps: string[] = [];
+    const withdrawnBringBacks: string[] = [];
     const staleRepairOps: Array<{
       opId: string;
       repairSummary: RepairSummary;
@@ -165,6 +167,12 @@ export class RejectedOpsHandlerService {
         continue;
       }
 
+      // A bring-back that a later delete beats: the delete is the agreed outcome, so it is withdrawn without an error.
+      if (rejected.errorCode === SUPER_SYNC_DELETED_LATER_ERROR_CODE) {
+        withdrawnBringBacks.push(rejected.opId);
+        continue;
+      }
+
       if (
         rejected.errorCode === REPAIR_STALE_ERROR_CODE &&
         entry.op.opType === OpType.Repair
@@ -195,6 +203,13 @@ export class RejectedOpsHandlerService {
       permanentlyRejectedOps.push(rejected.opId);
       OpLog.normal(
         `RejectedOpsHandlerService: Marking op ${rejected.opId} as rejected: ${rejected.error || 'unknown error'}`,
+      );
+    }
+
+    if (withdrawnBringBacks.length > 0) {
+      await this.opLogStore.markRejected(withdrawnBringBacks);
+      OpLog.normal(
+        `RejectedOpsHandlerService: withdrew ${withdrawnBringBacks.length} bring-back(s) that a later delete beats`,
       );
     }
 

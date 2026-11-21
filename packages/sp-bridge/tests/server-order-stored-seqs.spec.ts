@@ -1,6 +1,6 @@
 /**
- * Before a checkpoint is applied, a browser asks the server for the numbers of its unsent saves it does not know, so a save the checkpoint holds
- * is not applied on top of it a second time. Runs the app's own ServerOrderService from source, with a fake server.
+ * Before a checkpoint is applied, a browser asks the server for the numbers of its unsent saves, so a save the checkpoint holds is not applied twice.
+ * Runs the app's own ServerOrderService from source, with a fake server.
  */
 import '@angular/compiler';
 import '../app-rules/globals';
