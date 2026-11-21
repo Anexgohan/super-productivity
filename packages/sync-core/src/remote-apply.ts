@@ -33,6 +33,12 @@ export interface RemoteOperationApplyStorePort<
   markApplied(seqs: number[]): Promise<void>;
   markFailed(opIds: string[]): Promise<void>;
   clearFullStateOpsExcept(excludeIds: string[]): Promise<number>;
+  /** Logs the remote ops as pending and this browser's own saves right after them, in one write; needed only for `localOpsAfter`. */
+  appendRemoteThenLocalSkipDuplicates?(
+    remoteOps: TOperation[],
+    localOps: TOperation[],
+    options: { pendingApply: true },
+  ): Promise<RemoteOperationAppendResult<TOperation> & { localOps: TOperation[] }>;
 }
 
 export interface ApplyRemoteOperationsOptions<
@@ -44,12 +50,19 @@ export interface ApplyRemoteOperationsOptions<
   isFullStateOperation?: (op: TOperation) => boolean;
   /** Runs after incoming clocks are durable, before reducer application starts. */
   onRemoteClocksDurable?: (ops: TOperation[]) => void;
+  /**
+   * This browser's own saves that answer the remote ops, logged unsent right after them so a restart replays them in that order.
+   * The applier's action applies them, or the host does after this returns.
+   */
+  localOpsAfter?: TOperation[];
 }
 
 export interface RemoteApplyOperationsResult<
   TOperation extends Operation<string> = Operation,
 > {
   appendedOps: TOperation[];
+  /** The `localOpsAfter` saves logged, as written (the host's store may rebase their clocks). */
+  appendedLocalOps: TOperation[];
   skippedCount: number;
   appliedOps: TOperation[];
   appliedSeqs: number[];
@@ -64,6 +77,7 @@ const emptyRemoteApplyResult = <
   TOperation extends Operation<string>,
 >(): RemoteApplyOperationsResult<TOperation> => ({
   appendedOps: [],
+  appendedLocalOps: [],
   skippedCount: 0,
   appliedOps: [],
   appliedSeqs: [],
@@ -99,6 +113,7 @@ export const applyRemoteOperations = async <
   applier,
   isFullStateOperation = () => false,
   onRemoteClocksDurable,
+  localOpsAfter = [],
 }: ApplyRemoteOperationsOptions<TOperation>): Promise<
   RemoteApplyOperationsResult<TOperation>
 > => {
@@ -106,13 +121,29 @@ export const applyRemoteOperations = async <
     return emptyRemoteApplyResult();
   }
 
-  const appendResult = await store.appendBatchSkipDuplicates(ops, 'remote', {
-    pendingApply: true,
-  });
+  let appendResult: RemoteOperationAppendResult<TOperation>;
+  let appendedLocalOps: TOperation[] = [];
+  if (localOpsAfter.length > 0) {
+    if (!store.appendRemoteThenLocalSkipDuplicates) {
+      throw new Error(
+        'applyRemoteOperations: localOpsAfter needs a store that logs remote and local ops in one write.',
+      );
+    }
+    const both = await store.appendRemoteThenLocalSkipDuplicates(ops, localOpsAfter, {
+      pendingApply: true,
+    });
+    appendResult = both;
+    appendedLocalOps = both.localOps;
+  } else {
+    appendResult = await store.appendBatchSkipDuplicates(ops, 'remote', {
+      pendingApply: true,
+    });
+  }
 
   if (appendResult.writtenOps.length === 0) {
     return {
       ...emptyRemoteApplyResult<TOperation>(),
+      appendedLocalOps,
       skippedCount: appendResult.skippedCount,
     };
   }
@@ -337,6 +368,7 @@ export const applyRemoteOperations = async <
 
   return {
     appendedOps: appendResult.writtenOps,
+    appendedLocalOps,
     skippedCount: appendResult.skippedCount,
     appliedOps: authoritativeAppliedOps,
     appliedSeqs,

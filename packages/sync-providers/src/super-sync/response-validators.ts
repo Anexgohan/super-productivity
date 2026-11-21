@@ -1,4 +1,5 @@
 import type {
+  DeleteTimesResponse,
   OpUploadResponse,
   RestorePointsResponse,
   RestoreSnapshotResponse,
@@ -24,4 +25,5 @@ export interface SuperSyncResponseValidators {
   validateRestorePoints(data: unknown): RestorePointsResponse;
   validateRestoreSnapshot(data: unknown): RestoreSnapshotResponse;
   validateDeleteAllData(data: unknown): { success: boolean };
+  validateDeleteTimes(data: unknown): DeleteTimesResponse;
 }

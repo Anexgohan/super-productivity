@@ -37,6 +37,7 @@ model User {
   devices                    SyncDevice[]
   passkeys                   Passkey[]
   pendingPasskeyRegistrations PendingPasskeyRegistration[]
+  deletedEntities            DeletedEntity[]
 
   @@index([verificationToken])
   @@index([resetPasswordToken])
@@ -145,4 +146,22 @@ model SyncDevice {
 
   @@id([userId, clientId])
   @@map("sync_devices")
+}
+
+// Deletes of tasks and notes from the last 7 days, so a browser can tell whether its edit to an item a checkpoint lacks came after the delete.
+// Only the ids an op names are kept, since payloads are end-to-end encrypted: a subtask is found through its parent.
+model DeletedEntity {
+  userId     Int    @map("user_id")
+  entityType String @map("entity_type")
+  entityId   String @map("entity_id")
+  // Device time of the latest delete of this item, the time an edit has to beat.
+  deletedAt  BigInt @map("deleted_at")
+  // Server time the latest delete was stored, used by the daily cleanup.
+  recordedAt BigInt @map("recorded_at")
+
+  user       User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, entityType, entityId])
+  @@index([recordedAt])
+  @@map("deleted_entities")
 }

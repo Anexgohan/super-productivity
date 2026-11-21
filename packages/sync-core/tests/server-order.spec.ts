@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  deleteTimesWithParents,
+  editBeatsDelete,
   editsNotInCheckpoint,
-  findEditsAfterRemoteDelete,
+  findEditsThatBeatDeletes,
+  findRecreationsBeatenByDeletes,
   findUnaccountedServerSeq,
   OpType,
   planServerOrderApply,
@@ -200,53 +203,119 @@ describe('findUnaccountedServerSeq', () => {
   });
 });
 
-describe('findEditsAfterRemoteDelete', () => {
-  const task = (id: string, opType: OpType, entityId: string): Operation => ({
-    ...op(id),
-    opType,
+describe('editBeatsDelete', () => {
+  it('lets only a later edit win; a tie keeps the delete', () => {
+    expect(editBeatsDelete(11, 10)).toBe(true);
+    expect(editBeatsDelete(10, 10)).toBe(false);
+    expect(editBeatsDelete(9, 10)).toBe(false);
+  });
+});
+
+describe('findEditsThatBeatDeletes', () => {
+  const change = (
+    id: string,
+    opType: OpType,
+    entityId: string,
+    timestamp: number,
+    extra: Partial<Operation> = {},
+  ): Operation => ({ ...op(id), opType, entityId, timestamp, ...extra });
+  const deleted = (
+    entityId: string,
+    deletedAt: number,
+    entityType = 'TASK',
+  ): { entityType: string; entityId: string; deletedAt: number } => ({
+    entityType,
     entityId,
+    deletedAt,
   });
 
-  it('finds unsent edits and accepted edits numbered after another browser deleted the task', () => {
-    const edits = findEditsAfterRemoteDelete({
-      downloaded: [{ op: task('d', OpType.Delete, 't1'), serverSeq: 10 }],
-      own: [
-        { op: task('before', OpType.Update, 't1'), serverSeq: 9 },
-        { op: task('after', OpType.Update, 't1'), serverSeq: 11 },
-        { op: task('unsent', OpType.Update, 't1') },
-        { op: task('other', OpType.Update, 't2') },
-      ],
-      entityType: 'TASK',
-    });
-    expect([...edits.keys()]).toEqual(['t1']);
-    expect(ids(edits.get('t1') ?? [])).toEqual(['after', 'unsent']);
+  it('picks an item whose latest own edit is later than its delete, by device time', () => {
+    expect(
+      findEditsThatBeatDeletes({
+        deletes: [deleted('t1', 100), deleted('t2', 100), deleted('t3', 100)],
+        own: [
+          change('a', OpType.Update, 't1', 90),
+          change('b', OpType.Update, 't1', 120),
+          change('c', OpType.Update, 't2', 90),
+          change('d', OpType.Update, 't3', 100),
+        ],
+      }),
+    ).toEqual([{ entityType: 'TASK', entityId: 't1', editAt: 120 }]);
   });
 
-  it('counts tasks deleted together with another one', () => {
-    const bulkDelete = {
-      ...task('d', OpType.Delete, 'parent'),
-      entityIds: ['parent', 'sub'],
-    };
-    const edits = findEditsAfterRemoteDelete({
-      downloaded: [{ op: bulkDelete, serverSeq: 10 }],
-      own: [{ op: task('u', OpType.Update, 'sub') }],
-      entityType: 'TASK',
-    });
-    expect([...edits.keys()]).toEqual(['sub']);
+  it('compares against the latest delete of an item', () => {
+    expect(
+      findEditsThatBeatDeletes({
+        deletes: [deleted('t1', 100), deleted('t1', 150)],
+        own: [change('a', OpType.Update, 't1', 120)],
+      }),
+    ).toEqual([]);
   });
 
-  it('ignores other item types and changes that are not edits', () => {
-    const edits = findEditsAfterRemoteDelete({
-      downloaded: [
-        { op: { ...task('d', OpType.Delete, 'n1'), entityType: 'NOTE' }, serverSeq: 10 },
-      ],
-      own: [
-        { op: { ...task('u', OpType.Update, 'n1'), entityType: 'NOTE' } },
-        { op: task('c', OpType.Create, 'n1') },
-      ],
-      entityType: 'TASK',
+  it("keeps an item deleted when this browser's own last change to it is a delete", () => {
+    expect(
+      findEditsThatBeatDeletes({
+        deletes: [deleted('t1', 100)],
+        own: [
+          change('a', OpType.Update, 't1', 120),
+          change('b', OpType.Delete, 't1', 130),
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  it('counts notes, and only updates of that one item', () => {
+    expect(
+      findEditsThatBeatDeletes({
+        deletes: [deleted('n1', 100, 'NOTE'), deleted('t1', 100), deleted('t2', 100)],
+        own: [
+          change('a', OpType.Update, 'n1', 120, { entityType: 'NOTE' }),
+          change('b', OpType.Update, 't1', 120, { entityIds: ['t1', 't2'] }),
+          change('c', OpType.Create, 't2', 120),
+        ],
+      }),
+    ).toEqual([{ entityType: 'NOTE', entityId: 'n1', editAt: 120 }]);
+  });
+});
+
+describe('findRecreationsBeatenByDeletes', () => {
+  it('withdraws an unsent recreation that is not later than the delete', () => {
+    const recreation = (id: string, timestamp: number): Operation => ({
+      ...op(id),
+      entityId: 't1',
+      timestamp,
+      actionType: '[TASK] LWW Update',
     });
-    expect(edits.size).toBe(0);
+    const beaten = findRecreationsBeatenByDeletes({
+      deletes: [{ entityType: 'TASK', entityId: 't1', deletedAt: 100 }],
+      unsent: [recreation('early', 90), recreation('late', 110), op('plain')],
+      recreatesItem: (o) => o.actionType === '[TASK] LWW Update',
+    });
+    expect(ids(beaten)).toEqual(['early']);
+  });
+});
+
+describe('deleteTimesWithParents', () => {
+  it("uses a subtask's own record, else its parent's", () => {
+    expect(
+      deleteTimesWithParents(
+        [
+          { entityType: 'TASK', entityId: 'sub', parentId: 'parent' },
+          { entityType: 'TASK', entityId: 'own', parentId: 'parent' },
+          { entityType: 'TASK', entityId: 'none' },
+          { entityType: 'NOTE', entityId: 'n1' },
+        ],
+        [
+          { entityType: 'TASK', entityId: 'parent', deletedAt: 100 },
+          { entityType: 'TASK', entityId: 'own', deletedAt: 200 },
+          { entityType: 'NOTE', entityId: 'n1', deletedAt: 300 },
+        ],
+      ),
+    ).toEqual([
+      { entityType: 'TASK', entityId: 'sub', deletedAt: 100 },
+      { entityType: 'TASK', entityId: 'own', deletedAt: 200 },
+      { entityType: 'NOTE', entityId: 'n1', deletedAt: 300 },
+    ]);
   });
 });
 

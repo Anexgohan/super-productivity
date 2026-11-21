@@ -7,7 +7,12 @@ import '../app-rules/globals';
 import { Injector, ɵINJECTOR_SCOPE as INJECTOR_SCOPE } from '@angular/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Action } from '@ngrx/store';
-import { findEditsAfterRemoteDelete, planServerOrderApply } from '@sp/sync-core';
+import {
+  deleteTimesWithParents,
+  findEditsThatBeatDeletes,
+  findRecreationsBeatenByDeletes,
+  planServerOrderApply,
+} from '@sp/sync-core';
 import { buildRootReducer } from '../app-rules/root-reducer';
 import { buildTaskEntity } from '../src/op-factory';
 import { bulkApplyOperations } from '../../../src/app/op-log/apply/bulk-hydration.action';
@@ -36,6 +41,14 @@ import {
 } from '../../../src/app/op-log/apply/bulk-replay-failure-collector';
 import { convertOpToAction } from '../../../src/app/op-log/apply/operation-converter.util';
 import { bringBackTaskStates } from '../../../src/app/op-log/sync/server-order-bring-back.util';
+import {
+  bringBackNoteStates,
+  editsShown,
+  itemsMissingFromCheckpoint,
+  itemsRemovedBy,
+  recreatesItem,
+} from '../../../src/app/op-log/sync/server-order-delete-rule.util';
+import type { Note, NoteState } from '../../../src/app/features/note/note.model';
 import {
   historyBeforeBatch,
   opsAsDownloadApplies,
@@ -108,17 +121,39 @@ const addSubTask = (
     parentId,
   });
 
+// As the app captures it: the op names only the top task, its subtasks are in the payload.
 const deleteTask = (clientId: string, task: Task, subTasks: Task[] = []): Operation => ({
   ...makeOp(clientId, '[Task Shared] deleteTask', 'DEL', task.id, {
     task: { ...task, subTasks },
   }),
-  entityIds: [task.id, ...subTasks.map((sub) => sub.id)],
+  entityIds: [task.id],
+});
+
+const noteOp = (
+  clientId: string,
+  actionType: string,
+  opType: string,
+  id: string,
+  actionPayload: Record<string, unknown>,
+): Operation =>
+  ({
+    ...makeOp(clientId, actionType, opType, id, actionPayload),
+    entityType: 'NOTE',
+  }) as unknown as Operation;
+
+const pinnedNote = (projectId: string): Note => ({
+  id: 'n1',
+  projectId,
+  isPinnedToToday: true,
+  content: 'note',
+  created: 1,
+  modified: 1,
 });
 
 /** A whole-entity save as ConflictResolutionService.createLWWUpdateOp builds it, marked as bringing the entity back. */
 const lwwSave = (
   clientId: string,
-  entityType: 'TASK' | 'PROJECT',
+  entityType: 'TASK' | 'PROJECT' | 'NOTE',
   entity: { id: string },
   lwwUpdateMode: 'replace' | 'patch' = 'replace',
 ): Operation =>
@@ -143,6 +178,40 @@ const inboxOrder = (state: State): string[] =>
     .INBOX_PROJECT.taskIds;
 const synced = (state: State): State =>
   Object.fromEntries(SYNCED_FEATURE_KEYS.map((key) => [key, state[key]]));
+const notes = (state: State): NoteState => state.note as NoteState;
+const projectNoteIds = (state: State, projectId: string): string[] | undefined =>
+  (state.projects as { entities: Record<string, { noteIds: string[] }> }).entities[
+    projectId
+  ]?.noteIds;
+
+/** The items a download deletes that this browser edited later, as the browser decides before the plan. */
+const winnersOf = (deleteOps: Operation[], shown: State, own: Operation[]): string[] =>
+  findEditsThatBeatDeletes({
+    deletes: itemsRemovedBy(deleteOps, taskState(shown)),
+    own,
+  }).map(({ entityId }) => entityId);
+
+const addProject = (id: string): Operation =>
+  ({
+    ...makeOp(B, '[Project] Add Project', 'CRT', id, {
+      project: { ...DEFAULT_PROJECT, id, title: 'project' },
+    }),
+    entityType: 'PROJECT',
+  }) as unknown as Operation;
+
+const deleteProject = (
+  id: string,
+  contents: { noteIds?: string[]; allTaskIds?: string[] },
+): Operation =>
+  ({
+    ...makeOp(B, '[Task Shared] deleteProject', 'DEL', id, {
+      projectId: id,
+      noteIds: contents.noteIds ?? [],
+      allTaskIds: contents.allTaskIds ?? [],
+      [PROJECT_DELETE_WINS_MARKER]: true,
+    }),
+    entityType: 'PROJECT',
+  }) as unknown as Operation;
 
 /** The state both browsers start from: the app's initial state with one task. */
 const start = (): State =>
@@ -208,6 +277,7 @@ describe('server-order replay', () => {
     const edit = rename(A, 't1', 'one, edited by A');
     const shown = apply(confirmed, [edit]);
 
+    expect(winnersOf([deleted], shown, [edit])).toEqual(['t1']);
     const states = bringBackTaskStates(['t1'], new Set(['t1']), taskState(shown), []);
     const saves = states.map((task) => lwwSave(A, 'TASK', task));
     const after = root(
@@ -255,9 +325,19 @@ describe('server-order replay', () => {
     const edit = rename(A, 's1', 'sub one, edited by A');
     const shown = apply(confirmed, [edit]);
 
+    // The delete names only the parent; its subtasks are found through it.
+    const removed = itemsRemovedBy([deleted], taskState(shown));
+    expect(removed.map(({ entityId }) => entityId).sort()).toEqual(['p', 's1', 's2']);
+    // The delete's own payload names them too, for a subtask this browser no longer shows under the parent.
+    expect(
+      itemsRemovedBy([deleted], undefined)
+        .map(({ entityId }) => entityId)
+        .sort(),
+    ).toEqual(['p', 's1', 's2']);
+    expect(winnersOf([deleted], shown, [edit])).toEqual(['s1']);
     const states = bringBackTaskStates(
       ['s1'],
-      new Set(['p', 's1', 's2']),
+      new Set(removed.map(({ entityId }) => entityId)),
       taskState(shown),
       [],
     );
@@ -368,13 +448,7 @@ describe('server-order replay', () => {
       entityType: 'PROJECT',
     } as unknown as Operation;
 
-    expect(
-      findEditsAfterRemoteDelete({
-        downloaded: [{ op: projectDelete, serverSeq: 10 }],
-        own: [{ op: unsent }],
-        entityType: 'TASK',
-      }).size,
-    ).toBe(0);
+    expect(winnersOf([projectDelete], shown, [unsent])).toEqual([]);
 
     const after = root(
       shown,
@@ -389,6 +463,134 @@ describe('server-order replay', () => {
 
     expect(tasks(after).ids).not.toContain('pt1');
     expect((after.projects as { ids: string[] }).ids).not.toContain('p1');
+  });
+
+  it('keeps a task deleted when the edit that arrives after the delete was made before it', () => {
+    const confirmed = start();
+    const edit = rename(A, 't1', 'edited by A before the delete');
+    const deleted = deleteTask(B, taskState(confirmed).entities.t1 as Task);
+    const shown = apply(confirmed, [edit]);
+
+    expect(winnersOf([deleted], shown, [edit])).toEqual([]);
+    const after = root(
+      shown,
+      serverOrderReplay({
+        confirmed,
+        ordered: [deleted],
+        onTop: [edit],
+        downloadedOpIds: [deleted.id],
+        localClientId: A,
+      }),
+    );
+    const bridge = apply(confirmed, [deleted, edit], 'sp-bridge');
+
+    expect(tasks(after).ids).not.toContain('t1');
+    expect(tasks(bridge).ids).not.toContain('t1');
+    expect(synced(after)).toEqual(synced(bridge));
+  });
+
+  it('brings back a task whose later edit reached the server before the delete', () => {
+    const confirmed = start();
+    const t1 = taskState(confirmed).entities.t1 as Task;
+    // A renamed t1 online (stored at 10); B deleted it offline earlier and synced afterwards (11).
+    const edit = rename(A, 't1', 'edited by A');
+    const deleted = { ...deleteTask(B, t1), timestamp: edit.timestamp - 60_000 };
+    const shown = apply(confirmed, [edit]);
+    const download = {
+      downloaded: [{ op: deleted, serverSeq: 11 }],
+      accepted: [{ op: edit, serverSeq: 10 }],
+      hasConfirmedState: true,
+    };
+    expect(planServerOrderApply({ ...download, unsent: [] }).kind).toBe('in-order');
+
+    expect(winnersOf([deleted], shown, [edit])).toEqual(['t1']);
+    const saves = bringBackTaskStates(['t1'], new Set(['t1']), taskState(shown), []).map(
+      (task) => lwwSave(A, 'TASK', task),
+    );
+    // The save joins the unsent edits, so the batch replays instead of applying the delete on top.
+    const plan = planServerOrderApply({ ...download, unsent: saves });
+    if (plan.kind !== 'replay') throw new Error(`expected a replay, got ${plan.kind}`);
+    const after = root(
+      shown,
+      serverOrderReplay({
+        confirmed,
+        ordered: plan.ordered,
+        onTop: plan.onTop,
+        downloadedOpIds: [deleted.id],
+        localClientId: A,
+      }),
+    );
+    const bridge = apply(confirmed, [edit, deleted, ...saves], 'sp-bridge');
+
+    expect(tasks(bridge).entities.t1.title).toBe('edited by A');
+    expect(inboxOrder(bridge)).toEqual(['t1']);
+    expect(synced(after)).toEqual(synced(bridge));
+  });
+
+  it('withdraws an unsent bring-back that a later delete beats', () => {
+    const confirmed = start();
+    const t1 = taskState(confirmed).entities.t1 as Task;
+    const save = lwwSave(A, 'TASK', t1);
+    const deleted = deleteTask(B, t1);
+
+    expect(
+      findRecreationsBeatenByDeletes({
+        deletes: itemsRemovedBy([deleted], taskState(confirmed)),
+        unsent: [save, rename(A, 't1', 'plain edit')],
+        recreatesItem,
+      }),
+    ).toEqual([save]);
+    // Sent anyway, it would bring the task back on the bridge although the delete is later.
+    expect(tasks(apply(confirmed, [deleted, save], 'sp-bridge')).ids).toContain('t1');
+  });
+
+  it("brings back a note edited after its delete into its project's notes and Today", () => {
+    const confirmed = apply(
+      start(),
+      [noteOp(B, '[Note] Add Note', 'CRT', 'n1', { note: pinnedNote('INBOX_PROJECT') })],
+      B,
+    );
+    expect(projectNoteIds(confirmed, 'INBOX_PROJECT')).toEqual(['n1']);
+    const deleted = noteOp(B, '[Note] Delete Note', 'DEL', 'n1', {
+      id: 'n1',
+      projectId: 'INBOX_PROJECT',
+      isPinnedToToday: true,
+    });
+    const edit = noteOp(A, '[Note] Update Note', 'UPD', 'n1', {
+      note: { id: 'n1', changes: { content: 'edited by A' } },
+    });
+    const shown = apply(confirmed, [edit]);
+
+    expect(winnersOf([deleted], shown, [edit])).toEqual(['n1']);
+    const saves = bringBackNoteStates(['n1'], notes(shown)).map((note) =>
+      lwwSave(A, 'NOTE', note),
+    );
+    const bridge = apply(confirmed, [deleted, edit, ...saves], 'sp-bridge');
+
+    expect(notes(bridge).entities.n1?.content).toBe('edited by A');
+    expect(projectNoteIds(bridge, 'INBOX_PROJECT')).toEqual(['n1']);
+    expect(notes(bridge).todayOrder).toEqual(['n1']);
+  });
+
+  it('keeps a note deleted with its project, even with a bring-back save', () => {
+    const confirmed = apply(
+      start(),
+      [
+        addProject('p1'),
+        noteOp(B, '[Note] Add Note', 'CRT', 'n1', { note: pinnedNote('p1') }),
+      ],
+      B,
+    );
+    const save = lwwSave(A, 'NOTE', notes(confirmed).entities.n1 as Note);
+
+    const bridge = apply(
+      confirmed,
+      [deleteProject('p1', { noteIds: ['n1'] }), save],
+      'sp-bridge',
+    );
+
+    expect(notes(bridge).entities.n1).toBeUndefined();
+    expect(notes(bridge).todayOrder).not.toContain('n1');
   });
 
   it('puts an unsent edit on top of a downloaded edit to the same field', () => {
@@ -606,6 +808,79 @@ describe('applying a checkpoint', () => {
     expect(tasks(after).selectedTaskId).toBe('t1');
     expect(tasks(after).entities.t1.timeSpentOnDay[DAY]).toBe(60_000);
     expect(tasks(after).entities.t1.title).toBe('renamed by B');
+  });
+
+  it('names the shown tasks and notes a checkpoint holds nowhere, its archives included', () => {
+    const base = apply(
+      start(),
+      [
+        addTask(B, 't2', 'archived elsewhere'),
+        noteOp(B, '[Note] Add Note', 'CRT', 'n1', { note: pinnedNote('INBOX_PROJECT') }),
+      ],
+      B,
+    );
+    const checkpoint = {
+      task: { ids: [], entities: {} },
+      note: { ids: [], entities: {} },
+      archiveYoung: { task: { ids: ['t2'], entities: { t2: tasks(base).entities.t2 } } },
+    };
+
+    expect(
+      itemsMissingFromCheckpoint(
+        { tasks: taskState(base), notes: notes(base) },
+        checkpoint,
+      ),
+    ).toEqual([
+      { entityType: 'TASK', entityId: 't1' },
+      { entityType: 'NOTE', entityId: 'n1' },
+    ]);
+  });
+
+  it('brings back an item a checkpoint lacks only when the edit is later than its recorded delete', () => {
+    const base = start();
+    const edit = rename(A, 't1', 'edited by A');
+    const shown = apply(base, [edit]);
+    const candidates = itemsMissingFromCheckpoint(
+      { tasks: taskState(shown), notes: undefined },
+      { task: { ids: [], entities: {} } },
+    );
+    const decide = (deletedAt?: number): string[] =>
+      findEditsThatBeatDeletes({
+        deletes: deleteTimesWithParents(
+          candidates,
+          deletedAt === undefined
+            ? []
+            : [{ entityType: 'TASK', entityId: 't1', deletedAt }],
+        ),
+        own: [edit],
+      }).map(({ entityId }) => entityId);
+
+    expect(decide(edit.timestamp - 1)).toEqual(['t1']);
+    expect(decide(edit.timestamp + 1)).toEqual([]);
+    expect(decide()).toEqual([]);
+
+    const emptied = apply(
+      root(
+        shown,
+        bulkApplyOperations({
+          operations: [
+            checkpointOf(
+              apply(base, [deleteTask(B, taskState(base).entities.t1 as Task)], B),
+            ),
+          ],
+          localClientId: A,
+          keepsLocalOnlyState: true,
+        }),
+      ),
+      [edit],
+    );
+    const missingKeys = new Set(['TASK:t1']);
+    // The unsent edit to the missing task changes nothing, so it is not counted as kept.
+    expect(editsShown([edit], missingKeys, emptied)).toEqual([]);
+    const save = lwwSave(A, 'TASK', taskState(shown).entities.t1 as Task);
+    const broughtBack = apply(emptied, [save]);
+    expect(tasks(broughtBack).entities.t1.title).toBe('edited by A');
+    expect(editsShown([edit], missingKeys, broughtBack)).toEqual([edit]);
   });
 
   it('applies the edits made while it applied again, after the unsent edits put back on top of it', () => {

@@ -21,6 +21,7 @@ import {
 } from '../../src/http';
 import type { ProviderPlatformInfo } from '../../src/platform';
 import type {
+  DeleteTimesResponse,
   OpUploadResponse,
   RestorePointsResponse,
   RestoreSnapshotResponse,
@@ -125,6 +126,7 @@ const createValidatorsPassthrough = (): SuperSyncResponseValidators => ({
   validateRestorePoints: (data) => data as RestorePointsResponse,
   validateRestoreSnapshot: (data) => data as RestoreSnapshotResponse,
   validateDeleteAllData: (data) => data as { success: boolean },
+  validateDeleteTimes: (data) => data as DeleteTimesResponse,
 });
 
 const createLoggerSpy = (): {
@@ -1482,6 +1484,94 @@ describe('SuperSyncProvider', () => {
 
       expect(capturedBody).not.toBeNull();
       expect(capturedBody!.size).toBeLessThan(originalSize * 0.5);
+    });
+  });
+
+  describe('getDeleteTimes', () => {
+    const task = (entityId: string): { entityType: 'TASK'; entityId: string } => ({
+      entityType: 'TASK',
+      entityId,
+    });
+
+    it('posts the asked items and answers the recorded delete times', async () => {
+      const { provider, cfgStore, fetchMock } = buildProvider();
+      cfgStore.load.mockResolvedValue(testConfig);
+      const deleted = [{ entityType: 'TASK', entityId: 't1', deletedAt: 1_000 }];
+      fetchMock.mockResolvedValue(okResponse({ deleted }));
+
+      expect(await provider.getDeleteTimes([task('t1'), task('t2')])).toEqual(deleted);
+
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://sync.example.com/api/sync/deleted');
+      expect(init.method).toBe('POST');
+      expect(JSON.parse(init.body as string)).toEqual({
+        items: [task('t1'), task('t2')],
+      });
+    });
+
+    it('asks nothing for no items', async () => {
+      const { provider, cfgStore, fetchMock } = buildProvider();
+      cfgStore.load.mockResolvedValue(testConfig);
+
+      expect(await provider.getDeleteTimes([])).toEqual([]);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('splits a long list into requests the server accepts', async () => {
+      const { provider, cfgStore, fetchMock } = buildProvider();
+      cfgStore.load.mockResolvedValue(testConfig);
+      fetchMock
+        .mockResolvedValueOnce(
+          okResponse({ deleted: [{ entityType: 'TASK', entityId: 't0', deletedAt: 1 }] }),
+        )
+        .mockResolvedValueOnce(
+          okResponse({
+            deleted: [{ entityType: 'TASK', entityId: 't500', deletedAt: 2 }],
+          }),
+        );
+      const items = Array.from({ length: 501 }, (_, i) => task(`t${i}`));
+
+      const result = await provider.getDeleteTimes(items);
+
+      expect(result.map((entry) => entry.entityId)).toEqual(['t0', 't500']);
+      const sizes = fetchMock.mock.calls.map(
+        ([, init]) => JSON.parse((init as RequestInit).body as string).items.length,
+      );
+      expect(sizes).toEqual([500, 1]);
+    });
+
+    it('answers no records when the server has no record list', async () => {
+      const { provider, cfgStore, fetchMock } = buildProvider();
+      cfgStore.load.mockResolvedValue(testConfig);
+      fetchMock.mockResolvedValue(errorResponse(404, 'Not Found', ''));
+
+      expect(await provider.getDeleteTimes([task('t1')])).toEqual([]);
+    });
+
+    it('fails on any other error, so the caller can retry', async () => {
+      const { provider, cfgStore, fetchMock } = buildProvider();
+      cfgStore.load.mockResolvedValue(testConfig);
+      fetchMock.mockResolvedValue(errorResponse(500, 'Server Error', ''));
+
+      await expect(provider.getDeleteTimes([task('t1')])).rejects.toThrow('HTTP 500');
+    });
+
+    it('sends the items as the request body on native platforms', async () => {
+      const { provider, cfgStore, nativeHttpExecutor } = buildProvider({
+        isNativePlatform: true,
+      });
+      cfgStore.load.mockResolvedValue(testConfig);
+      nativeHttpExecutor.mockResolvedValue({
+        status: 200,
+        headers: {},
+        data: { deleted: [] },
+      } as NativeHttpResponse);
+
+      await provider.getDeleteTimes([task('t1')]);
+
+      const request = nativeHttpExecutor.mock.calls[0][0] as NativeHttpRequestConfig;
+      expect(request.method).toBe('POST');
+      expect(JSON.parse(request.data as string)).toEqual({ items: [task('t1')] });
     });
   });
 

@@ -268,6 +268,28 @@ export interface RestoreSnapshotResponse {
   generatedAt: number;
 }
 
+/** When the server last saw a task or note deleted, by the deleting device's clock. */
+export interface EntityDeleteTime {
+  entityType: 'TASK' | 'NOTE';
+  entityId: string;
+  deletedAt: number;
+}
+
+export interface DeleteTimesResponse {
+  deleted: EntityDeleteTime[];
+}
+
+/** A provider that keeps recent delete times, so an edit made after a delete can bring the item back past a checkpoint that lacks it. */
+export interface DeleteTimesCapable {
+  /** Items without a record, or a server without the record list, are left out of the answer. */
+  getDeleteTimes(
+    items: readonly Pick<EntityDeleteTime, 'entityType' | 'entityId'>[],
+  ): Promise<EntityDeleteTime[]>;
+}
+
+export const isDeleteTimesCapable = (provider: unknown): provider is DeleteTimesCapable =>
+  typeof (provider as Partial<DeleteTimesCapable> | null)?.getDeleteTimes === 'function';
+
 export interface RestoreCapable<TRestorePointType extends string = string> {
   getRestorePoints(limit?: number): Promise<RestorePoint<TRestorePointType>[]>;
   getStateAtSeq(serverSeq: number): Promise<RestoreSnapshotResponse>;

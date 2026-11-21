@@ -1,6 +1,7 @@
 import { getSyncService } from './sync.service';
 import { Logger } from '../logger';
 import { DEFAULT_SYNC_CONFIG, MS_PER_DAY } from './sync.types';
+import { DELETED_ENTITY_RETENTION_MS } from './deleted-entities';
 
 let cleanupTimer: NodeJS.Timeout | null = null;
 let initialCleanupTimer: NodeJS.Timeout | null = null;
@@ -51,7 +52,19 @@ const runDailyCleanup = async (): Promise<void> => {
     Logger.error(`Cleanup [stale-devices] failed: ${error}`);
   }
 
-  // 3. Clean up expired rate limit counters
+  // 3. Delete the records of deletes older than their 7 days
+  try {
+    const deleted = await syncService.deleteOldDeleteRecords(
+      Date.now() - DELETED_ENTITY_RETENTION_MS,
+    );
+    if (deleted > 0) {
+      Logger.info(`Cleanup [delete-records]: removed ${deleted} entries`);
+    }
+  } catch (error) {
+    Logger.error(`Cleanup [delete-records] failed: ${error}`);
+  }
+
+  // 4. Clean up expired rate limit counters
   try {
     const deleted = syncService.cleanupExpiredRateLimitCounters();
     if (deleted > 0) {
@@ -61,7 +74,7 @@ const runDailyCleanup = async (): Promise<void> => {
     Logger.error(`Cleanup [rate-limits] failed: ${error}`);
   }
 
-  // 4. Clean up expired request deduplication entries
+  // 5. Clean up expired request deduplication entries
   try {
     const deleted = syncService.cleanupExpiredRequestDedupEntries();
     if (deleted > 0) {

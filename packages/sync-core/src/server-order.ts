@@ -133,40 +133,116 @@ export const findUnaccountedServerSeq = ({
   return undefined;
 };
 
-/**
- * Items another browser deleted before this browser's edit to them, in server order: an accepted edit numbered after
- * the delete, or an unsent one (always after the download). Applied in that order the edit would change nothing, so
- * the host sends the item back instead (the Stage 8 behaviour). Returns the edits per item id.
- */
-export const findEditsAfterRemoteDelete = <TOperation extends Operation<string>>({
-  downloaded,
-  own,
-  entityType,
-}: {
-  downloaded: readonly ServerOrderedOp<TOperation>[];
-  /** This browser's changes in the replay: accepted ones with their numbers, unsent ones without. */
-  own: readonly { op: TOperation; serverSeq?: number }[];
+/** A delete of one task or note, with the deleting device's time. */
+export interface ItemDelete {
   entityType: string;
-}): Map<string, TOperation[]> => {
-  const deletedAt = new Map<string, number>();
-  for (const { op, serverSeq } of downloaded) {
-    if (op.entityType !== entityType || op.opType !== OpType.Delete) continue;
-    for (const id of [op.entityId, ...(op.entityIds ?? [])]) {
-      if (id && (deletedAt.get(id) ?? Infinity) > serverSeq) deletedAt.set(id, serverSeq);
+  entityId: string;
+  deletedAt: number;
+}
+
+/** An item this browser edited after its delete, with the time of that edit. */
+export interface EditBeatingDelete {
+  entityType: string;
+  entityId: string;
+  editAt: number;
+}
+
+const itemKey = (entityType: string, entityId: string): string =>
+  `${entityType}:${entityId}`;
+
+/** An edit wins over a delete only when its device time is later; a tie keeps the delete. */
+export const editBeatsDelete = (editAt: number, deletedAt: number): boolean =>
+  editAt > deletedAt;
+
+/** The latest delete time per item. */
+const latestDeleteTimes = (deletes: readonly ItemDelete[]): Map<string, ItemDelete> => {
+  const latest = new Map<string, ItemDelete>();
+  for (const entry of deletes) {
+    const key = itemKey(entry.entityType, entry.entityId);
+    const known = latest.get(key);
+    if (!known || known.deletedAt < entry.deletedAt) latest.set(key, entry);
+  }
+  return latest;
+};
+
+/**
+ * The deleted items whose latest edit by this browser is later than their latest delete.
+ * Only an update of that one item counts as an edit; an item whose last change here is this browser's own delete stays deleted.
+ * `own` is this browser's change log in the order the changes were made.
+ */
+export const findEditsThatBeatDeletes = ({
+  deletes,
+  own,
+}: {
+  deletes: readonly ItemDelete[];
+  own: readonly Operation<string>[];
+}): EditBeatingDelete[] => {
+  const latest = latestDeleteTimes(deletes);
+  if (latest.size === 0) return [];
+  const editAt = new Map<string, number | undefined>();
+  for (const op of own) {
+    if (op.opType === OpType.Delete) {
+      for (const id of [op.entityId, ...(op.entityIds ?? [])]) {
+        if (id) editAt.set(itemKey(op.entityType, id), undefined);
+      }
+      continue;
+    }
+    const isSingleItem = !op.entityIds || op.entityIds.every((id) => id === op.entityId);
+    if (op.opType !== OpType.Update || !op.entityId || !isSingleItem) continue;
+    const key = itemKey(op.entityType, op.entityId);
+    if (!latest.has(key)) continue;
+    editAt.set(key, Math.max(editAt.get(key) ?? -Infinity, op.timestamp));
+  }
+  const winners: EditBeatingDelete[] = [];
+  for (const [key, entry] of latest) {
+    const at = editAt.get(key);
+    if (at !== undefined && editBeatsDelete(at, entry.deletedAt)) {
+      winners.push({
+        entityType: entry.entityType,
+        entityId: entry.entityId,
+        editAt: at,
+      });
     }
   }
-  const edits = new Map<string, TOperation[]>();
-  if (deletedAt.size === 0) return edits;
-  for (const { op, serverSeq } of own) {
-    if (op.entityType !== entityType || op.opType !== OpType.Update || !op.entityId)
-      continue;
-    const deleteSeq = deletedAt.get(op.entityId);
-    if (deleteSeq === undefined || (serverSeq !== undefined && serverSeq < deleteSeq)) {
-      continue;
-    }
-    edits.set(op.entityId, [...(edits.get(op.entityId) ?? []), op]);
-  }
-  return edits;
+  return winners;
+};
+
+/** This browser's unsent changes that would recreate a deleted item although the delete is later, to withdraw before they are sent. */
+export const findRecreationsBeatenByDeletes = <TOperation extends Operation<string>>({
+  deletes,
+  unsent,
+  recreatesItem,
+}: {
+  deletes: readonly ItemDelete[];
+  unsent: readonly TOperation[];
+  recreatesItem: (op: TOperation) => boolean;
+}): TOperation[] => {
+  const latest = latestDeleteTimes(deletes);
+  return unsent.filter((op) => {
+    const entry = latest.get(itemKey(op.entityType, op.entityId ?? ''));
+    return (
+      entry !== undefined &&
+      recreatesItem(op) &&
+      !editBeatsDelete(op.timestamp, entry.deletedAt)
+    );
+  });
+};
+
+/**
+ * The delete time of each asked item from the server's records: its own record, or else its parent's.
+ * A delete names only the top task, so a subtask's delete is recorded under its parent.
+ */
+export const deleteTimesWithParents = (
+  asked: readonly { entityType: string; entityId: string; parentId?: string }[],
+  records: readonly ItemDelete[],
+): ItemDelete[] => {
+  const latest = latestDeleteTimes(records);
+  return asked.flatMap(({ entityType, entityId, parentId }) => {
+    const found =
+      latest.get(itemKey(entityType, entityId)) ??
+      (parentId ? latest.get(itemKey(entityType, parentId)) : undefined);
+    return found ? [{ entityType, entityId, deletedAt: found.deletedAt }] : [];
+  });
 };
 
 /**

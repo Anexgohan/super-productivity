@@ -21,7 +21,12 @@ import {
 } from '../apply/operation-applier.service';
 import { ConflictResolutionService } from './conflict-resolution.service';
 import { UnsentEditOnTopService } from './unsent-edit-on-top.service';
-import { ServerOrderService } from './server-order.service';
+import {
+  CheckpointBringBack,
+  NO_CHECKPOINT_BRING_BACK,
+  ServerOrderService,
+} from './server-order.service';
+import { remoteThenLocalStore } from './server-order-delete-rule.util';
 import { getDeferredActions } from '../capture/operation-capture.meta-reducer';
 import { reapplyEditsReplacedByCheckpoint } from '../apply/server-order-replay.meta-reducer';
 import { ValidateStateService } from '../validation/validate-state.service';
@@ -336,13 +341,18 @@ export class RemoteOpsProcessingService {
           ) {
             fullStateApplyResult.blockedByLocalConflict = true;
           } else {
+            const isCheckpoint = validOps
+              .filter((op) => FULL_STATE_OP_TYPES.has(op.opType))
+              .every(isCheckpointFullStateOp);
+            // Before anything changes: when the server cannot say when an edited item was deleted, this apply stops and the next sync retries it.
+            const bringBack = isCheckpoint
+              ? await this.serverOrder.decideCheckpointBringBacks(validOps)
+              : NO_CHECKPOINT_BRING_BACK;
             fullStateApplyResult.committedFullStateOpIds =
               await this.applyNonConflictingOps(validOps, true, {
                 skipDeferredActionDrain: true,
                 // A checkpoint is no user's choice to start over: the open task and the running timer stay.
-                ...(validOps
-                  .filter((op) => FULL_STATE_OP_TYPES.has(op.opType))
-                  .every(isCheckpointFullStateOp)
+                ...(isCheckpoint
                   ? { createBulkApplyAction: this.serverOrder.checkpointApplyAction() }
                   : {}),
               });
@@ -351,6 +361,7 @@ export class RemoteOpsProcessingService {
                 validOps,
                 fullStateApplyResult.committedFullStateOpIds,
                 options?.getDiscardablePendingOpIds?.() ?? [],
+                bringBack,
               );
           }
         } catch (error) {
@@ -625,22 +636,21 @@ export class RemoteOpsProcessingService {
       let bringBackCount = 0;
       let replayed = false;
       try {
-        let prepared = await this.serverOrder.prepare(validOps, receivedOps);
+        // Decided before the plan: a bring-back is an unsent save of this browser's, so the batch replays.
+        const bringBack = await this.serverOrder.decideBringBacks(validOps);
+        bringBackCount = bringBack.length;
+        let prepared = await this.serverOrder.prepare(validOps, receivedOps, bringBack);
         if (
           prepared.plan.kind === 'rebuild' &&
           (await this.serverOrder.rebuildConfirmedState(prepared.downloaded))
         ) {
-          prepared = await this.serverOrder.prepare(validOps, receivedOps);
+          prepared = await this.serverOrder.prepare(validOps, receivedOps, bringBack);
         }
         if (prepared.plan.kind === 'replay') {
-          const bringBack = await this.serverOrder.writeBringBackSaves(prepared);
-          bringBackCount = bringBack.length;
           await this.applyNonConflictingOps(validOps, true, {
             skipDeferredActionDrain: true,
-            createBulkApplyAction: this.serverOrder.replayActionFactory(
-              prepared,
-              bringBack,
-            ),
+            createBulkApplyAction: this.serverOrder.replayActionFactory(prepared),
+            localOpsAfter: bringBack,
           });
           this.serverOrder.commitReplay(prepared);
           replayed = true;
@@ -654,7 +664,9 @@ export class RemoteOpsProcessingService {
           }
           await this.applyNonConflictingOps(validOps, true, {
             skipDeferredActionDrain: true,
+            localOpsAfter: bringBack,
           });
+          await this.serverOrder.applyOnTop(bringBack);
           await this.serverOrder.commitInOrder(prepared, getDeferredActions().length > 0);
         }
       } catch (error) {
@@ -774,6 +786,7 @@ export class RemoteOpsProcessingService {
     validOps: Operation[],
     committedFullStateOpIds: string[],
     discardablePendingOpIds: readonly string[],
+    bringBack: CheckpointBringBack,
   ): Promise<number> {
     const committed = new Set(committedFullStateOpIds);
     const committedFullStateOps = validOps.filter((op) => committed.has(op.id));
@@ -798,7 +811,6 @@ export class RemoteOpsProcessingService {
         committedFullStateOps[committedFullStateOps.length - 1].repairBaseServerSeq ?? 0,
       ownServerSeq: (opId) => this.serverOrder.ownServerSeq(opId),
     });
-    if (unsent.length === 0) return 0;
 
     const result = await this.operationApplier.applyOperations(unsent, {
       skipDeferredLocalActions: true,
@@ -809,10 +821,15 @@ export class RemoteOpsProcessingService {
         { opId: result.failedOp.op.id },
       );
     }
+    // After the unsent edits, so each brought-back item shows as this browser last saw it.
+    const broughtBack = await this.serverOrder.writeAndApplyBringBacks(bringBack.saves);
+    const kept =
+      (await this.serverOrder.countEditsShown(result.appliedOps, bringBack.missingKeys)) +
+      broughtBack;
     OpLog.normal(
-      `RemoteOpsProcessingService: Kept ${result.appliedOps.length} unsent edit(s) on top of the checkpoint`,
+      `RemoteOpsProcessingService: Kept ${kept} unsent edit(s) and brought-back item(s) on top of the checkpoint`,
     );
-    return result.appliedOps.length;
+    return kept;
   }
 
   async applyNonConflictingOps(
@@ -822,6 +839,8 @@ export class RemoteOpsProcessingService {
       skipDeferredActionDrain?: boolean;
       /** Stage 9 (anex): the reducer action in place of the bulk apply (a server-order replay). */
       createBulkApplyAction?: ApplyOperationsOptions['createBulkApplyAction'];
+      /** This browser's bring-back saves, logged right after the remote ops in the same write. */
+      localOpsAfter?: Operation[];
     } = {},
   ): Promise<string[]> {
     const locallyReplayableOps =
@@ -841,7 +860,10 @@ export class RemoteOpsProcessingService {
       // validation, and user notifications stay in this service.
       const result = await applyRemoteOperations({
         ops: locallyReplayableOps,
-        store: this.opLogStore,
+        store: options.localOpsAfter?.length
+          ? remoteThenLocalStore(this.opLogStore)
+          : this.opLogStore,
+        localOpsAfter: options.localOpsAfter,
         applier: {
           applyOperations: (opsToApply, applyOptions) =>
             this.operationApplier.applyOperations(opsToApply, {

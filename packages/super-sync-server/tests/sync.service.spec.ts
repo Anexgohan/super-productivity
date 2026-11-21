@@ -12,6 +12,8 @@ vi.mock('../src/db', async () => {
     testState: state,
   } = await import('./sync.service.test-state');
   const { Prisma: PrismaModule } = await import('@prisma/client');
+  const { createDeletedEntityMock } = await import('./deleted-entity-mock');
+  const deletedEntityMock = () => createDeletedEntityMock(() => state.deletedEntities);
 
   type OperationWhereAlternative = {
     opType?: string | { in?: string[] };
@@ -389,6 +391,7 @@ vi.mock('../src/db', async () => {
       }),
       update: vi.fn().mockResolvedValue({}),
     },
+    deletedEntity: deletedEntityMock(),
     // The upload transaction now writes the storage counter atomically via
     // $executeRaw to keep the data write and the counter delta in a single
     // commit. Mock is a no-op here — the existing spec asserts behaviour at
@@ -457,6 +460,9 @@ vi.mock('../src/db', async () => {
             Array.from(state.userSyncStates, ([id, syncState]) => [id, { ...syncState }]),
           ),
           users: new Map(Array.from(state.users, ([id, user]) => [id, { ...user }])),
+          deletedEntities: new Map(
+            Array.from(state.deletedEntities, ([key, row]) => [key, { ...row }]),
+          ),
           serverSeqCounter: state.serverSeqCounter,
         };
         try {
@@ -466,10 +472,12 @@ vi.mock('../src/db', async () => {
           state.syncDevices = transactionStart.syncDevices;
           state.userSyncStates = transactionStart.userSyncStates;
           state.users = transactionStart.users;
+          state.deletedEntities = transactionStart.deletedEntities;
           state.serverSeqCounter = transactionStart.serverSeqCounter;
           throw error;
         }
       }),
+      deletedEntity: deletedEntityMock(),
       operation: {
         findFirst: vi.fn().mockImplementation(async (args: any) => {
           if (args.where?.opType?.in) {
@@ -3652,6 +3660,117 @@ describe('SyncService', () => {
         .ops;
       expect(user2Ops.length).toBe(1);
       expect(user2Ops[0].op.entityId).toBe('t2');
+    });
+  });
+
+  describe('delete records', () => {
+    const deleteOp = (overrides: Partial<Operation> = {}): Operation =>
+      makeOp({
+        actionType: '[Task Shared] deleteTask',
+        opType: 'DEL',
+        entityId: 't1',
+        payload: { task: { id: 't1' } },
+        timestamp: Date.now() - 60_000,
+        ...overrides,
+      });
+    const storedRows = (): {
+      entityType: string;
+      entityId: string;
+      deletedAt: number;
+    }[] =>
+      Array.from(testState.deletedEntities.values())
+        .filter((row) => row.userId === userId)
+        .map((row) => ({
+          entityType: row.entityType,
+          entityId: row.entityId,
+          deletedAt: Number(row.deletedAt),
+        }))
+        .sort((a, b) => a.entityId.localeCompare(b.entityId));
+
+    describe.each([
+      ['one by one', false],
+      ['in a batch', true],
+    ])('recorded on upload, %s', (_label, batchUpload) => {
+      let service: SyncService;
+      beforeEach(() => {
+        service = new SyncService({ batchUpload });
+      });
+
+      it('records a task delete, every id of a bulk delete and a note delete with their device times', async () => {
+        const results = await service.uploadOps(userId, clientId, [
+          deleteOp({ timestamp: 1_000 }),
+          deleteOp({
+            actionType: '[Task Shared] deleteTasks',
+            entityId: 't2',
+            entityIds: ['t2', 't3'],
+            payload: { taskIds: ['t2', 't3'] },
+            timestamp: 2_000,
+          }),
+          deleteOp({
+            actionType: '[Note] Delete Note',
+            entityType: 'NOTE',
+            entityId: 'n1',
+            payload: { id: 'n1' },
+            timestamp: 3_000,
+          }),
+        ]);
+
+        expect(results.map((result) => result.accepted)).toEqual([true, true, true]);
+        expect(storedRows()).toEqual([
+          { entityType: 'NOTE', entityId: 'n1', deletedAt: 3_000 },
+          { entityType: 'TASK', entityId: 't1', deletedAt: 1_000 },
+          { entityType: 'TASK', entityId: 't2', deletedAt: 2_000 },
+          { entityType: 'TASK', entityId: 't3', deletedAt: 2_000 },
+        ]);
+      });
+
+      it('records nothing for a project delete, an edit or a duplicate retry', async () => {
+        const first = deleteOp({ timestamp: 1_000 });
+        await service.uploadOps(userId, clientId, [first]);
+        testState.deletedEntities.clear();
+
+        const results = await service.uploadOps(userId, clientId, [
+          { ...first },
+          deleteOp({
+            actionType: '[Task Shared] deleteProject',
+            entityType: 'PROJECT',
+            entityId: 'p1',
+            payload: { projectId: 'p1' },
+          }),
+          makeOp({ actionType: '[Task] Update Task', opType: 'UPD', entityId: 't2' }),
+        ]);
+
+        expect(results.map((result) => result.accepted)).toEqual([false, true, true]);
+        expect(storedRows()).toEqual([]);
+      });
+
+      it('keeps the later device time when an item is deleted again', async () => {
+        await service.uploadOps(userId, clientId, [deleteOp({ timestamp: 5_000 })]);
+        await service.uploadOps(userId, clientId, [deleteOp({ timestamp: 2_000 })]);
+        expect(storedRows()[0].deletedAt).toBe(5_000);
+
+        await service.uploadOps(userId, clientId, [deleteOp({ timestamp: 9_000 })]);
+        expect(storedRows()[0].deletedAt).toBe(9_000);
+      });
+    });
+
+    it('are wiped by a clean-slate upload and by an account reset', async () => {
+      const service = getSyncService();
+      await service.uploadOps(userId, clientId, [deleteOp()]);
+      expect(storedRows()).toHaveLength(1);
+
+      await service.uploadOps(
+        userId,
+        clientId,
+        [makeOp({ actionType: '[Task] Update Task', opType: 'UPD', entityId: 't9' })],
+        true,
+      );
+      expect(storedRows()).toEqual([]);
+
+      await service.uploadOps(userId, clientId, [deleteOp({ entityId: 't2' })]);
+      expect(storedRows()).toHaveLength(1);
+      await service.deleteAllUserData(userId);
+      expect(storedRows()).toEqual([]);
     });
   });
 });

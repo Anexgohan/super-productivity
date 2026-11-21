@@ -1,5 +1,8 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { SuperSyncDownloadOpsQuerySchema } from '@sp/shared-schema';
+import {
+  SuperSyncDeleteTimesRequestSchema,
+  SuperSyncDownloadOpsQuerySchema,
+} from '@sp/shared-schema';
 import { authenticate, getAuthUser, requireWriteScope } from '../middleware';
 import { getSyncService } from './sync.service';
 import { Logger } from '../logger';
@@ -333,6 +336,38 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         return reply.send({ restorePoints });
       } catch (err) {
         Logger.error(`Get restore points error: ${errorMessage(err)}`);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    },
+  );
+
+  // POST /api/sync/deleted - When the asked tasks and notes were last deleted; a read, sent as POST for its list
+  fastify.post<{ Body: unknown }>(
+    '/deleted',
+    {
+      config: {
+        rateLimit: {
+          max: 200,
+          timeWindow: '1 minute',
+        },
+      },
+    },
+    async (req, reply) => {
+      try {
+        const userId = getAuthUser(req).userId;
+        const parseResult = SuperSyncDeleteTimesRequestSchema.safeParse(req.body);
+        if (!parseResult.success) {
+          return reply
+            .status(400)
+            .send(createValidationErrorResponse(parseResult.error.issues));
+        }
+        const deleted = await getSyncService().getDeleteTimes(
+          userId,
+          parseResult.data.items,
+        );
+        return reply.send({ deleted });
+      } catch (err) {
+        Logger.error(`Get delete times error: ${errorMessage(err)}`);
         return reply.status(500).send({ error: 'Internal server error' });
       }
     },

@@ -67,6 +67,7 @@ describe('applyRemoteOperations', () => {
     expect(store.markApplied).toHaveBeenCalledWith([10]);
     expect(result).toEqual({
       appendedOps: [op2],
+      appendedLocalOps: [],
       skippedCount: 1,
       appliedOps: [op2],
       appliedSeqs: [10],
@@ -88,6 +89,7 @@ describe('applyRemoteOperations', () => {
     expect(store.markReducersCommittedAndMergeClocks).not.toHaveBeenCalled();
     expect(result).toEqual({
       appendedOps: [],
+      appendedLocalOps: [],
       skippedCount: 1,
       appliedOps: [],
       appliedSeqs: [],
@@ -601,6 +603,60 @@ describe('applyRemoteOperations', () => {
       'applyOperations',
       'markReducersCommittedAndMergeClocks',
     ]);
+  });
+
+  describe("with this browser's own saves after the remote ops", () => {
+    it('logs the remote ops and then the own saves in one write, and applies only the remote ops', async () => {
+      const remote = createOperation('remote-1', 'DEL');
+      const own = createOperation('own-1');
+      const writtenOwn = { ...own, vectorClock: { client1: 2 } };
+      const store = createStore({ seqs: [], writtenOps: [], skippedCount: 0 });
+      store.appendRemoteThenLocalSkipDuplicates = vi.fn().mockResolvedValue({
+        seqs: [10],
+        writtenOps: [remote],
+        skippedCount: 0,
+        localOps: [writtenOwn],
+      });
+      const applier = createApplier({ appliedOps: [remote] });
+
+      const result = await applyRemoteOperations({
+        ops: [remote],
+        store,
+        applier,
+        localOpsAfter: [own],
+      });
+
+      expect(store.appendRemoteThenLocalSkipDuplicates).toHaveBeenCalledWith(
+        [remote],
+        [own],
+        { pendingApply: true },
+      );
+      expect(store.appendBatchSkipDuplicates).not.toHaveBeenCalled();
+      expect(applier.applyOperations).toHaveBeenCalledWith(
+        [remote],
+        jasmineLikeObjectContainingFunction(),
+      );
+      expect(store.markApplied).toHaveBeenCalledWith([10]);
+      expect(result.appendedLocalOps).toEqual([writtenOwn]);
+    });
+
+    it('refuses own saves when the store cannot log them with the remote ops', async () => {
+      const store = createStore({
+        seqs: [10],
+        writtenOps: [createOperation('remote-1')],
+        skippedCount: 0,
+      });
+
+      await expect(
+        applyRemoteOperations({
+          ops: [createOperation('remote-1')],
+          store,
+          applier: createApplier({ appliedOps: [] }),
+          localOpsAfter: [createOperation('own-1')],
+        }),
+      ).rejects.toThrow('localOpsAfter needs a store');
+      expect(store.appendBatchSkipDuplicates).not.toHaveBeenCalled();
+    });
   });
 });
 

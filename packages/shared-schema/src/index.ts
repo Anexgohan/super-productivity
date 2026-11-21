@@ -59,6 +59,9 @@ export {
   SuperSyncRestorePointsResponseSchema,
   SuperSyncRestoreSnapshotResponseSchema,
   SuperSyncDeleteAllDataResponseSchema,
+  SUPER_SYNC_MAX_DELETE_TIME_ITEMS,
+  SuperSyncDeleteTimesRequestSchema,
+  SuperSyncDeleteTimesResponseSchema,
 } from './supersync-http-contract';
 export type {
   SuperSyncOpType,
@@ -80,6 +83,8 @@ export type {
   SuperSyncRestorePointsResponse,
   SuperSyncRestoreSnapshotResponse,
   SuperSyncDeleteAllDataResponse,
+  SuperSyncDeleteTimesRequest,
+  SuperSyncDeleteTimesResponse,
 } from './supersync-http-contract';
 
 // Defaults for new tasks, tags and projects (shared so API-created entities match app-created ones)

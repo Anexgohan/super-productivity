@@ -28,6 +28,7 @@ import {
   isSameIncomingOperation,
   pruneVectorClockForStorage,
 } from '../stored-operation';
+import { recordDeletes } from '../deleted-entities';
 import { parsePersistedVectorClock } from './operation-download.service';
 import {
   ALLOWED_ENTITY_TYPES,
@@ -635,6 +636,12 @@ export class OperationUploadService {
         repairBaseServerSeq: candidate.op.repairBaseServerSeq ?? null,
       })),
     });
+    await recordDeletes(
+      tx,
+      userId,
+      accepted.map((candidate) => candidate.op),
+      now,
+    );
     return 2;
   }
 
@@ -905,6 +912,8 @@ export class OperationUploadService {
         ),
       );
     }
+
+    await recordDeletes(tx, userId, [op], now);
 
     if (fullStateVectorClock) {
       // Persist the aggregate of (prior history ∪ this op's clock), not just the

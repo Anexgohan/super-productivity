@@ -24,6 +24,11 @@ import {
   type SnapshotDedupResponse,
 } from './services';
 import type { ValidationResult } from './services/validation.service';
+import {
+  deleteOldDeleteRecords,
+  getDeleteTimes,
+  type EntityDeleteTime,
+} from './deleted-entities';
 const getPrismaP2002TargetTokens = (
   err: Prisma.PrismaClientKnownRequestError,
 ): string[] => {
@@ -251,6 +256,7 @@ export class SyncService {
 
             // Delete all operations
             await tx.operation.deleteMany({ where: { userId } });
+            await tx.deletedEntity.deleteMany({ where: { userId } });
 
             // Delete all devices
             await tx.syncDevice.deleteMany({ where: { userId } });
@@ -759,6 +765,17 @@ export class SyncService {
     return this.deviceService.deleteStaleDevices(beforeTime);
   }
 
+  async getDeleteTimes(
+    userId: number,
+    items: readonly { entityType: string; entityId: string }[],
+  ): Promise<EntityDeleteTime[]> {
+    return getDeleteTimes(userId, items);
+  }
+
+  async deleteOldDeleteRecords(beforeTime: number): Promise<number> {
+    return deleteOldDeleteRecords(beforeTime);
+  }
+
   /**
    * Delete ALL sync data for a user. Used for encryption password changes.
    * Deletes operations, devices, and resets sync state.
@@ -767,6 +784,7 @@ export class SyncService {
     await prisma.$transaction(async (tx) => {
       // Delete all operations
       await tx.operation.deleteMany({ where: { userId } });
+      await tx.deletedEntity.deleteMany({ where: { userId } });
 
       // Delete all devices
       await tx.syncDevice.deleteMany({ where: { userId } });

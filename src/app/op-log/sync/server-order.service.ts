@@ -5,7 +5,7 @@
  * order matters): the state the server confirmed and its server number, this browser's saves the server accepted but
  * the confirmed state does not hold yet, and the server numbers of downloaded changes. It also builds the two extra
  * pieces a replay can need: the confirmed state rebuilt from the newest checkpoint, and a "bring it back" save for a task
- * another browser deleted before this browser's edit to it (the Stage 8 behaviour, kept by the user's decision).
+ * or note another browser deleted earlier, by device time, than this browser's edit to it.
  *
  * RemoteOpsProcessingService drives the apply; the reducer side is server-order-replay.meta-reducer.ts and the plan is
  * planServerOrderApply in @sp/sync-core.
@@ -15,20 +15,34 @@ import { Action, Store } from '@ngrx/store';
 import { firstValueFrom } from 'rxjs';
 import { take } from 'rxjs/operators';
 import {
-  findEditsAfterRemoteDelete,
+  deleteTimesWithParents,
+  findEditsThatBeatDeletes,
+  findRecreationsBeatenByDeletes,
   findUnaccountedServerSeq,
   planServerOrderApply,
+  type EditBeatingDelete,
+  type ItemDelete,
   type ServerOrderedOp,
   type ServerOrderPlan,
 } from '@sp/sync-core';
 import {
   EntityType,
+  extractFullStateFromPayload,
   FULL_STATE_OP_TYPES,
   Operation,
   OpType,
 } from '../core/operation.types';
 import { bulkApplyOperations } from '../apply/bulk-hydration.action';
 import { bringBackTaskStates } from './server-order-bring-back.util';
+import {
+  bringBackNoteStates,
+  editsShown,
+  itemsMissingFromCheckpoint,
+  itemsRemovedBy,
+  recreatesItem,
+} from './server-order-delete-rule.util';
+import { isDeleteTimesCapable } from '../sync-providers/provider.interface';
+import { OperationApplierService } from '../apply/operation-applier.service';
 import { historyBeforeBatch, opsAsDownloadApplies } from './server-order-rebuild.util';
 import { SchemaMigrationService } from '../persistence/schema-migration.service';
 import { SyncImportFilterService } from './sync-import-filter.service';
@@ -44,6 +58,8 @@ import { TaskTimeSyncService } from '../../features/tasks/task-time-sync.service
 import { SimpleCounterService } from '../../features/simple-counter/simple-counter.service';
 import { TaskState } from '../../features/tasks/task.model';
 import { TASK_FEATURE_NAME } from '../../features/tasks/store/task.reducer';
+import { NoteState } from '../../features/note/note.model';
+import { NOTE_FEATURE_NAME } from '../../features/note/store/note.reducer';
 import {
   serverOrderRebuild,
   serverOrderReplay,
@@ -81,6 +97,20 @@ export interface ServerOrderPrepared {
   plan: ServerOrderPlan<Operation>;
   downloaded: ServerOrderedOp<Operation>[];
 }
+
+/** What a checkpoint apply brings back, and the shown items it lacks, as `TYPE:id`. */
+export interface CheckpointBringBack {
+  saves: Operation[];
+  missingKeys: ReadonlySet<string>;
+}
+
+export const NO_CHECKPOINT_BRING_BACK: CheckpointBringBack = {
+  saves: [],
+  missingKeys: new Set(),
+};
+
+const itemKeyOf = (op: { entityType: string; entityId?: string }): string =>
+  `${op.entityType}:${op.entityId ?? ''}`;
 
 @Injectable({ providedIn: 'root' })
 export class ServerOrderService {
@@ -175,10 +205,14 @@ export class ServerOrderService {
     return ops.every((op) => this.seqByOpId.has(op.id));
   }
 
-  /** What to do with a batch of downloaded changes, given this browser's unsent edits. Inside the cutoff. */
+  /**
+   * What to do with a batch of downloaded changes, given this browser's unsent edits and the bring-back saves about to join them.
+   * Runs inside the cutoff.
+   */
   async prepare(
     validOps: Operation[],
     receivedOps: readonly Operation[],
+    bringBack: readonly Operation[] = [],
   ): Promise<ServerOrderPrepared> {
     this.syncEpoch();
     const downloaded = validOps.map((op) => ({
@@ -192,7 +226,7 @@ export class ServerOrderService {
     const plan = planServerOrderApply({
       downloaded,
       accepted: this.accepted,
-      unsent: await this.readUnsent(),
+      unsent: [...(await this.readUnsent()), ...bringBack],
       hasConfirmedState: this.isConfirmedStateUsable(downloaded, receivedSeqs),
       ownLatestSeq: this.ownLatestSeq,
     });
@@ -279,88 +313,123 @@ export class ServerOrderService {
   }
 
   /**
-   * "Bring it back" saves for tasks another browser deleted before this browser's edit to them, in server order: an
-   * edit applied after the delete would change nothing, here and on the server. Written to the change log as local
-   * saves (uploaded as usual) and returned for the replay to apply on top. Before the replay: reads the state shown.
+   * Before a download is applied, inside the cutoff: saves that bring back the tasks and notes it deletes that this browser edited later.
+   * Later means by device time.
+   * Unsent recreations that a later delete beats are withdrawn first. The saves are not written: the apply logs them right after the download.
    */
-  async writeBringBackSaves(prepared: ServerOrderPrepared): Promise<Operation[]> {
-    const { plan, downloaded } = prepared;
-    if (plan.kind !== 'replay') return [];
-    const placed = new Set(plan.placedOpIds);
-    const acceptedSeq = new Map(
-      this.accepted.map(({ op, serverSeq }) => [op.id, serverSeq]),
-    );
-    const editsByTask = findEditsAfterRemoteDelete({
-      downloaded,
-      own: [...plan.ordered.filter((op) => placed.has(op.id)), ...plan.onTop].map(
-        (op) => ({
-          op,
-          serverSeq: acceptedSeq.get(op.id),
-        }),
-      ),
-      entityType: 'TASK',
-    });
-    if (editsByTask.size === 0) return [];
-
-    const clientId = await this.clientIdProvider.loadClientId();
-    if (!clientId) return [];
-    const tasks = (await this.readState())[TASK_FEATURE_NAME] as TaskState | undefined;
-    const resolver = this.injector.get(ConflictResolutionService);
-    const clock = resolver.mergeAndIncrementClocks(
-      [(await this.opLogStore.getVectorClock()) ?? {}],
-      clientId,
-    );
-    const deletedTaskIds = new Set<string>();
-    for (const { op } of downloaded) {
-      if (op.entityType === 'TASK' && op.opType === OpType.Delete) {
-        [op.entityId, ...(op.entityIds ?? [])].forEach(
-          (id) => id && deletedTaskIds.add(id),
-        );
+  async decideBringBacks(validOps: readonly Operation[]): Promise<Operation[]> {
+    const deleteOps: Operation[] = [];
+    for (const op of validOps) {
+      if (
+        op.opType === OpType.Delete &&
+        (op.entityType === 'TASK' || op.entityType === 'NOTE') &&
+        !(await this.opLogStore.hasOp(op.id))
+      ) {
+        deleteOps.push(op);
       }
     }
-    const lastEditAt = (taskId: string): number =>
-      Math.max(
-        ...(editsByTask.get(taskId) ?? [...editsByTask.values()].flat()).map(
-          (op) => op.timestamp,
-        ),
-      );
-    // Only task saves, no copies of project or parent lists (server-order-bring-back.util.ts).
-    const saves: Operation[] = bringBackTaskStates(
-      editsByTask.keys(),
-      deletedTaskIds,
-      tasks,
-      this.readUnsavedTime().taskTime,
-    ).map((task) => {
-      const save = resolver.createLWWUpdateOp(
-        'TASK' as EntityType,
-        task.id,
-        task,
-        clientId,
-        clock,
-        lastEditAt(task.id),
-      );
-      return {
-        ...save,
-        payload: { ...(save.payload as object), recreatesEntityAfterDelete: true },
-      } as Operation;
+    if (deleteOps.length === 0) return [];
+    const state = await this.readState();
+    const tasks = state[TASK_FEATURE_NAME] as TaskState | undefined;
+    const deletes = itemsRemovedBy(deleteOps, tasks);
+    await this.withdrawBeatenRecreations(deletes);
+    const winners = findEditsThatBeatDeletes({
+      deletes,
+      own: await this.readOwnChanges(),
     });
-    if (saves.length === 0) return [];
+    return this.buildBringBackSaves(
+      winners,
+      new Set(deletes.filter((d) => d.entityType === 'TASK').map((d) => d.entityId)),
+      state,
+    );
+  }
 
+  /**
+   * Before a checkpoint is applied: asks the server when the shown tasks and notes the checkpoint lacks, and this browser edited, were deleted.
+   * Each one edited later than its delete gets a "bring it back" save, written and applied after the checkpoint.
+   * Throws when the server cannot answer, so this apply stops before anything changes and the next sync retries it.
+   */
+  async decideCheckpointBringBacks(
+    validOps: readonly Operation[],
+  ): Promise<CheckpointBringBack> {
+    const checkpoint = validOps.filter((op) => FULL_STATE_OP_TYPES.has(op.opType)).pop();
+    const provider = this.providerManager.getActiveProvider();
+    if (!checkpoint || !isDeleteTimesCapable(provider)) return NO_CHECKPOINT_BRING_BACK;
+    const state = await this.readState();
+    const tasks = state[TASK_FEATURE_NAME] as TaskState | undefined;
+    const missing = itemsMissingFromCheckpoint(
+      { tasks, notes: state[NOTE_FEATURE_NAME] as NoteState | undefined },
+      extractFullStateFromPayload(checkpoint.payload),
+    );
+    const missingKeys = new Set(missing.map(itemKeyOf));
+    if (missing.length === 0) return { saves: [], missingKeys };
+
+    const own = await this.readOwnChanges();
+    const edited = new Set(
+      own.filter((op) => op.opType === OpType.Update).map(itemKeyOf),
+    );
+    const candidates = missing.filter((item) => edited.has(itemKeyOf(item)));
+    if (candidates.length === 0) return { saves: [], missingKeys };
+    const asked = new Map<string, { entityType: 'TASK' | 'NOTE'; entityId: string }>();
+    for (const { entityType, entityId, parentId } of candidates) {
+      asked.set(itemKeyOf({ entityType, entityId }), { entityType, entityId });
+      if (parentId) {
+        asked.set(itemKeyOf({ entityType, entityId: parentId }), {
+          entityType,
+          entityId: parentId,
+        });
+      }
+    }
+    const records = await provider.getDeleteTimes([...asked.values()]);
+    const deletes = deleteTimesWithParents(candidates, records);
+    await this.withdrawBeatenRecreations(deletes);
+    const saves = await this.buildBringBackSaves(
+      findEditsThatBeatDeletes({ deletes, own }),
+      new Set(
+        missing.filter((item) => item.entityType === 'TASK').map((i) => i.entityId),
+      ),
+      state,
+    );
+    return { saves, missingKeys };
+  }
+
+  /** After a checkpoint and the unsent edits on top: logs the bring-back saves after them and applies them. Returns how many applied. */
+  async writeAndApplyBringBacks(saves: Operation[]): Promise<number> {
+    if (saves.length === 0) return 0;
     // The batch rebases each save on the stored clock, so the written ops are the ones to apply and upload.
     const { written } = await this.opLogStore.appendMixedSourceBatchSkipDuplicates([
       { ops: saves, source: 'local' },
     ]);
-    OpLog.normal(
-      `ServerOrderService: ${written.length} "bring it back" save(s) for tasks deleted on another device`,
-      { taskIds: saves.map((op) => op.entityId) },
-    );
-    return written.map((entry) => entry.op);
+    return this.applyOnTop(written.map((entry) => entry.op));
+  }
+
+  /** Applies this browser's saves on top of the state shown, as received ops are applied. Returns how many applied. */
+  async applyOnTop(ops: Operation[]): Promise<number> {
+    if (ops.length === 0) return 0;
+    const result = await this.injector
+      .get(OperationApplierService)
+      .applyOperations(ops, { skipDeferredLocalActions: true });
+    if (result.failedOp) {
+      OpLog.err('ServerOrderService: a "bring it back" save failed to apply', {
+        opId: result.failedOp.op.id,
+      });
+    }
+    return result.appliedOps.length;
+  }
+
+  /** How many of the unsent edits applied on top of a checkpoint show. */
+  async countEditsShown(
+    applied: readonly Operation[],
+    missingKeys: ReadonlySet<string>,
+  ): Promise<number> {
+    return missingKeys.size === 0
+      ? applied.length
+      : editsShown(applied, missingKeys, await this.readState()).length;
   }
 
   /** The bulk action for a replay, built from the downloaded changes the crash-safe apply actually applies. */
   replayActionFactory(
     prepared: ServerOrderPrepared,
-    bringBack: Operation[],
   ): (ops: Operation[], localClientId?: string) => Action {
     const { plan } = prepared;
     if (plan.kind !== 'replay' || !this.confirmed) {
@@ -378,7 +447,7 @@ export class ServerOrderService {
         ordered: plan.ordered.filter(
           (op) => !downloadedIds.has(op.id) || applying.has(op.id),
         ),
-        onTop: [...plan.onTop, ...bringBack],
+        onTop: plan.onTop,
         downloadedOpIds: [...applying],
         localClientId,
       });
@@ -462,6 +531,95 @@ export class ServerOrderService {
           !accepted.has(entry.op.id) &&
           !FULL_STATE_OP_TYPES.has(entry.op.opType),
       )
+      .map((entry) => entry.op);
+  }
+
+  /**
+   * "Bring it back" saves for the items whose edit here beats their delete: a task with its deleted parent first, a note on its own.
+   * Each save carries the time of the edit it answers, so a later delete still beats it.
+   */
+  private async buildBringBackSaves(
+    winners: readonly EditBeatingDelete[],
+    deletedTaskIds: ReadonlySet<string>,
+    state: Record<string, unknown>,
+  ): Promise<Operation[]> {
+    if (winners.length === 0) return [];
+    const clientId = await this.clientIdProvider.loadClientId();
+    if (!clientId) return [];
+    const resolver = this.injector.get(ConflictResolutionService);
+    const clock = resolver.mergeAndIncrementClocks(
+      [(await this.opLogStore.getVectorClock()) ?? {}],
+      clientId,
+    );
+    const editAt = new Map(winners.map((winner) => [itemKeyOf(winner), winner.editAt]));
+    const idsOfType = (entityType: string): string[] =>
+      winners.filter((w) => w.entityType === entityType).map((w) => w.entityId);
+    const tasks = bringBackTaskStates(
+      idsOfType('TASK'),
+      deletedTaskIds,
+      state[TASK_FEATURE_NAME] as TaskState | undefined,
+      this.readUnsavedTime().taskTime,
+    );
+    // A parent brought back for its subtask answers the latest edit among them.
+    const parentEditAt = (taskId: string): number =>
+      Math.max(
+        ...tasks
+          .filter((task) => task.parentId === taskId)
+          .map(
+            (task) =>
+              editAt.get(itemKeyOf({ entityType: 'TASK', entityId: task.id })) ?? 0,
+          ),
+      );
+    const save = (entityType: EntityType, entity: { id: string }): Operation => {
+      const key = itemKeyOf({ entityType, entityId: entity.id });
+      const op = resolver.createLWWUpdateOp(
+        entityType,
+        entity.id,
+        entity,
+        clientId,
+        clock,
+        editAt.get(key) ?? parentEditAt(entity.id),
+      );
+      return {
+        ...op,
+        payload: { ...(op.payload as object), recreatesEntityAfterDelete: true },
+      } as Operation;
+    };
+    const saves = [
+      ...tasks.map((task) => save('TASK', task)),
+      ...bringBackNoteStates(
+        idsOfType('NOTE'),
+        state[NOTE_FEATURE_NAME] as NoteState | undefined,
+      ).map((note) => save('NOTE', note)),
+    ];
+    if (saves.length > 0) {
+      OpLog.normal(
+        `ServerOrderService: ${saves.length} "bring it back" save(s) for items deleted before this browser's edit`,
+        { ids: saves.map((op) => op.entityId) },
+      );
+    }
+    return saves;
+  }
+
+  /** Withdraws this browser's unsent recreations of items whose delete is later, before they are sent. */
+  private async withdrawBeatenRecreations(deletes: readonly ItemDelete[]): Promise<void> {
+    const beaten = findRecreationsBeatenByDeletes({
+      deletes,
+      unsent: await this.readUnsent(),
+      recreatesItem,
+    });
+    if (beaten.length === 0) return;
+    await this.opLogStore.markRejected(beaten.map((op) => op.id));
+    OpLog.normal(
+      `ServerOrderService: withdrew ${beaten.length} unsent save(s) that a later delete beats`,
+      { opIds: beaten.map((op) => op.id) },
+    );
+  }
+
+  /** This browser's own changes still in its change log, sent or not, in the order they were made. */
+  private async readOwnChanges(): Promise<Operation[]> {
+    return (await this.opLogStore.getOpsAfterSeq(0))
+      .filter((entry) => entry.source === 'local' && !entry.rejectedAt)
       .map((entry) => entry.op);
   }
 

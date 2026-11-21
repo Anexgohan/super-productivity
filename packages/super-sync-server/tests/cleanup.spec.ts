@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { startCleanupJobs, stopCleanupJobs } from '../src/sync/cleanup';
 import { DEFAULT_SYNC_CONFIG, MS_PER_DAY } from '../src/sync/sync.types';
+import { DELETED_ENTITY_RETENTION_MS } from '../src/sync/deleted-entities';
 import { Logger } from '../src/logger';
 
 // Mock the sync service
@@ -19,6 +20,7 @@ const mockSyncService = {
     affectedUserIds: [],
   }),
   deleteStaleDevices: vi.fn().mockResolvedValue(0),
+  deleteOldDeleteRecords: vi.fn().mockResolvedValue(0),
   cleanupExpiredRateLimitCounters: vi.fn().mockReturnValue(0),
   cleanupExpiredRequestDedupEntries: vi.fn().mockReturnValue(0),
   updateStorageUsage: vi.fn().mockResolvedValue(undefined),
@@ -73,6 +75,16 @@ describe('Cleanup Jobs', () => {
       const devicesCutoffCall = mockSyncService.deleteStaleDevices.mock.calls[0][0];
       const expectedCutoff = Date.now() - DEFAULT_SYNC_CONFIG.retentionMs;
       expect(Math.abs(devicesCutoffCall - expectedCutoff)).toBeLessThan(100);
+    });
+
+    it('should prune the delete records older than their retention', async () => {
+      startCleanupJobs();
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const cutoff = mockSyncService.deleteOldDeleteRecords.mock.calls[0][0];
+      expect(Math.abs(cutoff - (Date.now() - DELETED_ENTITY_RETENTION_MS))).toBeLessThan(
+        100,
+      );
     });
 
     it('should run cleanup daily', async () => {

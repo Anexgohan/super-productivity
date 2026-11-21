@@ -237,6 +237,36 @@ export const SuperSyncDeleteAllDataResponseSchema = z
   })
   .passthrough();
 
+export const SUPER_SYNC_MAX_DELETE_TIME_ITEMS = 500;
+
+/** Tasks and notes whose recorded delete time a browser asks for. */
+export const SuperSyncDeleteTimesRequestSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        entityType: z.enum(['TASK', 'NOTE']),
+        entityId: z.string().min(1).max(255),
+      }),
+    )
+    .min(1)
+    .max(SUPER_SYNC_MAX_DELETE_TIME_ITEMS),
+});
+
+/** The asked items that have a delete recorded, with the device time of the latest one. */
+export const SuperSyncDeleteTimesResponseSchema = z
+  .object({
+    deleted: z.array(
+      z
+        .object({
+          entityType: z.enum(['TASK', 'NOTE']),
+          entityId: z.string(),
+          deletedAt: z.number(),
+        })
+        .passthrough(),
+    ),
+  })
+  .passthrough();
+
 export type SuperSyncOpType = (typeof SUPER_SYNC_OP_TYPES)[number];
 export type SuperSyncImportReason = (typeof SUPER_SYNC_IMPORT_REASONS)[number];
 export type SuperSyncSnapshotReason = (typeof SUPER_SYNC_SNAPSHOT_REASONS)[number];
@@ -268,4 +298,10 @@ export type SuperSyncRestoreSnapshotResponse = z.infer<
 >;
 export type SuperSyncDeleteAllDataResponse = z.infer<
   typeof SuperSyncDeleteAllDataResponseSchema
+>;
+export type SuperSyncDeleteTimesRequest = z.infer<
+  typeof SuperSyncDeleteTimesRequestSchema
+>;
+export type SuperSyncDeleteTimesResponse = z.infer<
+  typeof SuperSyncDeleteTimesResponseSchema
 >;

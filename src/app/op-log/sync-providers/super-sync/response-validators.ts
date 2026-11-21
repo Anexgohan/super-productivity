@@ -1,5 +1,6 @@
 import {
   SuperSyncDeleteAllDataResponseSchema,
+  SuperSyncDeleteTimesResponseSchema,
   SuperSyncDownloadOpsResponseSchema,
   SuperSyncRestorePointsResponseSchema,
   SuperSyncRestoreSnapshotResponseSchema,
@@ -7,6 +8,7 @@ import {
   SuperSyncUploadOpsResponseSchema,
 } from '@sp/shared-schema';
 import {
+  DeleteTimesResponse,
   OpUploadResponse,
   SuperSyncOpDownloadResponse,
   SnapshotUploadResponse,
@@ -128,3 +130,14 @@ export const validateRestoreSnapshotResponse = (data: unknown): RestoreSnapshotR
  */
 export const validateDeleteAllDataResponse = (data: unknown): { success: boolean } =>
   parseResponse(SuperSyncDeleteAllDataResponseSchema, data, 'DeleteAllDataResponse');
+
+/**
+ * Validates DeleteTimesResponse from server.
+ * Throws InvalidDataSPError if the response structure is invalid.
+ */
+export const validateDeleteTimesResponse = (data: unknown): DeleteTimesResponse =>
+  parseResponse(
+    SuperSyncDeleteTimesResponseSchema,
+    data,
+    'DeleteTimesResponse',
+  ) as DeleteTimesResponse;

@@ -12,6 +12,7 @@ interface TestData {
   operations: Map<string, any>;
   syncDevices: Map<string, any>;
   userSyncStates: Map<number, any>;
+  deletedEntities: Map<string, any>;
 }
 
 let testData: TestData = {
@@ -19,6 +20,7 @@ let testData: TestData = {
   operations: new Map(),
   syncDevices: new Map(),
   userSyncStates: new Map(),
+  deletedEntities: new Map(),
 };
 
 let serverSeqCounter = 0;
@@ -75,6 +77,7 @@ export const initDb = (dataPath: string, inMemory: boolean = false) => {
     operations: new Map(),
     syncDevices: new Map(),
     userSyncStates: new Map(),
+    deletedEntities: new Map(),
   };
   serverSeqCounter = 0;
   mockDb = createMockDb();
@@ -88,7 +91,9 @@ export const getDb = () => {
 };
 
 // Mock the db module
-vi.mock('../src/db', () => {
+vi.mock('../src/db', async () => {
+  const { createDeletedEntityMock: createSharedDeletedEntityMock } =
+    await import('./deleted-entity-mock');
   const applySelect = (op: any, select?: Record<string, boolean>) => {
     if (!op || !select) {
       return op;
@@ -182,6 +187,9 @@ vi.mock('../src/db', () => {
           row.serverSeq !== undefined &&
           op.serverSeq === row.serverSeq),
     );
+
+  const createDeletedEntityMock = () =>
+    createSharedDeletedEntityMock(() => testData.deletedEntities);
 
   // Create Prisma mock with all needed operations
   const prismaMock = {
@@ -300,6 +308,7 @@ vi.mock('../src/db', () => {
           }),
           update: vi.fn().mockResolvedValue({}),
         },
+        deletedEntity: createDeletedEntityMock(),
         $queryRaw: vi.fn().mockResolvedValue([{ total: BigInt(0) }]),
         // The upload transaction writes the storage counter atomically via
         // $executeRaw to keep the data write and the counter delta in a single
@@ -337,6 +346,7 @@ vi.mock('../src/db', () => {
       findUnique: vi.fn(),
       update: vi.fn(),
     },
+    deletedEntity: createDeletedEntityMock(),
     $queryRaw: vi.fn().mockResolvedValue([{ total: BigInt(0) }]),
     $executeRaw: vi.fn().mockResolvedValue(0),
   };
@@ -350,6 +360,7 @@ vi.mock('../src/db', () => {
         operations: new Map(),
         syncDevices: new Map(),
         userSyncStates: new Map(),
+        deletedEntities: new Map(),
       };
       serverSeqCounter = 0;
       mockDb = createMockDb();
@@ -380,6 +391,7 @@ beforeEach(() => {
     operations: new Map(),
     syncDevices: new Map(),
     userSyncStates: new Map(),
+    deletedEntities: new Map(),
   };
   serverSeqCounter = 0;
   vi.clearAllMocks();

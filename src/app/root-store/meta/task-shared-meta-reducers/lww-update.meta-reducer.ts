@@ -36,6 +36,30 @@ import {
 import { withLocalOnlySyncSettings } from '../../../features/config/local-only-sync-settings.util';
 import { SyncConfig } from '../../../features/config/global-config.model';
 import { LwwUpdateMode } from '../../../op-log/core/operation.types';
+import { NOTE_FEATURE_NAME } from '../../../features/note/store/note.reducer';
+import { Note } from '../../../features/note/note.model';
+
+/** A recreated note goes back to the front of its project's notes, and of Today's when pinned there, as adding a note puts it. */
+const placeRecreatedNote = (state: RootState, note: Note): RootState => {
+  const project = note.projectId
+    ? (state[PROJECT_FEATURE_NAME].entities[note.projectId] as Project | undefined)
+    : undefined;
+  const notes = state[NOTE_FEATURE_NAME];
+  return {
+    ...state,
+    ...(project && !project.noteIds.includes(note.id)
+      ? {
+          [PROJECT_FEATURE_NAME]: projectAdapter.updateOne(
+            { id: project.id, changes: { noteIds: [note.id, ...project.noteIds] } },
+            state[PROJECT_FEATURE_NAME],
+          ),
+        }
+      : {}),
+    ...(note.isPinnedToToday && !notes.todayOrder.includes(note.id)
+      ? { [NOTE_FEATURE_NAME]: { ...notes, todayOrder: [note.id, ...notes.todayOrder] } }
+      : {}),
+  };
+};
 
 /**
  * Updates project.taskIds arrays when a task's project membership changes via LWW Update.
@@ -715,6 +739,20 @@ export const lwwUpdateMetaReducer: MetaReducer = (
       );
       return reducer(state, action);
     }
+    // A note brought back after a delete stays deleted when its project is gone, as a task does.
+    if (
+      entityType === 'NOTE' &&
+      !existingEntity &&
+      actionMeta?.recreatesEntityAfterDelete === true &&
+      typeof recreationProjectId === 'string' &&
+      recreationProjectId !== '' &&
+      !rootState[PROJECT_FEATURE_NAME].entities[recreationProjectId]
+    ) {
+      OpLog.log(
+        `lwwUpdateMetaReducer: Ignoring NOTE recreation ${entityId} because its project is gone`,
+      );
+      return reducer(state, action);
+    }
 
     let updatedFeatureState: unknown;
 
@@ -817,6 +855,10 @@ export const lwwUpdateMetaReducer: MetaReducer = (
         entities?: Record<string, Record<string, unknown>>;
       }
     ).entities?.[entityId];
+
+    if (entityType === 'NOTE' && !existingEntity && updatedEntity) {
+      updatedState = placeRecreatedNote(updatedState, updatedEntity as unknown as Note);
+    }
 
     // For TASK entities, sync related entities when relationships change
     if (entityType === 'TASK' && updatedEntity) {

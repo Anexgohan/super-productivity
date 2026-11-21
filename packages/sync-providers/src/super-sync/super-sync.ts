@@ -18,6 +18,8 @@ import { isRetryableUploadError } from '../http/retryable-upload-error';
 import type { ProviderPlatformInfo } from '../platform/provider-platform-info';
 import type { WebFetchFactory } from '../platform/web-fetch-factory';
 import type {
+  DeleteTimesCapable,
+  EntityDeleteTime,
   OpUploadResponse,
   OperationSyncCapable,
   RestoreCapable,
@@ -44,6 +46,9 @@ const SUPERSYNC_REQUEST_TIMEOUT_MS = 75000;
 
 /** Browser/Electron transient fetch failures get the same retry budget as native. */
 const SUPERSYNC_WEB_MAX_RETRIES = 2;
+
+/** The most items the server answers in one delete-times request. */
+const SUPERSYNC_MAX_DELETE_TIME_ITEMS = 500;
 
 /** Max chars of server `error` field threaded into thrown `Error.message`. */
 const SERVER_ERROR_REASON_MAX_CHARS = 80;
@@ -116,6 +121,7 @@ export class SuperSyncProvider
     SyncProviderBase<typeof PROVIDER_ID_SUPER_SYNC, SuperSyncPrivateCfg>,
     OperationSyncCapable<'superSyncOps'>,
     RestoreCapable,
+    DeleteTimesCapable,
     SuperSyncWebSocketAccess
 {
   readonly id = PROVIDER_ID_SUPER_SYNC;
@@ -434,6 +440,38 @@ export class SuperSyncProvider
     return this._deps.responseValidators.validateRestoreSnapshot(response);
   }
 
+  // === Delete Times ===
+
+  async getDeleteTimes(
+    items: readonly Pick<EntityDeleteTime, 'entityType' | 'entityId'>[],
+  ): Promise<EntityDeleteTime[]> {
+    this._deps.logger.debug(`${this._logLabel}: getDeleteTimes`, { count: items.length });
+    if (items.length === 0) return [];
+    const cfg = await this._cfgOrError();
+
+    const deleted: EntityDeleteTime[] = [];
+    for (let start = 0; start < items.length; start += SUPERSYNC_MAX_DELETE_TIME_ITEMS) {
+      const chunk = items
+        .slice(start, start + SUPERSYNC_MAX_DELETE_TIME_ITEMS)
+        .map(({ entityType, entityId }) => ({ entityType, entityId }));
+      let response: unknown;
+      try {
+        response = await this._fetchApi<unknown>(cfg, '/api/sync/deleted', {
+          method: 'POST',
+          body: JSON.stringify({ items: chunk }),
+        });
+      } catch (error) {
+        // A server without the record list keeps no delete times, so every delete stands.
+        if (error instanceof SuperSyncHttpStatusError && error.status === 404) return [];
+        throw error;
+      }
+      deleted.push(
+        ...this._deps.responseValidators.validateDeleteTimes(response).deleted,
+      );
+    }
+    return deleted;
+  }
+
   // === WebSocket Parameters ===
 
   /**
@@ -716,15 +754,24 @@ export class SuperSyncProvider
     const url = `${baseUrl}${path}`;
     const sanitizedToken = this._sanitizeToken(cfg.accessToken);
 
+    const body = typeof options.body === 'string' ? options.body : undefined;
     if (this.isNativePlatform) {
-      return this._doNativeFetch<T>(cfg, path, options.method || 'GET');
+      return this._doNativeFetch<T>(
+        cfg,
+        path,
+        options.method || 'GET',
+        body === undefined ? undefined : { data: body },
+      );
     }
 
     const headers = new Headers(options.headers as HeadersInit);
     headers.set('Content-Type', 'application/json');
     headers.set('Authorization', `Bearer ${sanitizedToken}`);
 
-    return this._doWebFetch<T>(url, path, headers, { method: options.method || 'GET' });
+    return this._doWebFetch<T>(url, path, headers, {
+      method: options.method || 'GET',
+      ...(body === undefined ? {} : { body }),
+    });
   }
 
   /**

@@ -159,11 +159,20 @@ export type { UnsentEditOnTopRules } from './unsent-edit-on-top';
 // anex fork, Stage 9: browsers follow the server's order.
 export {
   editsNotInCheckpoint,
-  findEditsAfterRemoteDelete,
+  deleteTimesWithParents,
+  editBeatsDelete,
+  findEditsThatBeatDeletes,
+  findRecreationsBeatenByDeletes,
   findUnaccountedServerSeq,
   planServerOrderApply,
 } from './server-order';
-export type { ServerOrderedOp, ServerOrderInput, ServerOrderPlan } from './server-order';
+export type {
+  EditBeatingDelete,
+  ItemDelete,
+  ServerOrderedOp,
+  ServerOrderInput,
+  ServerOrderPlan,
+} from './server-order';
 
 // Entity-frontier and clock-corruption helpers (per-entity vector-clock domain).
 export { adjustForClockCorruption, buildEntityFrontier } from './entity-frontier';
