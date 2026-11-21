@@ -18,7 +18,9 @@ export const newestCheckpointEntry = (
 
 /**
  * Startup replay order: the edits the checkpoint apply put on top of the newest checkpoint replay after it, where that apply put them.
- * That is after the checkpoint and its download, before this browser's later saves, such as the "bring it back" saves that already hold them.
+ * That is right after the last remote entry the apply logged, which the checkpoint records, so later downloads and saves stay after them.
+ * Those saves include the "bring it back" saves that already hold them.
+ * Without that end on the checkpoint entry, they go before this browser's first later save.
  * In log order the checkpoint, a full state, would wipe them; this covers a startup without the snapshot saved after the checkpoint applied.
  * The apply records their ids on the checkpoint's log entry, decided by the server's stored numbers, so a later acknowledgement changes nothing.
  * A checkpoint entry without that record moves this browser's edits that are still unsent.
@@ -54,9 +56,10 @@ export const withUnsentEditsAfterCheckpoint = (
 
   const movedIds = new Set(moved.map((entry) => entry.op.id));
   const kept = entries.filter((entry) => !movedIds.has(entry.op.id));
-  const firstLocalAfter = kept.findIndex(
-    (entry) => entry.seq > before && entry.source === 'local',
+  const end = checkpoint.unsentOnTopAfterSeq;
+  const firstAfter = kept.findIndex((entry) =>
+    end !== undefined ? entry.seq > end : entry.seq > before && entry.source === 'local',
   );
-  const at = firstLocalAfter < 0 ? kept.length : firstLocalAfter;
+  const at = firstAfter < 0 ? kept.length : firstAfter;
   return [...kept.slice(0, at), ...moved, ...kept.slice(at)];
 };

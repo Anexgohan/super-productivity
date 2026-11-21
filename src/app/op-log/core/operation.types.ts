@@ -91,6 +91,8 @@ export interface OperationLogEntry extends Omit<LibOperationLogEntry, 'op'> {
    * Kept only in this browser's change log; never uploaded.
    */
   unsentOnTopOpIds?: string[];
+  /** With `unsentOnTopOpIds`: the seq of the last remote entry that apply logged; the startup rebuild replays those edits right after it. */
+  unsentOnTopAfterSeq?: number;
 }
 
 export interface EntityChange extends Omit<LibEntityChange, 'entityType'> {

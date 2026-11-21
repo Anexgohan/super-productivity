@@ -500,6 +500,55 @@ describe('a startup without the snapshot saved after a checkpoint', () => {
     ).toBe(titleOf(shown));
   });
 
+  it.each(['the snapshot from before the checkpoint', 'no snapshot'])(
+    'replays the edits put on top after the checkpoint and its own download, and before a later download, starting from %s',
+    (from) => {
+      const edit = { ...rename(A, 'A kept edit'), id: 'edit' } as Operation;
+      const cp = checkpointOf(start());
+      const ownDownload = {
+        ...rename(B, 'B in the checkpoint download'),
+        id: 'own',
+      } as Operation;
+      const later = { ...rename(B, 'B later edit'), id: 'later' } as Operation;
+      const shown = apply(start(), [cp, ownDownload, edit, later]);
+      const log: OperationLogEntry[] = [
+        { seq: 1, op: edit, appliedAt: 1000, source: 'local', syncedAt: 3000 },
+        {
+          seq: 2,
+          op: cp,
+          appliedAt: 2000,
+          source: 'remote',
+          syncedAt: 2000,
+          unsentOnTopOpIds: ['edit'],
+          unsentOnTopAfterSeq: 3,
+        },
+        { seq: 3, op: ownDownload, appliedAt: 2000, source: 'remote', syncedAt: 2000 },
+        { seq: 4, op: later, appliedAt: 4000, source: 'remote', syncedAt: 4000 },
+      ];
+      const fromSnapshot = from !== 'no snapshot';
+
+      const replayed = withUnsentEditsAfterCheckpoint(fromSnapshot ? log.slice(1) : log, [
+        log[0],
+      ]);
+
+      expect(replayed.map((e) => e.op.id)).toEqual([
+        'checkpoint',
+        'own',
+        'edit',
+        'later',
+      ]);
+      const initial = fromSnapshot ? apply(start(), [edit]) : start();
+      expect(
+        titleOf(
+          apply(
+            initial,
+            replayed.map((e) => e.op),
+          ),
+        ),
+      ).toBe(titleOf(shown));
+    },
+  );
+
   it('leaves in place the edits the server already held in the checkpoint, acknowledged after it', () => {
     const olderTitle = rename(A, 'A older title');
     const time = makeOp(A, '[TimeTracking] Sync time spent', 'UPD', 't1', {

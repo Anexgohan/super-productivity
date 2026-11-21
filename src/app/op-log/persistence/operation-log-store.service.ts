@@ -157,6 +157,7 @@ interface StoredOperationLogEntry {
   applicationStatus?: 'pending' | 'archive_pending' | 'applied' | 'failed';
   retryCount?: number;
   unsentOnTopOpIds?: string[];
+  unsentOnTopAfterSeq?: number;
 }
 
 /**
@@ -176,6 +177,9 @@ const decodeStoredEntry = (stored: StoredOperationLogEntry): OperationLogEntry =
     applicationStatus: stored.applicationStatus,
     retryCount: stored.retryCount,
     ...(stored.unsentOnTopOpIds ? { unsentOnTopOpIds: stored.unsentOnTopOpIds } : {}),
+    ...(stored.unsentOnTopAfterSeq !== undefined
+      ? { unsentOnTopAfterSeq: stored.unsentOnTopAfterSeq }
+      : {}),
   };
 };
 
@@ -1184,6 +1188,8 @@ export class OperationLogStoreService implements RemoteOperationApplyStorePort<O
         let didWriteLocal = false;
 
         for (const batch of nonEmptyBatches) {
+          const recordedCheckpoints: StoredOperationLogEntry[] = [];
+          let lastSeqOfBatch: number | undefined;
           for (const proposedOp of batch.ops) {
             const existingKey = await tx.getKeyFromIndex(
               STORE_NAMES.OPS,
@@ -1216,6 +1222,15 @@ export class OperationLogStoreService implements RemoteOperationApplyStorePort<O
             const seq = await tx.add(STORE_NAMES.OPS, entry);
             await this._recordFullStateOpInTx(tx, entry.op, seq);
             written.push({ seq, op, source: batch.source });
+            lastSeqOfBatch = seq;
+            if (entry.unsentOnTopOpIds) recordedCheckpoints.push({ ...entry, seq });
+          }
+          // The apply puts the recorded edits on top of this whole batch, so the checkpoint also records where the batch ends.
+          for (const checkpoint of recordedCheckpoints) {
+            await tx.put(STORE_NAMES.OPS, {
+              ...checkpoint,
+              unsentOnTopAfterSeq: lastSeqOfBatch,
+            } satisfies StoredOperationLogEntry);
           }
         }
 
