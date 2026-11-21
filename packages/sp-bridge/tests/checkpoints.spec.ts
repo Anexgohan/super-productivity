@@ -97,6 +97,15 @@ describe('checkpoints: when one is due', () => {
     expect(t.isDue(start + CHECKPOINT_RETRY_MS + CHECKPOINT_MIN_INTERVAL_MS)).toBe(true);
   });
 
+  it('records a hold once, without counting it as an attempt, so the checkpoint follows as soon as the hold ends', () => {
+    const t = new CheckpointTracker(statePath());
+    t.observe([fullImport(), ...changes(CHECKPOINT_EVERY_CHANGES)]);
+    expect(t.holdBack('held back: archive')).toBe(true);
+    expect(t.holdBack('held back: archive')).toBe(false);
+    expect(t.state.lastError).toBe('held back: archive');
+    expect(t.isDue(HOUR_LATER)).toBe(true);
+  });
+
   it('keeps its counters across a restart', () => {
     const path = statePath();
     const first = new CheckpointTracker(path);

@@ -226,6 +226,7 @@ export const DUPLICATE_OP_SELECT = {
   isPayloadEncrypted: true,
   syncImportReason: true,
   repairBaseServerSeq: true,
+  serverSeq: true,
 } satisfies Prisma.OperationSelect;
 
 export interface BatchUploadCandidate {
@@ -329,6 +330,8 @@ export interface DownloadOpsResponse {
   capabilities?: {
     causalRepairSnapshots: true;
   };
+  /** The highest number stored for the requesting client's own saves, when the request names it (`excludeClient`). */
+  ownLatestSeq?: number;
 }
 
 // Status types

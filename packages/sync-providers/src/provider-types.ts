@@ -135,6 +135,8 @@ export interface OpDownloadResponseBase {
   capabilities?: {
     causalRepairSnapshots?: true;
   };
+  /** SuperSync: the highest number the server holds for this client's own saves. */
+  ownLatestSeq?: number;
 }
 
 export interface SuperSyncOpDownloadResponse extends OpDownloadResponseBase {

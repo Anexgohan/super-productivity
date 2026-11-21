@@ -1,5 +1,9 @@
 // Specs that run the app's own source take the app's compiler settings, like the app rules they test.
 {
   "extends": "../app-rules/tsconfig.json",
-  "include": ["./server-order-replay.spec.ts", "../../../src/app/core/window-ea.d.ts"]
+  "include": [
+    "./server-order-replay.spec.ts",
+    "./app-rules-day.spec.ts",
+    "../../../src/app/core/window-ea.d.ts"
+  ]
 }

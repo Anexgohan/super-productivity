@@ -123,6 +123,22 @@ describe('planServerOrderApply', () => {
     ).toEqual({ kind: 'rebuild' });
   });
 
+  it('does not apply as today when the server holds a save of this browser numbered after the download, as after a reload', () => {
+    const afterReload = {
+      downloaded: [at('b1', 10), at('b2', 12)],
+      accepted: [],
+      unsent: [],
+      hasConfirmedState: false,
+    };
+    expect(planServerOrderApply({ ...afterReload, ownLatestSeq: 11 })).toEqual({
+      kind: 'rebuild',
+    });
+    expect(planServerOrderApply({ ...afterReload, ownLatestSeq: 9 })).toEqual({
+      kind: 'in-order',
+      confirmedSeq: 12,
+    });
+  });
+
   it('asks for a rebuild when two changes share a number or a number is not valid', () => {
     const base = { unsent: [], hasConfirmedState: true };
     expect(

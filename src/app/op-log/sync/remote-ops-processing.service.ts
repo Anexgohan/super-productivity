@@ -23,6 +23,7 @@ import { ConflictResolutionService } from './conflict-resolution.service';
 import { UnsentEditOnTopService } from './unsent-edit-on-top.service';
 import { ServerOrderService } from './server-order.service';
 import { getDeferredActions } from '../capture/operation-capture.meta-reducer';
+import { reapplyEditsReplacedByCheckpoint } from '../apply/server-order-replay.meta-reducer';
 import { ValidateStateService } from '../validation/validate-state.service';
 import { SyncSessionValidationService } from './sync-session-validation.service';
 import { VectorClockService } from './vector-clock.service';
@@ -356,6 +357,8 @@ export class RemoteOpsProcessingService {
           hasPrimaryError = true;
           throw error;
         } finally {
+          // After the unsent edits, so the edits made during the apply keep their place after them.
+          this.store.dispatch(reapplyEditsReplacedByCheckpoint());
           releaseApplyingRemoteOpsHold();
           try {
             await processDeferredActionsAfterRemoteApply(this.injector, true);
@@ -608,7 +611,10 @@ export class RemoteOpsProcessingService {
       await this.serverOrder.rebuildConfirmedState(early.downloaded);
     }
 
-    const applyWithOperationLogLockHeld = async (): Promise<number> => {
+    const applyWithOperationLogLockHeld = async (): Promise<{
+      bringBackCount: number;
+      replayed: boolean;
+    }> => {
       this.providerManager.assertSyncEpochUnchanged(
         options?.fenceEpoch,
         'server-order apply',
@@ -617,6 +623,7 @@ export class RemoteOpsProcessingService {
         this.hydrationStateService.acquireApplyingRemoteOpsHold();
       let hasPrimaryError = false;
       let bringBackCount = 0;
+      let replayed = false;
       try {
         let prepared = await this.serverOrder.prepare(validOps, receivedOps);
         if (
@@ -636,6 +643,7 @@ export class RemoteOpsProcessingService {
             ),
           });
           this.serverOrder.commitReplay(prepared);
+          replayed = true;
         } else {
           if (prepared.plan.kind === 'rebuild') {
             // The server's history cannot give the confirmed state: the download goes on top of the state shown, as
@@ -668,15 +676,22 @@ export class RemoteOpsProcessingService {
         }
       }
       await this.validateAfterSync(true);
-      return bringBackCount;
+      return { bringBackCount, replayed };
     };
 
     // Lock order as the full-state path: UPLOAD, then the flushed OPERATION_LOG cutoff.
-    return options?.callerHoldsOperationLogLock
-      ? applyWithOperationLogLockHeld()
-      : this.lockService.request(LOCK_NAMES.UPLOAD, () =>
-          this.writeFlushService.flushThenRunExclusive(applyWithOperationLogLockHeld),
-        );
+    if (options?.callerHoldsOperationLogLock) {
+      return (await applyWithOperationLogLockHeld()).bringBackCount;
+    }
+    const { bringBackCount, replayed } = await this.lockService.request(
+      LOCK_NAMES.UPLOAD,
+      () => this.writeFlushService.flushThenRunExclusive(applyWithOperationLogLockHeld),
+    );
+    if (replayed) {
+      // The startup rebuild replays the change log in local order, which a replay may have changed, so the state is saved now.
+      await this.injector.get(OperationLogSnapshotService).saveCurrentStateAsSnapshot();
+    }
+    return bringBackCount;
   }
 
   /**

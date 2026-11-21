@@ -137,6 +137,7 @@ export class OperationUploadService {
     error: string | undefined,
     errorCode: UploadResult['errorCode'],
     existingClock?: VectorClock,
+    storedServerSeq?: number,
   ): UploadResult {
     Logger.audit({
       event: 'OP_REJECTED',
@@ -150,6 +151,8 @@ export class OperationUploadService {
     return {
       opId: op.id,
       accepted: false,
+      // A save stored before: its number, so a browser whose first answer was lost still learns where it stands.
+      ...(storedServerSeq !== undefined ? { serverSeq: storedServerSeq } : {}),
       error,
       errorCode,
       existingClock,
@@ -530,6 +533,8 @@ export class OperationUploadService {
         candidate.op,
         'Duplicate operation ID',
         SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+        undefined,
+        existingOp.serverSeq,
       );
     }
     return { duplicateFreeCandidates, dbRoundtrips: 1 };
@@ -770,6 +775,8 @@ export class OperationUploadService {
           op,
           'Duplicate operation ID',
           SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+          undefined,
+          existingOp.serverSeq,
         ),
       );
     }
@@ -893,6 +900,8 @@ export class OperationUploadService {
           op,
           'Duplicate operation ID',
           SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+          undefined,
+          duplicateOp.serverSeq,
         ),
       );
     }

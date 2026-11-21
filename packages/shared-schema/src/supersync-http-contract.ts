@@ -182,6 +182,7 @@ export const SuperSyncDownloadOpsResponseSchema = z
         causalRepairSnapshots: z.literal(true).optional(),
       })
       .optional(),
+    ownLatestSeq: z.number().optional(),
   })
   .passthrough();
 

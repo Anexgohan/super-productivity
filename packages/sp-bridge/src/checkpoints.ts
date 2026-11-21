@@ -92,6 +92,14 @@ export class CheckpointTracker {
     );
   }
 
+  /** Records why no checkpoint is written now, without counting an attempt; true when the reason is new, so it is logged once. */
+  holdBack(reason: string): boolean {
+    if (this._state.lastError === reason) return false;
+    this._state.lastError = reason;
+    this._save();
+    return true;
+  }
+
   markAttempt(now: number, error: string | null): void {
     this._state.lastAttemptAt = now;
     this._state.lastError = error;

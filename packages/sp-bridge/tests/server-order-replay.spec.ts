@@ -7,12 +7,13 @@ import '../app-rules/globals';
 import { Injector, ɵINJECTOR_SCOPE as INJECTOR_SCOPE } from '@angular/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Action } from '@ngrx/store';
-import { planServerOrderApply } from '@sp/sync-core';
+import { findEditsAfterRemoteDelete, planServerOrderApply } from '@sp/sync-core';
 import { buildRootReducer } from '../app-rules/root-reducer';
 import { buildTaskEntity } from '../src/op-factory';
 import { bulkApplyOperations } from '../../../src/app/op-log/apply/bulk-hydration.action';
 import {
   opsAppliedBy,
+  reapplyEditsReplacedByCheckpoint,
   serverOrderRebuild,
   serverOrderReplay,
   setUnsavedLocalTimeSource,
@@ -42,6 +43,8 @@ import {
 import { SchemaMigrationService } from '../../../src/app/op-log/persistence/schema-migration.service';
 import { SyncImportFilterService } from '../../../src/app/op-log/sync/sync-import-filter.service';
 import { OperationLogStoreService } from '../../../src/app/op-log/persistence/operation-log-store.service';
+import { DEFAULT_PROJECT } from '../../../src/app/features/project/project.const';
+import { PROJECT_DELETE_WINS_MARKER } from '../../../src/app/root-store/meta/task-shared.actions';
 import type { Task, TaskState } from '../../../src/app/features/tasks/task.model';
 import type { Operation } from '../../../src/app/op-log/core/operation.types';
 import type { PersistentAction } from '../../../src/app/op-log/core/persistent-action.interface';
@@ -321,6 +324,73 @@ describe('server-order replay', () => {
     expect(tasks(bridge).entities.t1.timeSpentOnDay[DAY]).toBeUndefined();
   });
 
+  it('keeps a project deleted on another browser deleted, with its tasks, even after an unsent edit to one of them', () => {
+    const withProject = apply(
+      start(),
+      [
+        {
+          ...makeOp(B, '[Project] Add Project', 'CRT', 'p1', {
+            project: { ...DEFAULT_PROJECT, id: 'p1', title: 'project' },
+          }),
+          entityType: 'PROJECT',
+        } as unknown as Operation,
+        {
+          ...addTask(B, 'pt1', 'in the project'),
+          payload: {
+            actionPayload: {
+              task: {
+                ...buildTaskEntity({ title: 'in the project' }),
+                id: 'pt1',
+                projectId: 'p1',
+              },
+              workContextId: 'p1',
+              workContextType: 'PROJECT',
+              isAddToBacklog: false,
+              isAddToBottom: false,
+            },
+            entityChanges: [],
+          },
+        } as unknown as Operation,
+      ],
+      B,
+    );
+    const unsent = rename(A, 'pt1', 'edited on A');
+    const shown = apply(withProject, [unsent]);
+    expect(tasks(shown).entities.pt1.title).toBe('edited on A');
+    expect((shown.projects as { ids: string[] }).ids).toContain('p1');
+    const projectDelete = {
+      ...makeOp(B, '[Task Shared] deleteProject', 'DEL', 'p1', {
+        projectId: 'p1',
+        noteIds: [],
+        allTaskIds: ['pt1'],
+        [PROJECT_DELETE_WINS_MARKER]: true,
+      }),
+      entityType: 'PROJECT',
+    } as unknown as Operation;
+
+    expect(
+      findEditsAfterRemoteDelete({
+        downloaded: [{ op: projectDelete, serverSeq: 10 }],
+        own: [{ op: unsent }],
+        entityType: 'TASK',
+      }).size,
+    ).toBe(0);
+
+    const after = root(
+      shown,
+      serverOrderReplay({
+        confirmed: withProject,
+        ordered: [projectDelete],
+        onTop: [unsent],
+        downloadedOpIds: [projectDelete.id],
+        localClientId: A,
+      }),
+    );
+
+    expect(tasks(after).ids).not.toContain('pt1');
+    expect((after.projects as { ids: string[] }).ids).not.toContain('p1');
+  });
+
   it('puts an unsent edit on top of a downloaded edit to the same field', () => {
     const confirmed = start();
     const mine = rename(A, 't1', 'A offline');
@@ -536,6 +606,36 @@ describe('applying a checkpoint', () => {
     expect(tasks(after).selectedTaskId).toBe('t1');
     expect(tasks(after).entities.t1.timeSpentOnDay[DAY]).toBe(60_000);
     expect(tasks(after).entities.t1.title).toBe('renamed by B');
+  });
+
+  it('applies the edits made while it applied again, after the unsent edits put back on top of it', () => {
+    const base = start();
+    const unsent = rename(A, 't1', 'unsent before the checkpoint');
+    const shownBefore = apply(base, [unsent]);
+    const during = makeOp(A, '[Task Shared] updateTask', 'UPD', 't1', {
+      task: { id: 't1', changes: { notes: 'typed during the checkpoint' } },
+    });
+    const action = convertOpToAction(during) as PersistentAction;
+    const localAction = { ...action, meta: { ...action.meta, isRemote: false } };
+    const shown = root(shownBefore, localAction);
+    bufferDeferredAction(localAction as PersistentAction);
+    const checkpoint = checkpointOf(apply(base, [rename(B, 't1', 'renamed by B')], B));
+
+    const fromCheckpoint = root(
+      shown,
+      bulkApplyOperations({
+        operations: [checkpoint],
+        localClientId: A,
+        keepsLocalOnlyState: true,
+      }),
+    );
+    const withUnsent = apply(fromCheckpoint, [unsent]);
+    const after = root(withUnsent, reapplyEditsReplacedByCheckpoint());
+
+    expect(tasks(after).entities.t1.title).toBe('unsent before the checkpoint');
+    expect((tasks(after).entities.t1 as unknown as { notes: string }).notes).toBe(
+      'typed during the checkpoint',
+    );
   });
 });
 

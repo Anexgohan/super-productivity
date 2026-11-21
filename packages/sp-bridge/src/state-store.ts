@@ -240,13 +240,16 @@ export class StateStore {
     if (
       status.state !== 'ready' ||
       this._board.blocked ||
-      status.reducerFailures > 0 ||
-      status.archiveFailures > 0 ||
       this._board.seq !== latestSeq
     ) {
       return;
     }
     const tag = `sp-bridge: ${this._boardName}: checkpoint`;
+    if (status.checkpointHeldBack) {
+      const reason = `held back until a full import or checkpoint: ${status.checkpointHeldBack}`;
+      if (this._checkpoints.holdBack(reason)) console.warn(`${tag} ${reason}`);
+      return;
+    }
     try {
       await this._worker.exclusive(async () => {
         const cp = await this._board.checkpoint();

@@ -531,6 +531,7 @@ export class SyncService {
     truncatedByBytes: boolean;
     latestSnapshotSeq?: number;
     snapshotVectorClock?: VectorClock;
+    ownLatestSeq?: number;
   }> {
     return this.operationDownloadService.getOpsSinceWithSeq(
       userId,

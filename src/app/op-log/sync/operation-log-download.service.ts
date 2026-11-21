@@ -300,6 +300,7 @@ export class OperationLogDownloadService implements OnDestroy {
         // Filter already applied ops
         // Stage 9 (anex): the server's numbers place the downloaded changes in its order.
         this.serverOrder.recordServerSeqs(response.ops);
+        this.serverOrder.recordOwnLatestSeq(response.ownLatestSeq);
 
         let syncOps: SyncOperation[] = response.ops
           .filter((serverOp) => !appliedOpIds.has(serverOp.op.id))

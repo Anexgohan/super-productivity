@@ -8,6 +8,7 @@
  *
  * Runs inside the operation capture (it is no user change) and outside the bulk apply, which it uses for both passes.
  * A bulk apply marked keepsLocalOnlyState (a checkpoint) keeps the local-only state the same way.
+ * The edits made while it applies are applied again once the unsent edits are on top (reapplyEditsReplacedByCheckpoint).
  */
 import { Action, ActionReducer, createAction, props } from '@ngrx/store';
 import { Operation } from '../core/operation.types';
@@ -44,6 +45,11 @@ export const serverOrderRebuild = createAction(
   props<{ ops: Operation[]; localClientId?: string }>(),
 );
 
+/** Applies again the edits made while a checkpoint was applied, which it replaced; dispatched after the unsent edits go on top. */
+export const reapplyEditsReplacedByCheckpoint = createAction(
+  '[OperationLog] Reapply Edits Replaced By Checkpoint',
+);
+
 /** The changes a dispatched bulk apply or server-order replay applies to the state shown, for effects that react to them. */
 export const opsAppliedBy = (action: Action): Operation[] => {
   if (action.type === bulkApplyOperations.type) {
@@ -60,6 +66,7 @@ const REBUILD_INITIAL_STATE = { type: '[OperationLog] Rebuild Confirmed State: i
 
 let unsavedLocalTimeSource: () => UnsavedLocalTime = () => NO_UNSAVED_LOCAL_TIME;
 let lastConfirmedState: object | undefined;
+let editsReplacedByCheckpoint: Action[] = [];
 
 /** Where the replay reads the time tracked but not saved as a change yet; set by ServerOrderService. */
 export const setUnsavedLocalTimeSource = (source: () => UnsavedLocalTime): void => {
@@ -94,11 +101,18 @@ export const serverOrderReplayMetaReducer = <S>(
       (action as ReturnType<typeof bulkApplyOperations>).keepsLocalOnlyState &&
       state !== undefined
     ) {
+      // These ran on the state the checkpoint replaces; they are saved after it, so they belong on top of it.
+      editsReplacedByCheckpoint = getDeferredActions();
       return keepLocalOnlyState(
         reducer(state, action) as object,
         state as object,
         unsavedLocalTimeSource(),
       ) as S;
+    }
+    if (action.type === reapplyEditsReplacedByCheckpoint.type && state !== undefined) {
+      const edits = editsReplacedByCheckpoint;
+      editsReplacedByCheckpoint = [];
+      return edits.reduce<S>((shown, edit) => reducer(shown, edit), state);
     }
     if (action.type !== serverOrderReplay.type || state === undefined) {
       return reducer(state, action);

@@ -28,6 +28,8 @@ export interface ServerOrderInput<TOperation extends Operation<string> = Operati
   unsent: readonly TOperation[];
   /** False when the confirmed state is not known, as after a reload. */
   hasConfirmedState: boolean;
+  /** The highest number the server holds for this browser's saves, when the server said; it covers saves sent before a reload. */
+  ownLatestSeq?: number;
 }
 
 export type ServerOrderPlan<TOperation extends Operation<string> = Operation> =
@@ -60,16 +62,16 @@ const hasDistinctSeqs = (seqs: readonly number[]): boolean =>
 /**
  * How to apply a download so the browser ends up in the server's order.
  *
- * Applying it as today is right when nothing of this browser's waits after it: no unsent change,
- * and every accepted change numbered before every downloaded one. Otherwise the downloaded changes
- * and this browser's accepted changes up to the last downloaded number are replayed in server
- * order; accepted changes numbered after it and unsent ones go on top, in that order.
+ * Applying it as today is right when nothing of this browser's comes after the first downloaded change: no unsent change, no save numbered later.
+ * Otherwise the downloaded changes and this browser's accepted ones up to the last downloaded number are replayed in server order.
+ * Accepted changes numbered after it and unsent ones go on top, in that order.
  */
 export const planServerOrderApply = <TOperation extends Operation<string>>({
   downloaded,
   accepted,
   unsent,
   hasConfirmedState,
+  ownLatestSeq,
 }: ServerOrderInput<TOperation>): ServerOrderPlan<TOperation> => {
   if (downloaded.length === 0) {
     throw new Error('planServerOrderApply: nothing was downloaded.');
@@ -85,7 +87,8 @@ export const planServerOrderApply = <TOperation extends Operation<string>>({
 
   if (
     unsent.length === 0 &&
-    accepted.every((entry) => entry.serverSeq < firstDownloaded)
+    accepted.every((entry) => entry.serverSeq < firstDownloaded) &&
+    (ownLatestSeq ?? 0) < firstDownloaded
   ) {
     return { kind: 'in-order', confirmedSeq: lastDownloaded };
   }

@@ -76,6 +76,19 @@ vi.mock('../src/db', async () => {
             .sort((a: any, b: any) => b.serverSeq - a.serverSeq);
           return applyOperationSelect(ops[0], args.select) || null;
         }
+        // The requesting client's newest stored save.
+        if (
+          typeof args.where?.clientId === 'string' &&
+          args.orderBy?.serverSeq === 'desc'
+        ) {
+          const ops = Array.from(state.operations.values())
+            .filter(
+              (op: any) =>
+                op.userId === args.where.userId && op.clientId === args.where.clientId,
+            )
+            .sort((a: any, b: any) => b.serverSeq - a.serverSeq);
+          return applyOperationSelect(ops[0], args.select) || null;
+        }
         // Min-server_seq gap-detection query (replaced an aggregate({ _min })
         // whose Prisma OFFSET-0 subquery defeated the index): smallest
         // serverSeq for the user, bounded by serverSeq <= lte, ordered asc.
@@ -380,6 +393,19 @@ describe('Gap Detection', () => {
       expect(result.ops.length).toBe(1);
       expect(result.ops[0].op.clientId).toBe(clientB);
       expect(result.ops[0].serverSeq).toBe(2);
+    });
+
+    it('tells the client the highest number stored for its own saves, even one after the page', async () => {
+      const service = getSyncService();
+
+      await service.uploadOps(userId, clientA, [createOp(clientA, 'task-1')]);
+      await service.uploadOps(userId, clientB, [createOp(clientB, 'task-2')]);
+      await service.uploadOps(userId, clientA, [createOp(clientA, 'task-3')]);
+
+      const result = await service.getOpsSinceWithSeq(userId, 0, clientA);
+      expect(result.ops.map((row) => row.serverSeq)).toEqual([2]);
+      expect(result.ownLatestSeq).toBe(3);
+      expect((await service.getOpsSinceWithSeq(userId, 0)).ownLatestSeq).toBeUndefined();
     });
 
     it('should not flag gap when excluded client caused the seq jump', async () => {

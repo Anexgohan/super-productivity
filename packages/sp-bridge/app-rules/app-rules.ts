@@ -75,6 +75,7 @@ import type {
   AppRulesSnapshot,
 } from '../src/app-rules-protocol';
 import { buildRootReducer, type RootState } from './root-reducer';
+import { logicalDayChange } from './logical-day';
 
 /** Bump when the cache shape changes; an older cache is then discarded and the app rules rebuild from seq 0. */
 export const APP_RULES_CACHE_VERSION = 2;
@@ -242,6 +243,8 @@ export class AppRules {
       mergedClock: { ...this._mergedClock },
     };
     if (fresh.length === 0) return result;
+    const dayChange = logicalDayChange(this._state, Date.now());
+    if (dayChange) this._state = this._reducer(this._state, dayChange);
 
     // The same checks OperationEncryptionService.decryptOperation runs after decrypting, with the same effect: a failure throws.
     const decrypted: SyncOperation[] = [];

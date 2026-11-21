@@ -71,7 +71,7 @@ describe('Duplicate Operation Pre-check', () => {
         accepted: false,
         errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
       });
-      expect(results[0].serverSeq).toBeUndefined();
+      expect(results[0].serverSeq).toBe(1);
       expect(results[1]).toMatchObject({
         accepted: true,
         serverSeq: 2,
@@ -303,7 +303,7 @@ describe('Duplicate Operation Pre-check', () => {
         accepted: false,
         errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
       });
-      expect(duplicateResult[0].serverSeq).toBeUndefined();
+      expect(duplicateResult[0].serverSeq).toBe(1);
 
       const nextResult = await syncService.uploadOps(1, 'client-1', [
         createTestOp({
@@ -354,7 +354,7 @@ describe('Duplicate Operation Pre-check', () => {
         accepted: false,
         errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
       });
-      expect(results[1].serverSeq).toBeUndefined();
+      expect(results[1].serverSeq).toBe(1);
       expect(results[2]).toMatchObject({
         accepted: true,
         serverSeq: 3,
@@ -381,7 +381,7 @@ describe('Duplicate Operation Pre-check', () => {
         accepted: false,
         errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
       });
-      expect(results[0].serverSeq).toBeUndefined();
+      expect(results[0].serverSeq).toBe(1);
     });
 
     it('should not treat another user operation with the same ID as duplicate success', async () => {
@@ -450,6 +450,7 @@ describe('Duplicate Operation Pre-check', () => {
               isPayloadEncrypted: false,
               syncImportReason: null,
               repairBaseServerSeq: null,
+              serverSeq: 7,
             }),
           findFirst: vi.fn().mockResolvedValue(null),
           createMany: vi.fn().mockResolvedValue({ count: 0 }),
@@ -487,7 +488,7 @@ describe('Duplicate Operation Pre-check', () => {
         accepted: false,
         errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
       });
-      expect(results[0].serverSeq).toBeUndefined();
+      expect(results[0].serverSeq).toBe(7);
       expect(tx.operation.createMany).toHaveBeenCalledWith(
         expect.objectContaining({ skipDuplicates: true }),
       );

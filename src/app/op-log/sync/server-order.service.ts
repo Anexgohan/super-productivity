@@ -33,7 +33,6 @@ import { historyBeforeBatch, opsAsDownloadApplies } from './server-order-rebuild
 import { SchemaMigrationService } from '../persistence/schema-migration.service';
 import { SyncImportFilterService } from './sync-import-filter.service';
 import { OperationLogStoreService } from '../persistence/operation-log-store.service';
-import { OperationLogSnapshotService } from '../persistence/operation-log-snapshot.service';
 import { OperationLogDownloadService } from './operation-log-download.service';
 import { ConflictResolutionService } from './conflict-resolution.service';
 import { SyncProviderManager } from '../sync-providers/provider-manager.service';
@@ -72,8 +71,6 @@ const rememberSeq = (
     seqs.delete(id);
   }
 };
-/** A replay can reorder what the startup rebuild would replay in local order, so the state is saved soon after. */
-const SNAPSHOT_AFTER_REPLAY_DELAY_MS = 2_000;
 
 interface Confirmed {
   state: object;
@@ -98,8 +95,8 @@ export class ServerOrderService {
   private accepted: ServerOrderedOp<Operation>[] = [];
   private seqByOpId = new Map<string, number>();
   private ownSeqByOpId = new Map<string, number>();
+  private ownLatestSeq: number | undefined;
   private epoch = this.providerManager.syncEpoch;
-  private snapshotTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** Only SuperSync numbers every change; other providers keep today's conflict handling. */
   isActive(): boolean {
@@ -124,6 +121,13 @@ export class ServerOrderService {
     }
   }
 
+  /** The highest number the server said it holds for this browser's saves, sent with a download. */
+  recordOwnLatestSeq(serverSeq: number | undefined): void {
+    if (serverSeq === undefined) return;
+    this.syncEpoch();
+    this.ownLatestSeq = Math.max(this.ownLatestSeq ?? 0, serverSeq);
+  }
+
   /** The number the server gave one of this browser's saves, if this browser saw the answer. */
   ownServerSeq(opId: string): number | undefined {
     return this.ownSeqByOpId.get(opId);
@@ -133,19 +137,31 @@ export class ServerOrderService {
     for (const op of ops) this.seqByOpId.delete(op.id);
   }
 
-  /** This browser's saves the server accepted, with the numbers it gave them. */
+  /** This browser's saves the server accepted, with the numbers it gave them; a save it already held comes back as a duplicate with its number. */
   recordAccepted(
     ops: readonly Operation[],
-    results: readonly { opId: string; accepted: boolean; serverSeq?: number }[],
+    results: readonly {
+      opId: string;
+      accepted: boolean;
+      serverSeq?: number;
+      errorCode?: string;
+    }[],
   ): void {
     this.syncEpoch();
     const byId = new Map(ops.map((op) => [op.id, op]));
     const known = new Set(this.accepted.map(({ op }) => op.id));
     for (const result of results) {
       const op = byId.get(result.opId);
-      if (!op || !result.accepted || result.serverSeq === undefined) continue;
+      const isStored = result.accepted || result.errorCode === 'DUPLICATE_OPERATION';
+      if (!op || !isStored || result.serverSeq === undefined) continue;
       rememberSeq(this.ownSeqByOpId, op.id, result.serverSeq);
-      if (known.has(op.id)) continue;
+      // A duplicate the confirmed state already holds must not be replayed again.
+      if (
+        known.has(op.id) ||
+        (this.confirmed && result.serverSeq <= this.confirmed.seq)
+      ) {
+        continue;
+      }
       if (FULL_STATE_OP_TYPES.has(op.opType)) {
         this.reset('full-state save accepted');
         return;
@@ -178,6 +194,7 @@ export class ServerOrderService {
       accepted: this.accepted,
       unsent: await this.readUnsent(),
       hasConfirmedState: this.isConfirmedStateUsable(downloaded, receivedSeqs),
+      ownLatestSeq: this.ownLatestSeq,
     });
     return { plan, downloaded };
   }
@@ -386,7 +403,6 @@ export class ServerOrderService {
     const placed = new Set(plan.placedOpIds);
     this.accepted = this.accepted.filter(({ op }) => !placed.has(op.id));
     this.confirmed = { state, seq: plan.confirmedSeq };
-    this.scheduleSnapshot();
   }
 
   /**
@@ -474,22 +490,8 @@ export class ServerOrderService {
       this.epoch = epoch;
       this.reset('sync epoch changed');
       this.ownSeqByOpId.clear();
+      this.ownLatestSeq = undefined;
     }
-  }
-
-  private scheduleSnapshot(): void {
-    if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
-    this.snapshotTimer = setTimeout(() => {
-      this.snapshotTimer = undefined;
-      this.injector
-        .get(OperationLogSnapshotService)
-        .saveCurrentStateAsSnapshot()
-        .catch((e: unknown) =>
-          OpLog.err('ServerOrderService: saving the state after a replay failed', {
-            name: (e as Error | undefined)?.name,
-          }),
-        );
-    }, SNAPSHOT_AFTER_REPLAY_DELAY_MS);
   }
 }
 

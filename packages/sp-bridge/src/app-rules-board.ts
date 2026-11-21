@@ -17,6 +17,7 @@ import type {
   AppRulesRow,
 } from './app-rules-protocol';
 import type { AppRulesWorker } from './app-rules-worker';
+import { isFullStatePoint } from './checkpoints';
 import { normalizeFullState, type EntityMap } from './state-view';
 
 export class AppRulesUnavailableError extends Error {
@@ -32,6 +33,11 @@ export interface AppRulesBoardStatus {
   droppedOps: number;
   reducerFailures: number;
   archiveFailures: number;
+  /**
+   * Why no checkpoint may be written now: an archive failure since the newest full import or checkpoint can leave this archive unlike a browser's.
+   * A reducer failure is no reason: a browser skips that change the same way.
+   */
+  checkpointHeldBack: string | null;
   /** The worker's heap, all boards together, as of the last update of this board. */
   heapUsedMb: number | null;
   error: string | null;
@@ -82,6 +88,7 @@ export class AppRulesBoard {
     droppedOps: 0,
     reducerFailures: 0,
     archiveFailures: 0,
+    checkpointHeldBack: null,
     heapUsedMb: null,
     error: null,
   };
@@ -159,7 +166,7 @@ export class AppRulesBoard {
       rows: decrypted,
     });
     if (res.kind !== 'apply') throw new Error('unexpected apply reply');
-    this._record(res.result);
+    this._record(res.result, rows);
   }
 
   /** Rebuilds the view when the app rules moved on since it was last built. After it, reads see every applied change. */
@@ -198,7 +205,7 @@ export class AppRulesBoard {
       .catch(() => undefined);
   }
 
-  private _record(r: AppRulesApplyResult): void {
+  private _record(r: AppRulesApplyResult, rows: SuperSyncServerOperation[]): void {
     this._status.seq = r.seq;
     this._mergedClock = r.mergedClock;
     this._status.droppedOps += r.filteredOpIds.length;
@@ -216,9 +223,15 @@ export class AppRulesBoard {
     }
     if (r.archiveFailure) {
       this._status.archiveFailures++;
+      this._status.checkpointHeldBack = `archive handling failed on op ${r.archiveFailure.opId} (${r.archiveFailure.actionType})`;
       console.warn(
         `${tag} archive handling failed on op ${r.archiveFailure.opId} (${r.archiveFailure.actionType}): ${r.archiveFailure.error}`,
       );
+    } else if (
+      rows.some((row) => isFullStatePoint(row.op as unknown as Record<string, unknown>))
+    ) {
+      // A full import or checkpoint replaces the archive, so it no longer differs.
+      this._status.checkpointHeldBack = null;
     }
     if (r.blocked) {
       // A browser stops at a change it cannot read and waits for an update; so does the server.

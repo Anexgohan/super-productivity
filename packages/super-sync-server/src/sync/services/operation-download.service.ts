@@ -45,6 +45,8 @@ type OperationDownloadResult = {
   truncatedByBytes: boolean;
   latestSnapshotSeq?: number;
   snapshotVectorClock?: VectorClock;
+  /** The highest number stored for the requesting client's own saves; only when the request names that client. */
+  ownLatestSeq?: number;
 };
 
 type OperationDownloadTransactionResult = OperationDownloadResult & {
@@ -219,6 +221,15 @@ export class OperationDownloadService {
           select: OPERATION_DOWNLOAD_SELECT,
         });
 
+        // Read after the page, so never older than it: a browser that sees a save of its own numbered after the page knows the order matters.
+        const ownLatest = excludeClient
+          ? await tx.operation.findFirst({
+              where: { userId, clientId: excludeClient },
+              orderBy: { serverSeq: 'desc' },
+              select: { serverSeq: true },
+            })
+          : null;
+
         let minSeq: number | null = null;
 
         if (sinceSeq > 0 && latestSeq > 0) {
@@ -293,6 +304,7 @@ export class OperationDownloadService {
           shouldComputeSnapshotVectorClock,
           snapshotAuthorClientId: latestFullStateOp?.clientId ?? undefined,
           persistedSnapshotVectorClock,
+          ownLatestSeq: ownLatest?.serverSeq,
         } satisfies OperationDownloadTransactionResult;
       },
       { timeout: DOWNLOAD_TRANSACTION_TIMEOUT_MS },
@@ -326,6 +338,7 @@ export class OperationDownloadService {
       truncatedByBytes: result.truncatedByBytes,
       latestSnapshotSeq: result.latestSnapshotSeq,
       snapshotVectorClock,
+      ...(result.ownLatestSeq !== undefined ? { ownLatestSeq: result.ownLatestSeq } : {}),
     };
   }
 

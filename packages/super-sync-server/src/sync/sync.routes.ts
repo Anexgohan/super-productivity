@@ -146,6 +146,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           truncatedByBytes,
           latestSnapshotSeq,
           snapshotVectorClock,
+          ownLatestSeq,
         } = await syncService.getOpsSinceWithSeq(
           userId,
           sinceSeq,
@@ -178,6 +179,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           snapshotVectorClock, // Aggregated clock from skipped ops for conflict resolution
           serverTime: Date.now(), // For client clock drift detection
           capabilities: { causalRepairSnapshots: true },
+          ...(ownLatestSeq !== undefined ? { ownLatestSeq } : {}),
         };
 
         return reply.send(response);
