@@ -165,3 +165,21 @@ export const findEditsAfterRemoteDelete = <TOperation extends Operation<string>>
   }
   return edits;
 };
+
+/**
+ * This browser's unsent changes to apply on top of a checkpoint: those the server accepted at or before its base number are in it.
+ * A change whose number this browser does not know is kept.
+ */
+export const editsNotInCheckpoint = <TOperation extends Operation<string>>({
+  unsent,
+  checkpointBaseSeq,
+  ownServerSeq,
+}: {
+  unsent: readonly TOperation[];
+  checkpointBaseSeq: number;
+  ownServerSeq: (opId: string) => number | undefined;
+}): TOperation[] =>
+  unsent.filter((op) => {
+    const serverSeq = ownServerSeq(op.id);
+    return serverSeq === undefined || serverSeq > checkpointBaseSeq;
+  });

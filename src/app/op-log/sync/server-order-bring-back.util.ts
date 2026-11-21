@@ -1,25 +1,23 @@
 /**
- * anex fork, Stage 9: which task states a browser sends as "bring it back" saves, for tasks another browser deleted
- * before this browser's edits to them reached the server.
- *
- * Only the tasks themselves go: a saved task adds itself back to its project, its tags and its parent
- * (lww-update.meta-reducer.ts). A copy of a project's or a parent's whole list would be taken before the download is
- * applied, and arriving last it would drop whatever other browsers added in the meantime (seen on dev 2026-11-20: a
- * task the other browser had just added fell out of every list). So a brought-back task returns at the end of its
- * lists rather than at its old place.
+ * Task states a browser sends as bring-back saves, for tasks another browser deleted before this browser's edits to them reached the server.
+ * Only the tasks go: a saved task re-adds itself to its project, tags and parent, at the end of each list.
  */
+import { BatchedTimeSyncEntry } from '../../core/util/batched-time-sync-accumulator';
 import { Task, TaskState } from '../../features/tasks/task.model';
+import { projectPendingTimeFromTaskState } from '../../features/tasks/util/project-pending-time-from-task-state';
 
 /**
- * The tasks to bring back, parents first: a subtask is only restored under a parent that exists. A parent goes without
- * its subtask list, since its brought-back subtasks add themselves to it and the others stay deleted. The parent of an
- * edited subtask is brought back too when the same download deleted it, so the edit is not lost with it.
+ * The tasks to bring back, parents first and without their subtask lists, plus the parent of an edited subtask when the same download deleted it.
+ * Tracked time not saved as a change yet is left out: the change that saves it later adds it.
  */
 export const bringBackTaskStates = (
   editedTaskIds: Iterable<string>,
   deletedTaskIds: ReadonlySet<string>,
-  tasks: TaskState | undefined,
+  shownTasks: TaskState | undefined,
+  unsavedTaskTime: readonly BatchedTimeSyncEntry[],
 ): Task[] => {
+  const tasks =
+    shownTasks && projectPendingTimeFromTaskState(shownTasks, unsavedTaskTime);
   const wanted = new Set<string>();
   for (const id of editedTaskIds) {
     const parentId = tasks?.entities[id]?.parentId;

@@ -7,6 +7,7 @@
  * state shown (server-order-local-state.util.ts). The plan comes from planServerOrderApply in @sp/sync-core.
  *
  * Runs inside the operation capture (it is no user change) and outside the bulk apply, which it uses for both passes.
+ * A bulk apply marked keepsLocalOnlyState (a checkpoint) keeps the local-only state the same way.
  */
 import { Action, ActionReducer, createAction, props } from '@ngrx/store';
 import { Operation } from '../core/operation.types';
@@ -43,6 +44,18 @@ export const serverOrderRebuild = createAction(
   props<{ ops: Operation[]; localClientId?: string }>(),
 );
 
+/** The changes a dispatched bulk apply or server-order replay applies to the state shown, for effects that react to them. */
+export const opsAppliedBy = (action: Action): Operation[] => {
+  if (action.type === bulkApplyOperations.type) {
+    return (action as ReturnType<typeof bulkApplyOperations>).operations;
+  }
+  if (action.type === serverOrderReplay.type) {
+    const { ordered, onTop } = action as ReturnType<typeof serverOrderReplay>;
+    return [...ordered, ...onTop];
+  }
+  return [];
+};
+
 const REBUILD_INITIAL_STATE = { type: '[OperationLog] Rebuild Confirmed State: initial' };
 
 let unsavedLocalTimeSource: () => UnsavedLocalTime = () => NO_UNSAVED_LOCAL_TIME;
@@ -75,6 +88,17 @@ export const serverOrderReplayMetaReducer = <S>(
           ),
       ) as object;
       return state;
+    }
+    if (
+      action.type === bulkApplyOperations.type &&
+      (action as ReturnType<typeof bulkApplyOperations>).keepsLocalOnlyState &&
+      state !== undefined
+    ) {
+      return keepLocalOnlyState(
+        reducer(state, action) as object,
+        state as object,
+        unsavedLocalTimeSource(),
+      ) as S;
     }
     if (action.type !== serverOrderReplay.type || state === undefined) {
       return reducer(state, action);

@@ -1,7 +1,7 @@
 import { inject, Injectable, Injector } from '@angular/core';
 import { Store } from '@ngrx/store';
 import { firstValueFrom } from 'rxjs';
-import { applyRemoteOperations } from '@sp/sync-core';
+import { applyRemoteOperations, editsNotInCheckpoint } from '@sp/sync-core';
 import { OperationLogStoreService } from '../persistence/operation-log-store.service';
 import {
   ConflictResult,
@@ -338,6 +338,12 @@ export class RemoteOpsProcessingService {
             fullStateApplyResult.committedFullStateOpIds =
               await this.applyNonConflictingOps(validOps, true, {
                 skipDeferredActionDrain: true,
+                // A checkpoint is no user's choice to start over: the open task and the running timer stay.
+                ...(validOps
+                  .filter((op) => FULL_STATE_OP_TYPES.has(op.opType))
+                  .every(isCheckpointFullStateOp)
+                  ? { createBulkApplyAction: this.serverOrder.checkpointApplyAction() }
+                  : {}),
               });
             fullStateApplyResult.keptOnTopCount =
               await this._applyUnsentEditsOnTopOfCheckpoint(
@@ -763,18 +769,25 @@ export class RemoteOpsProcessingService {
       return 0;
     }
     const discardable = new Set(discardablePendingOpIds);
-    const unsent = (await this.opLogStore.getUnsynced()).filter(
-      (entry) =>
-        entry.source === 'local' &&
-        !discardable.has(entry.op.id) &&
-        !FULL_STATE_OP_TYPES.has(entry.op.opType),
-    );
+    // Saves the server accepted but whose answer is not processed yet are still unsent here.
+    const unsent = editsNotInCheckpoint({
+      unsent: (await this.opLogStore.getUnsynced())
+        .filter(
+          (entry) =>
+            entry.source === 'local' &&
+            !discardable.has(entry.op.id) &&
+            !FULL_STATE_OP_TYPES.has(entry.op.opType),
+        )
+        .map((entry) => entry.op),
+      checkpointBaseSeq:
+        committedFullStateOps[committedFullStateOps.length - 1].repairBaseServerSeq ?? 0,
+      ownServerSeq: (opId) => this.serverOrder.ownServerSeq(opId),
+    });
     if (unsent.length === 0) return 0;
 
-    const result = await this.operationApplier.applyOperations(
-      unsent.map((entry) => entry.op),
-      { skipDeferredLocalActions: true },
-    );
+    const result = await this.operationApplier.applyOperations(unsent, {
+      skipDeferredLocalActions: true,
+    });
     if (result.failedOp) {
       OpLog.err(
         'RemoteOpsProcessingService: an unsent edit failed to apply on top of the checkpoint',

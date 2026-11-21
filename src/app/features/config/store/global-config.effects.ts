@@ -39,6 +39,10 @@ import { selectAllTasks } from '../../tasks/store/task.selectors';
 import { normalizeStartOfNextDayConfig } from '../normalize-start-of-next-day-config';
 import { Log } from '../../../core/log';
 import { bulkApplyOperations } from '../../../op-log/apply/bulk-hydration.action';
+import {
+  opsAppliedBy,
+  serverOrderReplay,
+} from '../../../op-log/apply/server-order-replay.meta-reducer';
 import { FULL_STATE_OP_TYPES } from '../../../op-log/core/operation.types';
 
 const LAYOUT_DETECTION_TIMEOUT_MS = 1000;
@@ -228,9 +232,9 @@ export class GlobalConfigEffects {
   // dueDay migration in the direct local-change effect above.
   setStartOfNextDayDiffOnBulkApply = createEffect(() =>
     this._actions$.pipe(
-      ofType(bulkApplyOperations),
-      filter(({ operations }) =>
-        operations.some(
+      ofType(bulkApplyOperations, serverOrderReplay),
+      filter((action) =>
+        opsAppliedBy(action).some(
           (op) =>
             (op.entityType === 'GLOBAL_CONFIG' && op.entityId === 'misc') ||
             FULL_STATE_OP_TYPES.has(op.opType),

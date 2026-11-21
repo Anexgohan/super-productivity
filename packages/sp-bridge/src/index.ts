@@ -105,9 +105,6 @@ const runServe = async (): Promise<void> => {
   const appRules = new AppRulesWorker(appRulesWorkerPath());
   appRules.start();
 
-  const store = new StateStore(cfg, appRules);
-  await store.start(cfg.pollIntervalSec * 1000);
-
   // Postgres backs two independent things - browser accounts and the durable
   // web-app sync token - so it is opened once here rather than by either.
   const { AuthStore, INSTANCE_ID_SETTING_KEY, ENCRYPT_SALT_SETTING_KEY } =
@@ -123,6 +120,10 @@ const runServe = async (): Promise<void> => {
     );
     setDeploymentEncryptSalt(new Uint8Array(Buffer.from(encryptSaltB64, 'base64')));
   }
+
+  // After the salt: starting the board can write a checkpoint straight away.
+  const store = new StateStore(cfg, appRules);
+  await store.start(cfg.pollIntervalSec * 1000);
 
   // Browser auth (username/password + session cookies). The signing secret is
   // generated once and persisted, so sessions survive restarts.

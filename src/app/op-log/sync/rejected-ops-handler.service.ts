@@ -73,9 +73,6 @@ export type RejectionHandlingResult =
  * - Marking permanent rejections as rejected
  * - Rebasing a repair that was based on a stale server cursor
  *
- * anex fork, Stage 9: the server stores every valid op in arrival order and no longer refuses saves as conflicts, so
- * the merge-and-retry for CONFLICT_* rejections was removed; such a code would now be a permanent rejection.
- *
  * This service is used by OperationLogSyncService after upload to handle
  * any operations that the server rejected.
  */

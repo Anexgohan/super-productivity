@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  editsNotInCheckpoint,
   findEditsAfterRemoteDelete,
   findUnaccountedServerSeq,
   OpType,
@@ -230,5 +231,29 @@ describe('findEditsAfterRemoteDelete', () => {
       entityType: 'TASK',
     });
     expect(edits.size).toBe(0);
+  });
+});
+
+describe('editsNotInCheckpoint', () => {
+  const seqs = new Map([
+    ['in-checkpoint', 40],
+    ['at-base', 50],
+    ['after-base', 51],
+  ]);
+  const keep = (checkpointBaseSeq: number): string[] =>
+    ids(
+      editsNotInCheckpoint({
+        unsent: [op('in-checkpoint'), op('at-base'), op('after-base'), op('not-placed')],
+        checkpointBaseSeq,
+        ownServerSeq: (id) => seqs.get(id),
+      }),
+    );
+
+  it('leaves out the saves the checkpoint holds already, so they are not applied twice', () => {
+    expect(keep(50)).toEqual(['after-base', 'not-placed']);
+  });
+
+  it('keeps every save numbered after the checkpoint and every save without a number', () => {
+    expect(keep(39)).toEqual(['in-checkpoint', 'at-base', 'after-base', 'not-placed']);
   });
 });

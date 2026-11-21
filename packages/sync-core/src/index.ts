@@ -158,6 +158,7 @@ export type { UnsentEditOnTopRules } from './unsent-edit-on-top';
 
 // anex fork, Stage 9: browsers follow the server's order.
 export {
+  editsNotInCheckpoint,
   findEditsAfterRemoteDelete,
   findUnaccountedServerSeq,
   planServerOrderApply,

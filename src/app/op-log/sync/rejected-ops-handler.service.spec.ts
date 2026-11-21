@@ -353,8 +353,6 @@ describe('RejectedOpsHandlerService', () => {
     });
 
     it('should mark a conflict-coded rejection as rejected without retrying it', async () => {
-      // anex fork, Stage 9: the server stores every valid op in arrival order and no
-      // longer refuses saves as conflicts, so the old merge-and-retry path is gone.
       const op = createOp({ id: 'conflict-1' });
       opLogStoreSpy.getOpById.and.resolveTo(mockEntry(op));
       const downloadCallback = jasmine.createSpy<DownloadCallback>('downloadCallback');

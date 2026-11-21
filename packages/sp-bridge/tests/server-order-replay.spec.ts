@@ -4,6 +4,7 @@
  */
 import '@angular/compiler';
 import '../app-rules/globals';
+import { Injector, ɵINJECTOR_SCOPE as INJECTOR_SCOPE } from '@angular/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Action } from '@ngrx/store';
 import { planServerOrderApply } from '@sp/sync-core';
@@ -11,6 +12,7 @@ import { buildRootReducer } from '../app-rules/root-reducer';
 import { buildTaskEntity } from '../src/op-factory';
 import { bulkApplyOperations } from '../../../src/app/op-log/apply/bulk-hydration.action';
 import {
+  opsAppliedBy,
   serverOrderRebuild,
   serverOrderReplay,
   setUnsavedLocalTimeSource,
@@ -33,6 +35,13 @@ import {
 } from '../../../src/app/op-log/apply/bulk-replay-failure-collector';
 import { convertOpToAction } from '../../../src/app/op-log/apply/operation-converter.util';
 import { bringBackTaskStates } from '../../../src/app/op-log/sync/server-order-bring-back.util';
+import {
+  historyBeforeBatch,
+  opsAsDownloadApplies,
+} from '../../../src/app/op-log/sync/server-order-rebuild.util';
+import { SchemaMigrationService } from '../../../src/app/op-log/persistence/schema-migration.service';
+import { SyncImportFilterService } from '../../../src/app/op-log/sync/sync-import-filter.service';
+import { OperationLogStoreService } from '../../../src/app/op-log/persistence/operation-log-store.service';
 import type { Task, TaskState } from '../../../src/app/features/tasks/task.model';
 import type { Operation } from '../../../src/app/op-log/core/operation.types';
 import type { PersistentAction } from '../../../src/app/op-log/core/persistent-action.interface';
@@ -196,7 +205,7 @@ describe('server-order replay', () => {
     const edit = rename(A, 't1', 'one, edited by A');
     const shown = apply(confirmed, [edit]);
 
-    const states = bringBackTaskStates(['t1'], new Set(['t1']), taskState(shown));
+    const states = bringBackTaskStates(['t1'], new Set(['t1']), taskState(shown), []);
     const saves = states.map((task) => lwwSave(A, 'TASK', task));
     const after = root(
       shown,
@@ -247,6 +256,7 @@ describe('server-order replay', () => {
       ['s1'],
       new Set(['p', 's1', 's2']),
       taskState(shown),
+      [],
     );
     expect(states.map((task) => [task.id, task.subTaskIds])).toEqual([
       ['p', []],
@@ -263,6 +273,52 @@ describe('server-order replay', () => {
     expect(after.s1.title).toBe('sub one, edited by A');
     expect(after.s2).toBeUndefined();
     expect(inboxOrder(bridge)).toEqual(['t1', 'p']);
+  });
+
+  it('brings back a task without the tracked time not saved as a change yet, so it is counted once', () => {
+    const confirmed = start();
+    const t1 = taskState(confirmed).entities.t1 as Task;
+    const deleted = deleteTask(B, t1);
+    const edit = rename(A, 't1', 'one, edited by A');
+    const edited = apply(confirmed, [edit]);
+    const shown: State = {
+      ...edited,
+      tasks: {
+        ...tasks(edited),
+        entities: {
+          ...tasks(edited).entities,
+          t1: { ...tasks(edited).entities.t1, timeSpentOnDay: { [DAY]: 60_000 } },
+        },
+      },
+    };
+    const unsaved = {
+      taskTime: [{ id: 't1', date: DAY, duration: 60_000 }],
+      stopwatch: [],
+    };
+    setUnsavedLocalTimeSource(() => unsaved);
+
+    const saves = bringBackTaskStates(
+      ['t1'],
+      new Set(['t1']),
+      taskState(shown),
+      unsaved.taskTime,
+    ).map((task) => lwwSave(A, 'TASK', task));
+    const after = root(
+      shown,
+      serverOrderReplay({
+        confirmed,
+        ordered: [deleted],
+        onTop: [edit, ...saves],
+        downloadedOpIds: [deleted.id],
+        localClientId: A,
+      }),
+    );
+    const bridge = apply(confirmed, [deleted, edit, ...saves], 'sp-bridge');
+
+    expect(tasks(after).entities.t1.timeSpentOnDay[DAY]).toBe(60_000);
+    expect(tasks(after).entities.t1.title).toBe('one, edited by A');
+    // The time reaches the bridge with the change that saves it, not with the bring-back save.
+    expect(tasks(bridge).entities.t1.timeSpentOnDay[DAY]).toBeUndefined();
   });
 
   it('puts an unsent edit on top of a downloaded edit to the same field', () => {
@@ -438,6 +494,71 @@ describe('server-order replay', () => {
   });
 });
 
+describe('applying a checkpoint', () => {
+  const checkpointOf = (state: State): Operation =>
+    ({
+      ...makeOp(B, '[SP_ALL] Load(import) all data', 'REPAIR', 'ALL', {}),
+      entityType: 'ALL',
+      payload: { appDataComplete: { task: state.tasks, project: state.projects } },
+      repairBaseServerSeq: 7,
+    }) as unknown as Operation;
+
+  it('keeps the open task, the running timer and the tracked time not saved yet', () => {
+    const base = start();
+    const shown: State = {
+      ...base,
+      tasks: {
+        ...tasks(base),
+        currentTaskId: 't1',
+        selectedTaskId: 't1',
+        entities: {
+          ...tasks(base).entities,
+          t1: { ...tasks(base).entities.t1, timeSpentOnDay: { [DAY]: 60_000 } },
+        },
+      },
+    };
+    setUnsavedLocalTimeSource(() => ({
+      taskTime: [{ id: 't1', date: DAY, duration: 60_000 }],
+      stopwatch: [],
+    }));
+    const checkpoint = checkpointOf(apply(base, [rename(B, 't1', 'renamed by B')], B));
+
+    const after = root(
+      shown,
+      bulkApplyOperations({
+        operations: [checkpoint],
+        localClientId: A,
+        keepsLocalOnlyState: true,
+      }),
+    );
+
+    expect(tasks(after).currentTaskId).toBe('t1');
+    expect(tasks(after).selectedTaskId).toBe('t1');
+    expect(tasks(after).entities.t1.timeSpentOnDay[DAY]).toBe(60_000);
+    expect(tasks(after).entities.t1.title).toBe('renamed by B');
+  });
+});
+
+describe('opsAppliedBy', () => {
+  it('names the changes a replay applies, so the effects that react to downloaded changes see them', () => {
+    const theirs = rename(B, 't1', 'renamed by B');
+    const mine = rename(A, 't1', 'renamed by A');
+
+    expect(
+      opsAppliedBy(
+        serverOrderReplay({
+          confirmed: {},
+          ordered: [theirs],
+          onTop: [mine],
+          downloadedOpIds: [theirs.id],
+        }),
+      ),
+    ).toEqual([theirs, mine]);
+    expect(opsAppliedBy(bulkApplyOperations({ operations: [theirs] }))).toEqual([theirs]);
+    expect(opsAppliedBy({ type: 'other' })).toEqual([]);
+  });
+});
+
 describe('runWithBulkReplayFailureFilter', () => {
   it('passes on only the failures the filter keeps', () => {
     const seen: BulkReplayReducerFailure[] = [];
@@ -454,5 +575,62 @@ describe('runWithBulkReplayFailureFilter', () => {
         ),
     );
     expect(seen.map((failure) => failure.op.id)).toEqual(['downloaded']);
+  });
+});
+
+describe('rebuilding the confirmed state from the server history', () => {
+  const seqd = (ops: Operation[], from: number): { op: Operation; serverSeq: number }[] =>
+    ops.map((op, i) => ({ op, serverSeq: from + i }));
+
+  it('starts from the initial state when the batch starts at the first change', () => {
+    expect(historyBeforeBatch(seqd([addTask(B, 'b1', 'from B')], 1), 1)).toEqual([]);
+  });
+
+  it('needs a checkpoint or the first change, and every number up to the batch', () => {
+    const ops = [
+      addTask(B, 'b1', 'one'),
+      rename(B, 'b1', 'two'),
+      rename(B, 'b1', 'three'),
+    ];
+    expect(
+      historyBeforeBatch(seqd(ops, 1), 3)?.map(({ serverSeq }) => serverSeq),
+    ).toEqual([1, 2]);
+    expect(historyBeforeBatch(seqd(ops, 5), 7)).toBeUndefined();
+    expect(historyBeforeBatch(seqd(ops, 1), 5)).toBeUndefined();
+  });
+
+  it('drops what a download drops: changes made without knowing a full import, and changes this build cannot read', async () => {
+    const injector = Injector.create({
+      providers: [
+        { provide: INJECTOR_SCOPE, useValue: 'root' },
+        {
+          provide: OperationLogStoreService,
+          useValue: { getLatestFullStateOpEntry: async () => undefined },
+        },
+      ],
+    });
+    const migration = injector.get(SchemaMigrationService);
+    const filter = injector.get(SyncImportFilterService);
+    const fullImport = {
+      ...makeOp(B, '[SP_ALL] Load(import) all data', 'SYNC_IMPORT', 'all', {}),
+      entityType: 'ALL',
+      vectorClock: { [B]: 50 },
+    } as unknown as Operation;
+    // C edited without having seen the import; B's later edit knows it.
+    const C = 'B_browserC';
+    const straggler = { ...rename(C, 't1', 'stale'), vectorClock: { [C]: 3 } };
+    const after = { ...rename(B, 't1', 'after the import'), vectorClock: { [B]: 51 } };
+
+    const ops = await opsAsDownloadApplies(
+      [fullImport, straggler, after],
+      migration,
+      filter,
+    );
+    expect(ops?.map((op) => op.id)).toEqual([fullImport.id, after.id]);
+
+    const tooNew = { ...after, schemaVersion: migration.getCurrentVersion() + 1 };
+    expect(
+      await opsAsDownloadApplies([fullImport, tooNew], migration, filter),
+    ).toBeUndefined();
   });
 });

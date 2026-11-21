@@ -27,7 +27,11 @@ import {
   Operation,
   OpType,
 } from '../core/operation.types';
+import { bulkApplyOperations } from '../apply/bulk-hydration.action';
 import { bringBackTaskStates } from './server-order-bring-back.util';
+import { historyBeforeBatch, opsAsDownloadApplies } from './server-order-rebuild.util';
+import { SchemaMigrationService } from '../persistence/schema-migration.service';
+import { SyncImportFilterService } from './sync-import-filter.service';
 import { OperationLogStoreService } from '../persistence/operation-log-store.service';
 import { OperationLogSnapshotService } from '../persistence/operation-log-snapshot.service';
 import { OperationLogDownloadService } from './operation-log-download.service';
@@ -55,6 +59,19 @@ import { OpLog } from '../../core/log';
 
 /** Downloaded changes whose server number is kept until they are applied; old ones are dropped beyond this. */
 const MAX_REMEMBERED_SEQS = 20_000;
+
+const rememberSeq = (
+  seqs: Map<string, number>,
+  opId: string,
+  serverSeq: number,
+): void => {
+  seqs.set(opId, serverSeq);
+  // Map keeps insertion order: the oldest numbers go first.
+  for (const id of seqs.keys()) {
+    if (seqs.size <= MAX_REMEMBERED_SEQS) break;
+    seqs.delete(id);
+  }
+};
 /** A replay can reorder what the startup rebuild would replay in local order, so the state is saved soon after. */
 const SNAPSHOT_AFTER_REPLAY_DELAY_MS = 2_000;
 
@@ -80,6 +97,7 @@ export class ServerOrderService {
   private confirmed: Confirmed | undefined;
   private accepted: ServerOrderedOp<Operation>[] = [];
   private seqByOpId = new Map<string, number>();
+  private ownSeqByOpId = new Map<string, number>();
   private epoch = this.providerManager.syncEpoch;
   private snapshotTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -102,13 +120,13 @@ export class ServerOrderService {
     serverOps: readonly { serverSeq: number; op: { id: string } }[],
   ): void {
     for (const { serverSeq, op } of serverOps) {
-      this.seqByOpId.set(op.id, serverSeq);
+      rememberSeq(this.seqByOpId, op.id, serverSeq);
     }
-    // Map keeps insertion order: the oldest numbers go first.
-    for (const id of this.seqByOpId.keys()) {
-      if (this.seqByOpId.size <= MAX_REMEMBERED_SEQS) break;
-      this.seqByOpId.delete(id);
-    }
+  }
+
+  /** The number the server gave one of this browser's saves, if this browser saw the answer. */
+  ownServerSeq(opId: string): number | undefined {
+    return this.ownSeqByOpId.get(opId);
   }
 
   forgetServerSeqs(ops: readonly Operation[]): void {
@@ -125,9 +143,9 @@ export class ServerOrderService {
     const known = new Set(this.accepted.map(({ op }) => op.id));
     for (const result of results) {
       const op = byId.get(result.opId);
-      if (!op || !result.accepted || result.serverSeq === undefined || known.has(op.id)) {
-        continue;
-      }
+      if (!op || !result.accepted || result.serverSeq === undefined) continue;
+      rememberSeq(this.ownSeqByOpId, op.id, result.serverSeq);
+      if (known.has(op.id)) continue;
       if (FULL_STATE_OP_TYPES.has(op.opType)) {
         this.reset('full-state save accepted');
         return;
@@ -197,18 +215,19 @@ export class ServerOrderService {
       )
       .sort((a, b) => a.serverSeq - b.serverSeq);
     if (!result.success || history.length !== result.newOps.length) return false;
-    const before = history.filter(({ serverSeq }) => serverSeq < firstBatchSeq);
     // Numbers older than the batch are not needed again; later ones may belong to the rest of this download.
-    this.forgetServerSeqs(before.map(({ op }) => op));
-
-    // From a checkpoint (or the very first change) to just before the batch, with no number missing.
-    const startsClean =
-      before.length > 0 &&
-      (FULL_STATE_OP_TYPES.has(before[0].op.opType) || before[0].serverSeq === 1) &&
-      !before.slice(1).some(({ op }) => FULL_STATE_OP_TYPES.has(op.opType)) &&
-      before.every(({ serverSeq }, i) => serverSeq === before[0].serverSeq + i) &&
-      before[before.length - 1].serverSeq === firstBatchSeq - 1;
-    if (!startsClean) {
+    this.forgetServerSeqs(
+      history.filter(({ serverSeq }) => serverSeq < firstBatchSeq).map(({ op }) => op),
+    );
+    const before = historyBeforeBatch(history, firstBatchSeq);
+    const ops =
+      before &&
+      (await opsAsDownloadApplies(
+        before.map(({ op }) => op),
+        this.injector.get(SchemaMigrationService),
+        this.injector.get(SyncImportFilterService),
+      ));
+    if (!before || !ops) {
       OpLog.warn(
         'ServerOrderService: server history cannot rebuild the confirmed state',
         {
@@ -219,9 +238,7 @@ export class ServerOrderService {
       return false;
     }
 
-    this.store.dispatch(
-      serverOrderRebuild({ ops: before.map(({ op }) => op), localClientId: clientId }),
-    );
+    this.store.dispatch(serverOrderRebuild({ ops, localClientId: clientId }));
     const state = takeReplayedConfirmedState();
     if (!state) return false;
 
@@ -295,6 +312,7 @@ export class ServerOrderService {
       editsByTask.keys(),
       deletedTaskIds,
       tasks,
+      this.readUnsavedTime().taskTime,
     ).map((task) => {
       const save = resolver.createLWWUpdateOp(
         'TASK' as EntityType,
@@ -348,6 +366,13 @@ export class ServerOrderService {
         localClientId,
       });
     };
+  }
+
+  /** The bulk apply for a checkpoint: it replaces the synced data and keeps what lives only in this browser. */
+  checkpointApplyAction(): (ops: Operation[], localClientId?: string) => Action {
+    this.registerUnsavedTimeSource();
+    return (operations, localClientId) =>
+      bulkApplyOperations({ operations, localClientId, keepsLocalOnlyState: true });
   }
 
   /** After a replay: the replayed confirmed state becomes the base, and the placed saves leave the list. */
@@ -448,6 +473,7 @@ export class ServerOrderService {
     if (epoch !== this.epoch) {
       this.epoch = epoch;
       this.reset('sync epoch changed');
+      this.ownSeqByOpId.clear();
     }
   }
 

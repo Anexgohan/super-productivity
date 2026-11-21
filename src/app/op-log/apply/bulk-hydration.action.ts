@@ -34,6 +34,8 @@ export const bulkApplyOperations = createAction(
      * schema migration cannot leave a state that the durable log cannot rebuild.
      */
     atomicReplayGroups?: string[][];
+    /** For a checkpoint: the open task, the running timer and the time not saved yet stay as shown. */
+    keepsLocalOnlyState?: boolean;
   }>(),
 );
 

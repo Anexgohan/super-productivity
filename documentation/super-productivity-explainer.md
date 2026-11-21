@@ -98,8 +98,7 @@ only for as long as you are the one signed in.
 > undo archive writes, so archiving in one browser while editing in another can
 > differ until the next checkpoint. The file-based sync options (WebDAV, Dropbox,
 > Nextcloud, OneDrive, local file) have no server order, so they still merge by
-> upstream's clock and timestamp rules with its conflict dialogs; that code stays
-> for them.
+> upstream's clock and timestamp rules with its conflict dialogs, except that an unsent edit that only sets values (a task, project or tag edit) goes on top of a downloaded edit to the same item, whatever the clocks say; that code stays for them.
 
 **Preferences follow the account, not the browser profile.** Upstream keeps
 things like theme, dark mode, sort order, and which lists are collapsed in

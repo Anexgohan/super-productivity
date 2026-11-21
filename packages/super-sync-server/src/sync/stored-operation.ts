@@ -1,8 +1,4 @@
-/**
- * How an uploaded op is stored and recognised again: the duplicate-retry comparison, the stored entity_ids
- * normalisation and the clock pruning before storage. anex fork, Stage 9: the server stores every valid op in arrival
- * order and no longer compares clocks between ops, so the rest of the former conflict.ts was removed.
- */
+/** How an uploaded op is stored and recognised again: duplicate retries, the stored entity_ids shape and clock pruning. */
 import { Logger } from '../logger';
 import {
   DuplicateOperationCandidate,
@@ -155,17 +151,8 @@ export const toStableJsonValue = (value: unknown): unknown => {
 };
 
 /**
- * The entity_ids array to persist with an op. Ops whose touched-entity set is
- * already covered by the scalar entity_id store an empty array, so single-entity
- * ops (the vast majority) stay out of the entity_ids GIN index — keeping it small
- * and off their insert write path (Postgres GIN indexes no keys for an empty
- * array). Any other set is stored in full.
- *
- * The gate is "is the set exactly [entity_id]?", NOT "length > 1": a batch op
- * whose ids dedup to a single value that differs from entity_id (the server does
- * not enforce entity_id === entityIds[0]) must still be stored, or the stored
- * row would lose that entity (#8334). Rows already stored use this shape, so the
- * duplicate check above compares against it.
+ * The entity_ids array to persist: empty when the set is exactly [entity_id], which keeps single-entity ops out of the GIN index, otherwise the full set.
+ * A batch whose ids dedup to one value other than entity_id is still stored in full, so the row keeps that entity.
  */
 export const getStoredEntityIds = (op: Operation): string[] => {
   // Preserve the historical storage normalization: the scalar is persisted in
