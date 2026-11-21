@@ -3126,7 +3126,7 @@ describe('OperationLogSyncService', () => {
           ).toEqual([snapshotIncludedOp]);
           expect(remoteOpsProcessingServiceSpy.processRemoteOps).toHaveBeenCalledOnceWith(
             [postSnapshotOp],
-            {},
+            { getDiscardablePendingOpIds: jasmine.any(Function) },
           );
           expect(callOrder).toEqual(['processRemoteOps', 'setLastServerSeq']);
         });
@@ -3205,8 +3205,8 @@ describe('OperationLogSyncService', () => {
           expect(second.kind).toBe('ops_processed');
           expect(syncHydrationServiceSpy.hydrateFromRemoteSync).toHaveBeenCalledTimes(1);
           expect(remoteOpsProcessingServiceSpy.processRemoteOps.calls.allArgs()).toEqual([
-            [[op5, op6], {}],
-            [[op6], {}],
+            [[op5, op6], { getDiscardablePendingOpIds: jasmine.any(Function) }],
+            [[op6], { getDiscardablePendingOpIds: jasmine.any(Function) }],
           ]);
           expect(setLastServerSeqSpy).toHaveBeenCalledOnceWith(6);
         });
@@ -3617,7 +3617,7 @@ describe('OperationLogSyncService', () => {
           expect(syncHydrationServiceSpy.hydrateFromRemoteSync).not.toHaveBeenCalled();
           expect(remoteOpsProcessingServiceSpy.processRemoteOps).toHaveBeenCalledOnceWith(
             [suffixOp],
-            {},
+            { getDiscardablePendingOpIds: jasmine.any(Function) },
           );
           expect(setLastServerSeqSpy).toHaveBeenCalledOnceWith(2);
         });

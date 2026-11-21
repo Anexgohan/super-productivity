@@ -65,7 +65,7 @@ describe('RemoteOpsProcessingService', () => {
   };
 
   beforeEach(() => {
-    storeSpy = jasmine.createSpyObj('Store', ['select']);
+    storeSpy = jasmine.createSpyObj('Store', ['select', 'dispatch']);
     storeSpy.select.and.returnValue(
       of({
         isEnabled: true,
@@ -288,8 +288,12 @@ describe('RemoteOpsProcessingService', () => {
         { provide: OperationWriteFlushService, useValue: writeFlushServiceSpy },
         {
           // Narrow stub: without a fenceEpoch the #9074 assert is a no-op.
+          // No active provider keeps ServerOrderService off, so batches take the clock path.
           provide: SyncProviderManager,
-          useValue: { assertSyncEpochUnchanged: () => undefined },
+          useValue: {
+            assertSyncEpochUnchanged: () => undefined,
+            getActiveProvider: () => null,
+          },
         },
       ],
     });

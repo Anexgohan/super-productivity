@@ -16,6 +16,7 @@ import { OperationEncryptionService } from './operation-encryption.service';
 import { SuperSyncStatusService } from './super-sync-status.service';
 import { CLIENT_ID_PROVIDER } from '../util/client-id.provider';
 import { OperationIntegrityError } from '../core/errors/sync-errors';
+import { ServerOrderService } from './server-order.service';
 
 describe('OperationLogDownloadService', () => {
   let service: OperationLogDownloadService;
@@ -66,6 +67,13 @@ describe('OperationLogDownloadService', () => {
         { provide: OperationEncryptionService, useValue: mockEncryptionService },
         { provide: SuperSyncStatusService, useValue: mockSuperSyncStatusService },
         { provide: CLIENT_ID_PROVIDER, useValue: mockClientIdProvider },
+        {
+          provide: ServerOrderService,
+          useValue: jasmine.createSpyObj('ServerOrderService', [
+            'recordServerSeqs',
+            'recordOwnLatestSeq',
+          ]),
+        },
       ],
     });
 

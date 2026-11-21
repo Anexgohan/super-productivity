@@ -1522,7 +1522,7 @@ describe('ConflictResolutionService persistence (integration, real store)', () =
       timestamp: 1_000,
       schemaVersion: CURRENT_SCHEMA_VERSION,
     };
-    // This client's own edit to T loses to C's delete.
+    // This client's own edit to T, already sent, loses to C's delete; an unsent edit would bring T back.
     const localTaskEdit: Operation = {
       id: 'local-task-edit',
       actionType: ActionType.TASK_SHARED_UPDATE,
@@ -1565,7 +1565,7 @@ describe('ConflictResolutionService persistence (integration, real store)', () =
       ),
     );
     await opLogStore.append(localProjectEdit, 'local');
-    await opLogStore.append(localTaskEdit, 'local');
+    await opLogStore.markSynced([await opLogStore.append(localTaskEdit, 'local')]);
 
     await service.autoResolveConflictsLWW([
       {

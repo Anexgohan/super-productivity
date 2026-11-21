@@ -99,6 +99,7 @@ describe('ConflictResolutionService — SPAP-14 disjoint-field merge', () => {
       'markApplied',
       'markRejected',
       'markFailed',
+      'getUnsynced',
       'getUnsyncedByEntity',
       'getOpById',
       'mergeRemoteOpClocks',
@@ -117,6 +118,7 @@ describe('ConflictResolutionService — SPAP-14 disjoint-field merge', () => {
       ),
       skippedCount: 0,
     }));
+    mockOpLogStore.getUnsynced.and.resolveTo([]);
     mockOpLogStore.getUnsyncedByEntity.and.resolveTo(new Map());
     mockOpLogStore.markRejected.and.resolveTo(undefined);
     mockOpLogStore.markApplied.and.resolveTo(undefined);
@@ -1403,6 +1405,7 @@ describe('ConflictResolutionService — SPAP-14 disjoint-field merge', () => {
         'markApplied',
         'markRejected',
         'markFailed',
+        'getUnsynced',
         'getUnsyncedByEntity',
         'getOpById',
         'mergeRemoteOpClocks',
@@ -1421,6 +1424,7 @@ describe('ConflictResolutionService — SPAP-14 disjoint-field merge', () => {
         ),
         skippedCount: 0,
       }));
+      opLogStore.getUnsynced.and.resolveTo([]);
       opLogStore.getUnsyncedByEntity.and.resolveTo(new Map());
       opLogStore.markRejected.and.resolveTo(undefined);
       opLogStore.markApplied.and.resolveTo(undefined);

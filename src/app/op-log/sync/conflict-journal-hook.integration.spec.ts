@@ -88,6 +88,7 @@ describe('ConflictResolution → ConflictJournal hook (integration)', () => {
       'markApplied',
       'markRejected',
       'markFailed',
+      'getUnsynced',
       'getUnsyncedByEntity',
       'getOpById',
       'mergeRemoteOpClocks',
@@ -108,6 +109,7 @@ describe('ConflictResolution → ConflictJournal hook (integration)', () => {
       ),
       skippedCount: 0,
     }));
+    mockOpLogStore.getUnsynced.and.resolveTo([]);
     mockOpLogStore.getUnsyncedByEntity.and.resolveTo(new Map());
     mockOpLogStore.appendWithVectorClockOverwrite.and.resolveTo(undefined);
     mockOpLogStore.markRejected.and.resolveTo(undefined);

@@ -107,6 +107,7 @@ describe('ConflictResolutionService', () => {
       'markApplied',
       'markRejected',
       'markFailed',
+      'getUnsynced',
       'getUnsyncedByEntity',
       'getOpById',
       'getVectorClock',
@@ -156,6 +157,7 @@ describe('ConflictResolutionService', () => {
     mockOperationApplier.applyOperations.and.resolveTo({ appliedOps: [] });
     mockOperationLogEffects.processDeferredActions.and.resolveTo();
     mockValidateStateService.validateAndRepairCurrentState.and.resolveTo(true);
+    mockOpLogStore.getUnsynced.and.resolveTo([]);
     mockOpLogStore.getUnsyncedByEntity.and.resolveTo(new Map());
     mockOpLogStore.getOpById.and.resolveTo(undefined);
     mockOpLogStore.getVectorClock.and.resolveTo({});
