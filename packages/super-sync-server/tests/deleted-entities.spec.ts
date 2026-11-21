@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { Prisma } from '@prisma/client';
 import Fastify, { FastifyInstance } from 'fastify';
 import * as jwt from 'jsonwebtoken';
 import { uuidv7 } from 'uuidv7';
@@ -6,8 +7,10 @@ import { initDb, prisma } from '../src/db';
 import { getSyncService, initSyncService } from '../src/sync/sync.service';
 import { syncRoutes } from '../src/sync/sync.routes';
 import {
+  deleteOldDeleteRecords,
   deletesNamedBy,
   DELETED_ENTITY_RETENTION_MS,
+  recordDeletes,
 } from '../src/sync/deleted-entities';
 import { Operation } from '../src/sync/sync.types';
 
@@ -101,6 +104,46 @@ describe('pruning the delete records', () => {
       1,
     );
     expect((await storedRows()).map((row) => row.entityId)).toEqual(['recent']);
+  });
+});
+
+describe('recording deletes', () => {
+  beforeEach(() => {
+    initDb('./data', true);
+  });
+
+  it('records a delete whose expired record the cleanup removes while the upload records it', async () => {
+    const now = Date.now();
+    const expired = BigInt(now - DELETED_ENTITY_RETENTION_MS - 1);
+    await prisma.deletedEntity.createMany({
+      data: [
+        {
+          userId,
+          entityType: 'TASK',
+          entityId: 't1',
+          deletedAt: expired,
+          recordedAt: expired,
+        },
+      ],
+    });
+    // The cleanup runs outside the user's lock, so it can remove the row between the upload's read and its write.
+    const findMany = vi.mocked(prisma.deletedEntity.findMany);
+    const read = findMany.getMockImplementation()!;
+    findMany.mockImplementationOnce(async (args) => {
+      const rows = await read(args);
+      await deleteOldDeleteRecords(now - DELETED_ENTITY_RETENTION_MS);
+      return rows;
+    });
+
+    await recordDeletes(
+      prisma as unknown as Prisma.TransactionClient,
+      userId,
+      [op({ entityId: 't1', timestamp: now - 1_000 })],
+      now,
+    );
+    expect(await storedRows()).toEqual([
+      { userId, entityType: 'TASK', entityId: 't1', deletedAt: now - 1_000 },
+    ]);
   });
 });
 

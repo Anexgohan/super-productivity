@@ -1,7 +1,6 @@
 /**
  * The deletes of tasks and notes from the last 7 days, kept so a browser can tell whether its edit to an item a checkpoint lacks came after the delete.
  * Only the ids an op names are recorded, since payloads are end-to-end encrypted: a browser finds a subtask through its parent.
- * Project deletes are not recorded, so their tasks and notes stay deleted.
  */
 import { Prisma } from '@prisma/client';
 import { prisma } from '../db';
@@ -65,9 +64,20 @@ export const recordDeletes = async (
     existing.map((row) => [keyOf(row.entityType, row.entityId), Number(row.deletedAt)]),
   );
   const recordedAt = BigInt(now);
-  const fresh = deletes.filter(
-    ({ entityType, entityId }) => !existingAt.has(keyOf(entityType, entityId)),
-  );
+  const fresh: EntityDeleteTime[] = [];
+  for (const entry of deletes) {
+    const { entityType, entityId, deletedAt } = entry;
+    const previous = existingAt.get(keyOf(entityType, entityId));
+    if (previous !== undefined) {
+      // The cleanup runs outside the user's lock, so a row read above may be gone by now; it is then created again.
+      const { count } = await tx.deletedEntity.updateMany({
+        where: { userId, entityType, entityId },
+        data: { deletedAt: BigInt(Math.max(previous, deletedAt)), recordedAt },
+      });
+      if (count > 0) continue;
+    }
+    fresh.push(entry);
+  }
   if (fresh.length > 0) {
     await tx.deletedEntity.createMany({
       data: fresh.map(({ entityType, entityId, deletedAt }) => ({
@@ -78,14 +88,6 @@ export const recordDeletes = async (
         recordedAt,
       })),
       skipDuplicates: true,
-    });
-  }
-  for (const { entityType, entityId, deletedAt } of deletes) {
-    const previous = existingAt.get(keyOf(entityType, entityId));
-    if (previous === undefined) continue;
-    await tx.deletedEntity.update({
-      where: { userId_entityType_entityId: { userId, entityType, entityId } },
-      data: { deletedAt: BigInt(Math.max(previous, deletedAt)), recordedAt },
     });
   }
 };

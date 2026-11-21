@@ -264,17 +264,33 @@ describe('findEditsThatBeatDeletes', () => {
     ).toEqual([]);
   });
 
-  it('counts notes, and only updates of that one item', () => {
+  it('counts notes, and only updates', () => {
     expect(
       findEditsThatBeatDeletes({
         deletes: [deleted('n1', 100, 'NOTE'), deleted('t1', 100), deleted('t2', 100)],
         own: [
           change('a', OpType.Update, 'n1', 120, { entityType: 'NOTE' }),
-          change('b', OpType.Update, 't1', 120, { entityIds: ['t1', 't2'] }),
-          change('c', OpType.Create, 't2', 120),
+          change('b', OpType.Create, 't1', 120),
+          change('c', OpType.Move, 't2', 120),
         ],
       }),
     ).toEqual([{ entityType: 'NOTE', entityId: 'n1', editAt: 120 }]);
+  });
+
+  it('counts an update for every item it names, as a project move with subtasks or a bulk edit names them', () => {
+    expect(
+      findEditsThatBeatDeletes({
+        deletes: [deleted('parent', 100), deleted('sub', 100), deleted('b1', 100)],
+        own: [
+          change('move', OpType.Update, 'parent', 120, { entityIds: ['parent', 'sub'] }),
+          { ...op('bulk'), entityId: undefined, timestamp: 130, entityIds: ['b1', 'b2'] },
+        ],
+      }),
+    ).toEqual([
+      { entityType: 'TASK', entityId: 'parent', editAt: 120 },
+      { entityType: 'TASK', entityId: 'sub', editAt: 120 },
+      { entityType: 'TASK', entityId: 'b1', editAt: 130 },
+    ]);
   });
 });
 
@@ -316,6 +332,18 @@ describe('deleteTimesWithParents', () => {
       { entityType: 'TASK', entityId: 'own', deletedAt: 200 },
       { entityType: 'NOTE', entityId: 'n1', deletedAt: 300 },
     ]);
+  });
+
+  it("takes a parent's delete when it is later than the subtask's own record", () => {
+    expect(
+      deleteTimesWithParents(
+        [{ entityType: 'TASK', entityId: 'sub', parentId: 'parent' }],
+        [
+          { entityType: 'TASK', entityId: 'sub', deletedAt: 10 },
+          { entityType: 'TASK', entityId: 'parent', deletedAt: 30 },
+        ],
+      ),
+    ).toEqual([{ entityType: 'TASK', entityId: 'sub', deletedAt: 30 }]);
   });
 });
 

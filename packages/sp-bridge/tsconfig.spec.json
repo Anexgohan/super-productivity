@@ -14,6 +14,8 @@
     "dist",
     "tests/server-order-replay.spec.ts",
     "tests/app-rules-day.spec.ts",
-    "tests/server-order-stored-seqs.spec.ts"
+    "tests/server-order-stored-seqs.spec.ts",
+    "tests/server-order-bring-backs.spec.ts",
+    "tests/checkpoint-apply.spec.ts"
   ]
 }

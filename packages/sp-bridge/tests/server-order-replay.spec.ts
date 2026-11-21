@@ -358,6 +358,32 @@ describe('server-order replay', () => {
     expect(inboxOrder(bridge)).toEqual(['t1', 'p']);
   });
 
+  it('finds the subtasks of a bulk delete in its payload, for a parent this browser no longer shows', () => {
+    const p = {
+      ...buildTaskEntity({ title: 'parent' }),
+      id: 'p',
+      subTaskIds: ['s1', 's2'],
+    };
+    const s1 = { ...buildTaskEntity({ title: 'sub one', parentId: 'p' }), id: 's1' };
+    const s2 = { ...buildTaskEntity({ title: 'sub two', parentId: 'p' }), id: 's2' };
+    // As the app captures it: the op names the tasks picked, and its payload holds them with their subtasks.
+    const bulk = {
+      ...makeOp(B, '[Task Shared] deleteTasks', 'DEL', '', {
+        taskIds: ['p'],
+        tasks: [p, s1, s2],
+      }),
+      entityId: undefined,
+      entityIds: ['p'],
+      isBulk: true,
+    } as unknown as Operation;
+
+    expect(
+      itemsRemovedBy([bulk], undefined)
+        .map(({ entityId }) => entityId)
+        .sort(),
+    ).toEqual(['p', 's1', 's2']);
+  });
+
   it('brings back a task without the tracked time not saved as a change yet, so it is counted once', () => {
     const confirmed = start();
     const t1 = taskState(confirmed).entities.t1 as Task;
@@ -905,7 +931,7 @@ describe('applying a checkpoint', () => {
       }),
     );
     const withUnsent = apply(fromCheckpoint, [unsent]);
-    const after = root(withUnsent, reapplyEditsReplacedByCheckpoint());
+    const after = root(withUnsent, reapplyEditsReplacedByCheckpoint({ onTop: [unsent] }));
 
     expect(tasks(after).entities.t1.title).toBe('unsent before the checkpoint');
     expect((tasks(after).entities.t1 as unknown as { notes: string }).notes).toBe(

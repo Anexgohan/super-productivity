@@ -1,12 +1,8 @@
 /**
- * anex fork, Stage 9 of the container-authority work: every browser follows the server's order.
- *
- * The server stores every valid change in the order it arrives, and the bridge applies them in that
- * order. A browser shows the state the server confirmed with its own unsent changes on top. It
- * applies a download as it always has when that already gives the server's order. Otherwise it goes
- * back to the confirmed state and replays the downloaded changes and its own accepted ones by their
- * server numbers, with what the server has not confirmed yet on top.
- *
+ * Every browser follows the server's order: the server stores each valid change as it arrives, and the bridge applies them in that order.
+ * A browser shows the state the server confirmed, with its own unsent changes on top.
+ * When applying a download as received already gives the server's order, it does that.
+ * Otherwise it replays from the confirmed state the downloaded changes and its own accepted ones by server number, with unconfirmed ones on top.
  * Pure functions: the host supplies the changes with their server numbers and runs the reducers.
  */
 
@@ -167,7 +163,7 @@ const latestDeleteTimes = (deletes: readonly ItemDelete[]): Map<string, ItemDele
 
 /**
  * The deleted items whose latest edit by this browser is later than their latest delete.
- * Only an update of that one item counts as an edit; an item whose last change here is this browser's own delete stays deleted.
+ * An update is an edit of every item it names; an item whose last change here is this browser's own delete stays deleted.
  * `own` is this browser's change log in the order the changes were made.
  */
 export const findEditsThatBeatDeletes = ({
@@ -181,17 +177,15 @@ export const findEditsThatBeatDeletes = ({
   if (latest.size === 0) return [];
   const editAt = new Map<string, number | undefined>();
   for (const op of own) {
-    if (op.opType === OpType.Delete) {
-      for (const id of [op.entityId, ...(op.entityIds ?? [])]) {
-        if (id) editAt.set(itemKey(op.entityType, id), undefined);
+    if (op.opType !== OpType.Delete && op.opType !== OpType.Update) continue;
+    for (const id of new Set([op.entityId, ...(op.entityIds ?? [])])) {
+      if (!id) continue;
+      const key = itemKey(op.entityType, id);
+      if (op.opType === OpType.Delete) editAt.set(key, undefined);
+      else if (latest.has(key)) {
+        editAt.set(key, Math.max(editAt.get(key) ?? -Infinity, op.timestamp));
       }
-      continue;
     }
-    const isSingleItem = !op.entityIds || op.entityIds.every((id) => id === op.entityId);
-    if (op.opType !== OpType.Update || !op.entityId || !isSingleItem) continue;
-    const key = itemKey(op.entityType, op.entityId);
-    if (!latest.has(key)) continue;
-    editAt.set(key, Math.max(editAt.get(key) ?? -Infinity, op.timestamp));
   }
   const winners: EditBeatingDelete[] = [];
   for (const [key, entry] of latest) {
@@ -229,7 +223,7 @@ export const findRecreationsBeatenByDeletes = <TOperation extends Operation<stri
 };
 
 /**
- * The delete time of each asked item from the server's records: its own record, or else its parent's.
+ * The delete time of each asked item from the server's records: the later of its own record and its parent's.
  * A delete names only the top task, so a subtask's delete is recorded under its parent.
  */
 export const deleteTimesWithParents = (
@@ -238,10 +232,13 @@ export const deleteTimesWithParents = (
 ): ItemDelete[] => {
   const latest = latestDeleteTimes(records);
   return asked.flatMap(({ entityType, entityId, parentId }) => {
-    const found =
-      latest.get(itemKey(entityType, entityId)) ??
-      (parentId ? latest.get(itemKey(entityType, parentId)) : undefined);
-    return found ? [{ entityType, entityId, deletedAt: found.deletedAt }] : [];
+    const times = [entityId, parentId].flatMap((id) => {
+      const found = id ? latest.get(itemKey(entityType, id)) : undefined;
+      return found ? [found.deletedAt] : [];
+    });
+    return times.length > 0
+      ? [{ entityType, entityId, deletedAt: Math.max(...times) }]
+      : [];
   });
 };
 

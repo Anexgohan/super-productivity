@@ -311,6 +311,7 @@ export class RemoteOpsProcessingService {
         committedFullStateOpIds: string[];
         blockedByLocalConflict: boolean;
         keptOnTopCount: number;
+        broughtBackCount: number;
       }> => {
         // #9074: asserted AFTER the lock wait — the highest-value fence site
         // for full-state ops (a stale SYNC_IMPORT applied wholesale after a
@@ -324,15 +325,14 @@ export class RemoteOpsProcessingService {
         // they keep the final pending-work read and destructive apply stable.
         const releaseApplyingRemoteOpsHold =
           this.hydrationStateService.acquireApplyingRemoteOpsHold();
-        const fullStateApplyResult: {
-          committedFullStateOpIds: string[];
-          blockedByLocalConflict: boolean;
-          keptOnTopCount: number;
-        } = {
-          committedFullStateOpIds: [],
+        const fullStateApplyResult = {
+          committedFullStateOpIds: [] as string[],
           blockedByLocalConflict: false,
           keptOnTopCount: 0,
+          broughtBackCount: 0,
         };
+        // What went on top of a checkpoint, for the edits typed meanwhile to go on top of in turn.
+        const shownOnTop: Operation[] = [];
         let hasPrimaryError = false;
         try {
           if (
@@ -349,6 +349,7 @@ export class RemoteOpsProcessingService {
             const bringBack = isCheckpoint
               ? await this.serverOrder.decideCheckpointBringBacks(validOps)
               : NO_CHECKPOINT_BRING_BACK;
+            let loggedBringBacks: Operation[] = [];
             fullStateApplyResult.committedFullStateOpIds =
               await this.applyNonConflictingOps(validOps, true, {
                 skipDeferredActionDrain: true,
@@ -356,21 +357,25 @@ export class RemoteOpsProcessingService {
                 ...(isCheckpoint
                   ? { createBulkApplyAction: this.serverOrder.checkpointApplyAction() }
                   : {}),
+                // Logged with the checkpoint, so no crash can leave it without the saves that answer it.
+                localOpsAfter: bringBack.saves,
+                onLocalOpsLogged: (ops) => (loggedBringBacks = ops),
               });
-            fullStateApplyResult.keptOnTopCount =
-              await this._applyUnsentEditsOnTopOfCheckpoint(
-                validOps,
-                fullStateApplyResult.committedFullStateOpIds,
-                options?.getDiscardablePendingOpIds?.() ?? [],
-                bringBack,
-              );
+            const onTop = await this._applyUnsentEditsOnTopOfCheckpoint(
+              validOps,
+              fullStateApplyResult.committedFullStateOpIds,
+              options?.getDiscardablePendingOpIds?.() ?? [],
+              { ...bringBack, saves: loggedBringBacks },
+              shownOnTop,
+            );
+            fullStateApplyResult.keptOnTopCount = onTop.kept;
+            fullStateApplyResult.broughtBackCount = onTop.broughtBack;
           }
         } catch (error) {
           hasPrimaryError = true;
           throw error;
         } finally {
-          // After the unsent edits, so the edits made during the apply keep their place after them.
-          this.store.dispatch(reapplyEditsReplacedByCheckpoint());
+          this.store.dispatch(reapplyEditsReplacedByCheckpoint({ onTop: shownOnTop }));
           releaseApplyingRemoteOpsHold();
           try {
             await processDeferredActionsAfterRemoteApply(this.injector, true);
@@ -409,7 +414,7 @@ export class RemoteOpsProcessingService {
             ),
           );
 
-      // Stage 9 (anex): what the replay held belongs to the state before the full-state change.
+      // What the replay held belongs to the state before the full-state change.
       if (fullStateApplyResult.committedFullStateOpIds.length > 0) {
         this.serverOrder.reset('full-state change applied');
       }
@@ -422,15 +427,15 @@ export class RemoteOpsProcessingService {
         this.snackService.open({
           msg: T.F.SYNC.S.CHECKPOINT_KEPT_UNSENT,
           translateParams: { count: fullStateApplyResult.keptOnTopCount },
-          // Long enough to read: the default 3 s was too fast (user, 2026-11-20); the sync button's "synced" toast
-          // must not replace it either.
+          // Long enough to read, and not replaced by the sync button's "synced" toast.
           config: { duration: 8000 },
           isKeptVisible: true,
         });
       }
 
       return {
-        localWinOpsCreated: 0,
+        // The "bring it back" saves are unsent, so the caller uploads them.
+        localWinOpsCreated: fullStateApplyResult.broughtBackCount,
         allOpsFilteredBySyncImport: false,
         filteredOpCount: 0,
         isLocalUnsyncedImport: false,
@@ -477,8 +482,8 @@ export class RemoteOpsProcessingService {
       };
     }
 
-    // Stage 9 (anex): SuperSync numbers every change, so the batch follows the server's order instead of being compared
-    // by clocks. Without a number for every change the order is unknown and today's handling below stays.
+    // SuperSync numbers every change, so the batch follows the server's order instead of being compared by clocks.
+    // Without a number for every change the order is unknown and the clock handling below stays.
     if (
       validOps.length > 0 &&
       this.serverOrder.isActive() &&
@@ -533,8 +538,7 @@ export class RemoteOpsProcessingService {
         retainedOpsByEntity,
       );
       const { nonConflicting } = conflictResult;
-      // Stage 8 (anex): one conflict per item where an unsent edit goes on top of the downloaded
-      // edits, so the resolver can merge them into one edit (unsent-edit-on-top.service.ts).
+      // One conflict per item where an unsent edit goes on top of the downloaded edits, so the resolver merges them into one edit.
       const conflicts = await this.unsentEditOnTop.joinConflicts(
         conflictResult.conflicts,
       );
@@ -607,10 +611,10 @@ export class RemoteOpsProcessingService {
   }
 
   /**
-   * Stage 9 (anex): applies a batch in the server's order (server-order.service.ts). As today when nothing of this
-   * browser's own waits; otherwise back to the confirmed state, every change in server order, then this browser's later
-   * and unsent saves on top. Same cutoff as the full-state path: edits made before it are in the change log, edits
-   * after it are held back and re-applied on top. Returns the number of "bring it back" saves written.
+   * Applies a batch in the server's order (server-order.service.ts): as received when nothing of this browser's own waits, else as a replay.
+   * The replay goes back to the confirmed state, applies every change in server order, then this browser's later and unsent saves on top.
+   * Same cutoff as the full-state path: edits made before it are in the change log, edits after it are held back and re-applied on top.
+   * Returns the number of "bring it back" saves written.
    */
   private async _applyInServerOrder(
     validOps: Operation[],
@@ -757,45 +761,25 @@ export class RemoteOpsProcessingService {
   }
 
   /**
-   * Applies non-conflicting operations with crash-safe tracking.
-   *
-   * ## Crash Safety Protocol
-   * 1. Store ops with `pendingApply: true` flag
-   * 2. Apply ops to NgRx store
-   * 3. Mark ops as applied (removes pendingApply flag)
-   *
-   * If crash occurs between steps 1-2, ops will be retried on startup.
-   * If crash occurs between steps 2-3, ops may be re-applied (idempotent).
-   *
-   * @param ops - Non-conflicting operations to apply
-   * @param callerHoldsLock - If true, deferred local actions reuse the caller's
-   *        sp_op_log lock after remote clocks are merged.
-   * @param options.skipDeferredActionDrain - If true, the caller owns a wider
-   *        apply window and drains deferred actions after validation or abort.
-   * @throws Re-throws if application fails (ops marked as failed first)
-   */
-  /**
-   * Stage 6 (anex/checkpoints): after a checkpoint is committed, this browser's unsent edits are applied on top of it,
-   * so the state shown is the server's confirmed state plus the edits still on their way. They stay unsent in the
-   * change log and are uploaded as usual; other devices replay them after the checkpoint. Applied like received ops:
-   * reducers and archive side effects run, no effect re-fires and nothing is captured as a new op. Runs with the
-   * operation-log lock and the remote-apply hold, before validation.
-   *
+   * After a checkpoint is committed, this browser's unsent edits and then its "bring it back" saves are applied on top of it, as received ops are.
+   * The edits stay unsent and are uploaded as usual; the saves were logged with the checkpoint.
    * Only for checkpoints: a full import or a REPAIR without its base keeps clean-slate semantics.
+   * Runs with the operation-log lock and the remote-apply hold; each op applied is added to `shownOnTop`.
    */
   private async _applyUnsentEditsOnTopOfCheckpoint(
     validOps: Operation[],
     committedFullStateOpIds: string[],
     discardablePendingOpIds: readonly string[],
     bringBack: CheckpointBringBack,
-  ): Promise<number> {
+    shownOnTop: Operation[],
+  ): Promise<{ kept: number; broughtBack: number }> {
     const committed = new Set(committedFullStateOpIds);
     const committedFullStateOps = validOps.filter((op) => committed.has(op.id));
     if (
       committedFullStateOps.length === 0 ||
       !committedFullStateOps.every(isCheckpointFullStateOp)
     ) {
-      return 0;
+      return { kept: 0, broughtBack: 0 };
     }
     const discardable = new Set(discardablePendingOpIds);
     // Saves the server accepted but whose answer is not processed yet are still unsent here.
@@ -816,6 +800,7 @@ export class RemoteOpsProcessingService {
     const result = await this.operationApplier.applyOperations(unsent, {
       skipDeferredLocalActions: true,
     });
+    shownOnTop.push(...result.appliedOps);
     if (result.failedOp) {
       OpLog.err(
         'RemoteOpsProcessingService: an unsent edit failed to apply on top of the checkpoint',
@@ -823,25 +808,46 @@ export class RemoteOpsProcessingService {
       );
     }
     // After the unsent edits, so each brought-back item shows as this browser last saw it.
-    const broughtBack = await this.serverOrder.writeAndApplyBringBacks(bringBack.saves);
+    const broughtBack = await this.serverOrder.applyOnTop(bringBack.saves);
+    shownOnTop.push(...bringBack.saves);
     const kept =
       (await this.serverOrder.countEditsShown(result.appliedOps, bringBack.missingKeys)) +
       broughtBack;
     OpLog.normal(
       `RemoteOpsProcessingService: Kept ${kept} unsent edit(s) and brought-back item(s) on top of the checkpoint`,
     );
-    return kept;
+    return { kept, broughtBack };
   }
 
+  /**
+   * Applies non-conflicting operations with crash-safe tracking.
+   *
+   * ## Crash Safety Protocol
+   * 1. Store ops with `pendingApply: true` flag
+   * 2. Apply ops to NgRx store
+   * 3. Mark ops as applied (removes pendingApply flag)
+   *
+   * If crash occurs between steps 1-2, ops will be retried on startup.
+   * If crash occurs between steps 2-3, ops may be re-applied (idempotent).
+   *
+   * @param ops - Non-conflicting operations to apply
+   * @param callerHoldsLock - If true, deferred local actions reuse the caller's
+   *        sp_op_log lock after remote clocks are merged.
+   * @param options.skipDeferredActionDrain - If true, the caller owns a wider
+   *        apply window and drains deferred actions after validation or abort.
+   * @throws Re-throws if application fails (ops marked as failed first)
+   */
   async applyNonConflictingOps(
     ops: Operation[],
     callerHoldsLock: boolean = false,
     options: {
       skipDeferredActionDrain?: boolean;
-      /** Stage 9 (anex): the reducer action in place of the bulk apply (a server-order replay). */
+      /** The reducer action in place of the bulk apply (a server-order replay or a checkpoint). */
       createBulkApplyAction?: ApplyOperationsOptions['createBulkApplyAction'];
       /** This browser's bring-back saves, logged right after the remote ops in the same write. */
       localOpsAfter?: Operation[];
+      /** Receives `localOpsAfter` as logged, their clocks rebased; those are the ones to apply. */
+      onLocalOpsLogged?: (ops: Operation[]) => void;
     } = {},
   ): Promise<string[]> {
     const locallyReplayableOps =
@@ -882,6 +888,7 @@ export class RemoteOpsProcessingService {
         },
       });
 
+      options.onLocalOpsLogged?.(result.appendedLocalOps);
       committedFullStateOpIds = result.appliedOps
         .filter((op) => FULL_STATE_OP_TYPES.has(op.opType))
         .map((op) => op.id);

@@ -148,6 +148,7 @@ export const uploadOpsHandler = async (
             clientId,
             PIGGYBACK_LIMIT,
             false,
+            false,
           );
           newOps = opsResult.ops;
           latestSeq = opsResult.latestSeq;
@@ -270,6 +271,7 @@ export const uploadOpsHandler = async (
         lastKnownServerSeq,
         clientId,
         PIGGYBACK_LIMIT,
+        false,
         false,
       );
       newOps = opsResult.ops;

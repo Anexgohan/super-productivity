@@ -676,6 +676,8 @@ file via `env_file:`, so a value is written once and no service has an
 | `POSTGRES_USER` / `_DB`       | database name and role                                      |
 | `POSTGRES_HOST` / `_PORT`     | point these at an external server to drop the bundled one   |
 
+Set `TZ` to the timezone the browsers run in: the bridge works out the day from it, so its day turns over at the same moment as theirs.
+
 **Resource caps**, all with working defaults - raise them on a busy stack rather than tuning by default:
 
 | Variable                                                             | Default                                    |

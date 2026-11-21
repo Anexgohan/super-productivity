@@ -1,14 +1,8 @@
 /**
- * anex fork, Stage 9: a browser follows the server's order.
- *
- * Holds what a server-order replay needs between syncs, all in memory (a reload starts over and rebuilds when the
- * order matters): the state the server confirmed and its server number, this browser's saves the server accepted but
- * the confirmed state does not hold yet, and the server numbers of downloaded changes. It also builds the two extra
- * pieces a replay can need: the confirmed state rebuilt from the newest checkpoint, and a "bring it back" save for a task
- * or note another browser deleted earlier, by device time, than this browser's edit to it.
- *
- * RemoteOpsProcessingService drives the apply; the reducer side is server-order-replay.meta-reducer.ts and the plan is
- * planServerOrderApply in @sp/sync-core.
+ * Holds what a server-order replay needs between syncs, in memory only: a reload starts over and rebuilds when the order matters.
+ * That is the confirmed state with its server number, this browser's accepted saves it lacks, and the server numbers of downloaded changes.
+ * It also rebuilds the confirmed state from the newest checkpoint and builds "bring it back" saves for items deleted before this browser's edit.
+ * RemoteOpsProcessingService drives the apply; the reducer side is server-order-replay.meta-reducer.ts and the plan is planServerOrderApply.
  */
 import { inject, Injectable, Injector } from '@angular/core';
 import { Action, Store } from '@ngrx/store';
@@ -114,6 +108,38 @@ export const NO_CHECKPOINT_BRING_BACK: CheckpointBringBack = {
 
 const itemKeyOf = (op: { entityType: string; entityId?: string }): string =>
   `${op.entityType}:${op.entityId ?? ''}`;
+
+const RESTORE_ACTION_TYPES: ReadonlySet<string> = new Set([
+  '[Task Shared] restoreTask',
+  '[Task Shared] restoreDeletedTask',
+]);
+
+/** True for a change that puts a deleted task or note back: a create, a restore or a full save. */
+const putsItemBack = (op: Operation): boolean =>
+  op.opType === OpType.Create ||
+  RESTORE_ACTION_TYPES.has(op.actionType) ||
+  recreatesItem(op);
+
+/** The keys of the items the changes put back, as `TYPE:id`. */
+const itemsPutBackBy = (ops: readonly Operation[]): Set<string> =>
+  new Set(ops.filter(putsItemBack).map(itemKeyOf));
+
+const deletedTaskIdsOf = (deletes: readonly ItemDelete[]): Set<string> =>
+  new Set(deletes.filter((d) => d.entityType === 'TASK').map((d) => d.entityId));
+
+/** The items the given deletes of `ops` removed, less those a later change of `ops` puts back. */
+const itemsStillDeleted = (
+  ops: readonly Operation[],
+  deleteOps: readonly Operation[],
+  shownTasks: TaskState | undefined,
+): ItemDelete[] =>
+  deleteOps.flatMap((deleteOp) => {
+    const putBack = itemsPutBackBy(ops.slice(ops.indexOf(deleteOp) + 1));
+    if (putBack.has(itemKeyOf(deleteOp))) return [];
+    return itemsRemovedBy([deleteOp], shownTasks).filter(
+      (item) => !putBack.has(itemKeyOf(item)),
+    );
+  });
 
 @Injectable({ providedIn: 'root' })
 export class ServerOrderService {
@@ -321,30 +347,18 @@ export class ServerOrderService {
    * Unsent recreations that a later delete beats are withdrawn first. The saves are not written: the apply logs them right after the download.
    */
   async decideBringBacks(validOps: readonly Operation[]): Promise<Operation[]> {
-    const deleteOps: Operation[] = [];
-    for (const op of validOps) {
-      if (
-        op.opType === OpType.Delete &&
-        (op.entityType === 'TASK' || op.entityType === 'NOTE') &&
-        !(await this.opLogStore.hasOp(op.id))
-      ) {
-        deleteOps.push(op);
-      }
-    }
+    const deleteOps = await this.newItemDeletes(validOps);
     if (deleteOps.length === 0) return [];
     const state = await this.readState();
     const tasks = state[TASK_FEATURE_NAME] as TaskState | undefined;
-    const deletes = itemsRemovedBy(deleteOps, tasks);
-    await this.withdrawBeatenRecreations(deletes);
+    await this.withdrawBeatenRecreations(itemsRemovedBy(deleteOps, tasks));
+    // An item a later change of the download puts back is no longer deleted.
+    const deletes = itemsStillDeleted(validOps, deleteOps, tasks);
     const winners = findEditsThatBeatDeletes({
       deletes,
       own: await this.readOwnChanges(),
     });
-    return this.buildBringBackSaves(
-      winners,
-      new Set(deletes.filter((d) => d.entityType === 'TASK').map((d) => d.entityId)),
-      state,
-    );
+    return this.buildBringBackSaves(winners, deletedTaskIdsOf(deletes), state, validOps);
   }
 
   /**
@@ -369,30 +383,46 @@ export class ServerOrderService {
 
   /**
    * Before a checkpoint is applied: asks the server when the shown tasks and notes the checkpoint lacks, and this browser edited, were deleted.
-   * Each one edited later than its delete gets a "bring it back" save, written and applied after the checkpoint.
+   * Those and the items deleted after the checkpoint in the same download, unless a later change puts them back, are its deletes.
+   * Each item edited later than its delete gets a "bring it back" save, logged with the checkpoint and applied after it.
    * Throws when the server cannot answer, so this apply stops before anything changes and the next sync retries it.
    */
   async decideCheckpointBringBacks(
     validOps: readonly Operation[],
   ): Promise<CheckpointBringBack> {
-    const checkpoint = validOps.filter((op) => FULL_STATE_OP_TYPES.has(op.opType)).pop();
+    const checkpointAt = validOps
+      .map((op) => FULL_STATE_OP_TYPES.has(op.opType))
+      .lastIndexOf(true);
     const provider = this.providerManager.getActiveProvider();
-    if (!checkpoint || !isDeleteTimesCapable(provider)) return NO_CHECKPOINT_BRING_BACK;
+    if (checkpointAt < 0 || !isDeleteTimesCapable(provider))
+      return NO_CHECKPOINT_BRING_BACK;
+    const afterCheckpoint = validOps.slice(checkpointAt + 1);
     const state = await this.readState();
     const tasks = state[TASK_FEATURE_NAME] as TaskState | undefined;
+    const putBack = itemsPutBackBy(afterCheckpoint);
     const missing = itemsMissingFromCheckpoint(
       { tasks, notes: state[NOTE_FEATURE_NAME] as NoteState | undefined },
-      extractFullStateFromPayload(checkpoint.payload),
-    );
-    const missingKeys = new Set(missing.map(itemKeyOf));
-    if (missing.length === 0) return { saves: [], missingKeys };
+      extractFullStateFromPayload(validOps[checkpointAt].payload),
+    ).filter((item) => !putBack.has(itemKeyOf(item)));
+    const deleteOpsAfter = await this.newItemDeletes(afterCheckpoint);
+    const deletedAfter = itemsStillDeleted(afterCheckpoint, deleteOpsAfter, tasks);
+    const missingKeys = new Set([...missing, ...deletedAfter].map(itemKeyOf));
+    if (missingKeys.size === 0 && deleteOpsAfter.length === 0) {
+      return { saves: [], missingKeys };
+    }
 
     const own = await this.readOwnChanges();
+    // An update is an edit of every item it names, as findEditsThatBeatDeletes counts it.
     const edited = new Set(
-      own.filter((op) => op.opType === OpType.Update).map(itemKeyOf),
+      own
+        .filter((op) => op.opType === OpType.Update)
+        .flatMap((op) =>
+          [op.entityId, ...(op.entityIds ?? [])]
+            .filter((id): id is string => !!id)
+            .map((entityId) => itemKeyOf({ entityType: op.entityType, entityId })),
+        ),
     );
     const candidates = missing.filter((item) => edited.has(itemKeyOf(item)));
-    if (candidates.length === 0) return { saves: [], missingKeys };
     const asked = new Map<string, { entityType: 'TASK' | 'NOTE'; entityId: string }>();
     for (const { entityType, entityId, parentId } of candidates) {
       asked.set(itemKeyOf({ entityType, entityId }), { entityType, entityId });
@@ -403,27 +433,24 @@ export class ServerOrderService {
         });
       }
     }
-    const records = await provider.getDeleteTimes([...asked.values()]);
-    const deletes = deleteTimesWithParents(candidates, records);
-    await this.withdrawBeatenRecreations(deletes);
+    const records =
+      asked.size > 0 ? await provider.getDeleteTimes([...asked.values()]) : [];
+    const missingDeletes = deleteTimesWithParents(candidates, records);
+    await this.withdrawBeatenRecreations([
+      ...missingDeletes,
+      ...itemsRemovedBy(deleteOpsAfter, tasks),
+    ]);
+    const deletes = [...missingDeletes, ...deletedAfter];
     const saves = await this.buildBringBackSaves(
       findEditsThatBeatDeletes({ deletes, own }),
-      new Set(
-        missing.filter((item) => item.entityType === 'TASK').map((i) => i.entityId),
-      ),
+      new Set([
+        ...missing.filter((item) => item.entityType === 'TASK').map((i) => i.entityId),
+        ...deletedTaskIdsOf(deletedAfter),
+      ]),
       state,
+      validOps,
     );
     return { saves, missingKeys };
-  }
-
-  /** After a checkpoint and the unsent edits on top: logs the bring-back saves after them and applies them. Returns how many applied. */
-  async writeAndApplyBringBacks(saves: Operation[]): Promise<number> {
-    if (saves.length === 0) return 0;
-    // The batch rebases each save on the stored clock, so the written ops are the ones to apply and upload.
-    const { written } = await this.opLogStore.appendMixedSourceBatchSkipDuplicates([
-      { ops: saves, source: 'local' },
-    ]);
-    return this.applyOnTop(written.map((entry) => entry.op));
   }
 
   /** Applies this browser's saves on top of the state shown, as received ops are applied. Returns how many applied. */
@@ -530,11 +557,24 @@ export class ServerOrderService {
     receivedSeqs: readonly number[],
   ): boolean {
     if (!this.confirmed) return false;
-    const missing = findUnaccountedServerSeq({
-      confirmedSeq: this.confirmed.seq,
-      downloadedSeqs: downloaded.map(({ serverSeq }) => serverSeq),
-      knownSeqs: [...receivedSeqs, ...this.accepted.map(({ serverSeq }) => serverSeq)],
-    });
+    const downloadedSeqs = downloaded.map(({ serverSeq }) => serverSeq);
+    const knownSeqs = [
+      ...receivedSeqs,
+      ...this.accepted.map(({ serverSeq }) => serverSeq),
+    ];
+    // A save of this browser's numbered later that it cannot place, such as one sent from another tab, is unaccounted too.
+    const ownLatest = this.ownLatestSeq;
+    const missing =
+      findUnaccountedServerSeq({
+        confirmedSeq: this.confirmed.seq,
+        downloadedSeqs,
+        knownSeqs,
+      }) ??
+      (ownLatest !== undefined &&
+      ownLatest > this.confirmed.seq &&
+      ![...downloadedSeqs, ...knownSeqs].includes(ownLatest)
+        ? ownLatest
+        : undefined);
     if (missing !== undefined) {
       OpLog.warn('ServerOrderService: the confirmed state does not fit this download', {
         seq: missing,
@@ -559,19 +599,23 @@ export class ServerOrderService {
 
   /**
    * "Bring it back" saves for the items whose edit here beats their delete: a task with its deleted parent first, a note on its own.
-   * Each save carries the time of the edit it answers, so a later delete still beats it.
+   * Each save carries the time of the edit it answers, so a later delete still beats it, and a clock that knows the downloaded changes.
    */
   private async buildBringBackSaves(
     winners: readonly EditBeatingDelete[],
     deletedTaskIds: ReadonlySet<string>,
     state: Record<string, unknown>,
+    downloaded: readonly Operation[],
   ): Promise<Operation[]> {
     if (winners.length === 0) return [];
     const clientId = await this.clientIdProvider.loadClientId();
     if (!clientId) return [];
     const resolver = this.injector.get(ConflictResolutionService);
     const clock = resolver.mergeAndIncrementClocks(
-      [(await this.opLogStore.getVectorClock()) ?? {}],
+      [
+        (await this.opLogStore.getVectorClock()) ?? {},
+        ...downloaded.map((op) => op.vectorClock),
+      ],
       clientId,
     );
     const editAt = new Map(winners.map((winner) => [itemKeyOf(winner), winner.editAt]));
@@ -637,6 +681,21 @@ export class ServerOrderService {
       `ServerOrderService: withdrew ${beaten.length} unsent save(s) that a later delete beats`,
       { opIds: beaten.map((op) => op.id) },
     );
+  }
+
+  /** The downloaded deletes of tasks and notes this browser has not logged before. */
+  private async newItemDeletes(ops: readonly Operation[]): Promise<Operation[]> {
+    const deletes: Operation[] = [];
+    for (const op of ops) {
+      if (
+        op.opType === OpType.Delete &&
+        (op.entityType === 'TASK' || op.entityType === 'NOTE') &&
+        !(await this.opLogStore.hasOp(op.id))
+      ) {
+        deletes.push(op);
+      }
+    }
+    return deletes;
   }
 
   /** This browser's own changes still in its change log, sent or not, in the order they were made. */

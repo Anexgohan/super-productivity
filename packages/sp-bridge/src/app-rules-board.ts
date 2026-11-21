@@ -77,6 +77,20 @@ const decryptRows = async (
   return out;
 };
 
+/** True when a full import or checkpoint in the page was applied: handled, not dropped, and its reducer did not fail. */
+const replacesArchive = (
+  r: AppRulesApplyResult,
+  rows: SuperSyncServerOperation[],
+): boolean => {
+  const skipped = new Set([...r.filteredOpIds, ...r.reducerFailures.map((f) => f.opId)]);
+  return rows.some((row) => {
+    const op = row.op as unknown as Record<string, unknown>;
+    return (
+      row.serverSeq <= r.seq && isFullStatePoint(op) && !skipped.has(op.id as string)
+    );
+  });
+};
+
 export class AppRulesBoard {
   private _view: EntityMap | null = null;
   private _viewSeq = -1;
@@ -230,9 +244,7 @@ export class AppRulesBoard {
       console.warn(
         `${tag} archive handling failed on op ${r.archiveFailure.opId} (${r.archiveFailure.actionType}): ${r.archiveFailure.error}`,
       );
-    } else if (
-      rows.some((row) => isFullStatePoint(row.op as unknown as Record<string, unknown>))
-    ) {
+    } else if (replacesArchive(r, rows)) {
       // A full import or checkpoint replaces the archive, so it no longer differs.
       this._status.checkpointHeldBack = null;
     }

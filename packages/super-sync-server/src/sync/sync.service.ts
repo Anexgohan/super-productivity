@@ -530,6 +530,7 @@ export class SyncService {
     excludeClient?: string,
     limit: number = 500,
     includeSnapshotMetadata: boolean = true,
+    includeOwnLatestSeq: boolean = true,
   ): Promise<{
     ops: ServerOperation[];
     latestSeq: number;
@@ -545,6 +546,7 @@ export class SyncService {
       excludeClient,
       limit,
       includeSnapshotMetadata,
+      includeOwnLatestSeq,
     );
   }
 

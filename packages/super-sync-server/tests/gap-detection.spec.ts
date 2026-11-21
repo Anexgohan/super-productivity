@@ -408,6 +408,23 @@ describe('Gap Detection', () => {
       expect((await service.getOpsSinceWithSeq(userId, 0)).ownLatestSeq).toBeUndefined();
     });
 
+    it('skips the own latest number when the caller does not want it, as an upload piggyback does not', async () => {
+      const service = getSyncService();
+      await service.uploadOps(userId, clientA, [createOp(clientA, 'task-1')]);
+      await service.uploadOps(userId, clientB, [createOp(clientB, 'task-2')]);
+
+      const result = await service.getOpsSinceWithSeq(
+        userId,
+        0,
+        clientA,
+        500,
+        false,
+        false,
+      );
+      expect(result.ops.map((row) => row.serverSeq)).toEqual([2]);
+      expect(result.ownLatestSeq).toBeUndefined();
+    });
+
     it('should not flag gap when excluded client caused the seq jump', async () => {
       const service = getSyncService();
 

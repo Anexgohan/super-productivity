@@ -129,4 +129,17 @@ describe('Upload piggyback: a budget-cut page that comes back empty', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().hasMorePiggyback).toBe(true);
   });
+
+  it('does not ask for the own latest number, which the upload answer does not carry', async () => {
+    await upload();
+    mocks.syncService.checkOpsRequestDedup.mockReturnValue([
+      { opId: 'op-1', accepted: true, serverSeq: 12 },
+    ]);
+    await upload('retry-1');
+
+    expect(mocks.syncService.getOpsSinceWithSeq.mock.calls).toEqual([
+      [1, 5, clientId, 500, false, false],
+      [1, 5, clientId, 500, false, false],
+    ]);
+  });
 });

@@ -137,6 +137,7 @@ export class OperationDownloadService {
     excludeClient?: string,
     limit: number = 500,
     includeSnapshotMetadata: boolean = true,
+    includeOwnLatestSeq: boolean = true,
   ): Promise<OperationDownloadResult> {
     const result = await prisma.$transaction(
       async (tx) => {
@@ -222,13 +223,14 @@ export class OperationDownloadService {
         });
 
         // Read after the page, so never older than it: a browser that sees a save of its own numbered after the page knows the order matters.
-        const ownLatest = excludeClient
-          ? await tx.operation.findFirst({
-              where: { userId, clientId: excludeClient },
-              orderBy: { serverSeq: 'desc' },
-              select: { serverSeq: true },
-            })
-          : null;
+        const ownLatest =
+          excludeClient && includeOwnLatestSeq
+            ? await tx.operation.findFirst({
+                where: { userId, clientId: excludeClient },
+                orderBy: { serverSeq: 'desc' },
+                select: { serverSeq: true },
+              })
+            : null;
 
         let minSeq: number | null = null;
 

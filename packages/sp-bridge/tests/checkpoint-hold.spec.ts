@@ -33,11 +33,14 @@ const result = (extra: Partial<AppRulesApplyResult> = {}): AppRulesApplyResult =
   ...extra,
 });
 
-/** A board whose worker answers each apply with the next result given. */
+/** A board whose worker answers each apply with the next result given, as of the last row it got. */
 const boardAnswering = (results: AppRulesApplyResult[]): AppRulesBoard => {
   const worker = {
     listen: () => () => undefined,
-    request: async () => ({ kind: 'apply', result: results.shift() }),
+    request: async (req: { rows: { serverSeq: number }[] }) => ({
+      kind: 'apply',
+      result: { ...results.shift(), seq: req.rows[req.rows.length - 1].serverSeq },
+    }),
   } as unknown as AppRulesWorker;
   return new AppRulesBoard(worker, {
     board: 'test',
@@ -85,6 +88,24 @@ describe('checkpoints: when a board holds them back', () => {
     await board.apply([change(), checkpoint()]);
     expect(board.status.checkpointHeldBack).toBeNull();
     expect(board.status.archiveFailures).toBe(2);
+  });
+
+  it('keeps the hold when the full import or checkpoint itself failed in the reducer, so it replaced nothing', async () => {
+    const failing = change();
+    const failed = checkpoint();
+    const failedId = (failed.op as unknown as { id: string }).id;
+    const board = boardAnswering([
+      result({ archiveFailure }),
+      result({
+        reducerFailures: [
+          { opId: failedId, actionType: '[SP_ALL] Load(import) all data' },
+        ],
+      }),
+    ]);
+
+    await board.apply([failing]);
+    await board.apply([failed]);
+    expect(board.status.checkpointHeldBack).not.toBeNull();
   });
 });
 

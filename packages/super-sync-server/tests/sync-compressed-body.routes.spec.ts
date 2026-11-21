@@ -705,6 +705,7 @@ describe('Sync compressed body routes', () => {
       clientId,
       500,
       false,
+      false,
     );
   });
 
@@ -744,6 +745,7 @@ describe('Sync compressed body routes', () => {
       3,
       clientId,
       500,
+      false,
       false,
     );
   });

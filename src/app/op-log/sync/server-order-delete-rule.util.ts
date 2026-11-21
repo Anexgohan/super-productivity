@@ -17,13 +17,21 @@ const DELETED_ITEM_TYPES: ReadonlySet<string> = new Set(['TASK', 'NOTE']);
 export const recreatesItem = (op: Operation): boolean =>
   DELETED_ITEM_TYPES.has(op.entityType) && isLwwUpdateActionType(op.actionType);
 
+const stringsIn = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
+
+/** The tasks a delete's payload names: a single delete's subtasks, or every task a bulk delete took with its subtasks. */
 const subTaskIdsIn = (payload: unknown): string[] => {
-  const task = extractActionPayload(payload)['task'] as
-    | { subTaskIds?: unknown }
-    | undefined;
-  return Array.isArray(task?.subTaskIds)
-    ? task.subTaskIds.filter((id): id is string => typeof id === 'string')
-    : [];
+  const action = extractActionPayload(payload);
+  const single = action['task'] as { subTaskIds?: unknown } | undefined;
+  const bulk = (Array.isArray(action['tasks']) ? action['tasks'] : []) as (
+    | { id?: unknown; subTaskIds?: unknown }
+    | undefined
+  )[];
+  return [
+    ...stringsIn(single?.subTaskIds),
+    ...bulk.flatMap((task) => stringsIn([task?.id, ...stringsIn(task?.subTaskIds)])),
+  ];
 };
 
 /** Every task and note the downloaded deletes removed, each with its delete's device time; a deleted task's subtasks go with it. */

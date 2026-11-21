@@ -5,6 +5,9 @@ export const createDeletedEntityMock = (rows: () => Map<string, any>) => {
   const keyOf = (row: any): string => `${row.userId}|${row.entityType}|${row.entityId}`;
   const matches = (row: any, where: any): boolean => {
     if (where?.userId !== undefined && row.userId !== where.userId) return false;
+    for (const field of ['entityType', 'entityId']) {
+      if (where?.[field] !== undefined && row[field] !== where[field]) return false;
+    }
     if (where?.recordedAt?.lt !== undefined && !(row.recordedAt < where.recordedAt.lt)) {
       return false;
     }
@@ -50,6 +53,16 @@ export const createDeletedEntityMock = (rows: () => Map<string, any>) => {
       const updated = { ...existing, ...args.data };
       rows().set(key, updated);
       return updated;
+    }),
+    updateMany: vi.fn().mockImplementation(async (args: any) => {
+      let count = 0;
+      for (const [key, row] of rows()) {
+        if (matches(row, args?.where)) {
+          rows().set(key, { ...row, ...args.data });
+          count++;
+        }
+      }
+      return { count };
     }),
     deleteMany: vi.fn().mockImplementation(async (args: any) => {
       let count = 0;

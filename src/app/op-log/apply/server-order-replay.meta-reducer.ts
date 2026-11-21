@@ -1,14 +1,10 @@
 /**
- * anex fork, Stage 9: a browser follows the server's order.
- *
- * One reducer pass that goes back to the state the server confirmed, applies the downloaded changes and this browser's
- * accepted changes by their server numbers, keeps that as the new confirmed state, and applies the changes the server
- * has not placed yet on top. Local-only state and edits made while the download was being applied are kept from the
- * state shown (server-order-local-state.util.ts). The plan comes from planServerOrderApply in @sp/sync-core.
- *
+ * One reducer pass puts a browser in the server's order: from the confirmed state it applies the downloaded and accepted changes by server number.
+ * That result is the new confirmed state, and the changes the server has not placed yet go on top of it.
+ * Local-only state and edits made while the download applied are kept from the state shown (server-order-local-state.util.ts).
+ * The plan comes from planServerOrderApply in @sp/sync-core.
  * Runs inside the operation capture (it is no user change) and outside the bulk apply, which it uses for both passes.
- * A bulk apply marked keepsLocalOnlyState (a checkpoint) keeps the local-only state the same way.
- * The edits made while it applies are applied again once the unsent edits are on top (reapplyEditsReplacedByCheckpoint).
+ * A checkpoint (a bulk apply marked keepsLocalOnlyState) keeps the local-only state too; reapplyEditsReplacedByCheckpoint puts edits back on top.
  */
 import { Action, ActionReducer, createAction, props } from '@ngrx/store';
 import { Operation } from '../core/operation.types';
@@ -45,9 +41,10 @@ export const serverOrderRebuild = createAction(
   props<{ ops: Operation[]; localClientId?: string }>(),
 );
 
-/** Applies again the edits made while a checkpoint was applied, which it replaced; dispatched after the unsent edits go on top. */
+/** After the unsent edits went on top of a checkpoint: shows the checkpoint, those edits, then every edit typed while it applied, in that order. */
 export const reapplyEditsReplacedByCheckpoint = createAction(
   '[OperationLog] Reapply Edits Replaced By Checkpoint',
+  props<{ onTop: Operation[] }>(),
 );
 
 /** The changes a dispatched bulk apply or server-order replay applies to the state shown, for effects that react to them. */
@@ -66,7 +63,7 @@ const REBUILD_INITIAL_STATE = { type: '[OperationLog] Rebuild Confirmed State: i
 
 let unsavedLocalTimeSource: () => UnsavedLocalTime = () => NO_UNSAVED_LOCAL_TIME;
 let lastConfirmedState: object | undefined;
-let editsReplacedByCheckpoint: Action[] = [];
+let checkpointApplied: { state: object; localClientId?: string } | undefined;
 
 /** Where the replay reads the time tracked but not saved as a change yet; set by ServerOrderService. */
 export const setUnsavedLocalTimeSource = (source: () => UnsavedLocalTime): void => {
@@ -101,18 +98,43 @@ export const serverOrderReplayMetaReducer = <S>(
       (action as ReturnType<typeof bulkApplyOperations>).keepsLocalOnlyState &&
       state !== undefined
     ) {
-      // These ran on the state the checkpoint replaces; they are saved after it, so they belong on top of it.
-      editsReplacedByCheckpoint = getDeferredActions();
+      const checkpointState = reducer(state, action) as object;
+      const { localClientId } = action as ReturnType<typeof bulkApplyOperations>;
+      checkpointApplied = { state: checkpointState, localClientId };
       return keepLocalOnlyState(
-        reducer(state, action) as object,
+        checkpointState,
         state as object,
         unsavedLocalTimeSource(),
       ) as S;
     }
     if (action.type === reapplyEditsReplacedByCheckpoint.type && state !== undefined) {
-      const edits = editsReplacedByCheckpoint;
-      editsReplacedByCheckpoint = [];
-      return edits.reduce<S>((shown, edit) => reducer(shown, edit), state);
+      const applied = checkpointApplied;
+      checkpointApplied = undefined;
+      if (!applied) return state;
+      const { onTop } = action as ReturnType<typeof reapplyEditsReplacedByCheckpoint>;
+      // Their failures were reported when they first went on top.
+      const withOnTop = runWithBulkReplayFailureFilter(
+        () => false,
+        () =>
+          onTop.length > 0
+            ? reducer(
+                applied.state as S,
+                bulkApplyOperations({
+                  operations: onTop,
+                  localClientId: applied.localClientId,
+                }),
+              )
+            : (applied.state as S),
+      );
+      // Edits typed while it applied ran on the replaced state or under the unsent edits; they are later than both.
+      return getDeferredActions().reduce<S>(
+        (shown, edit) => reducer(shown, edit),
+        keepLocalOnlyState(
+          withOnTop as object,
+          state as object,
+          unsavedLocalTimeSource(),
+        ) as S,
+      );
     }
     if (action.type !== serverOrderReplay.type || state === undefined) {
       return reducer(state, action);
