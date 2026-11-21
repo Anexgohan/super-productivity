@@ -270,39 +270,41 @@ export class GlobalThemeService {
       this._initIcons();
       this._initHandlersForInitialBodyClasses();
       this._initThemeWatchers();
+      this._initDarkModePersistence();
+    });
+  }
 
-      // Dark mode persistence.
-      //
-      // localStorage is written first and read at construction so the correct
-      // theme paints immediately, before the synced config has hydrated — but
-      // it is only a cache. The synced global config is the source of truth, so
-      // the preference follows the account rather than the browser profile.
-      effect(() => {
-        const darkMode = this.darkMode();
-        localStorage.setItem(LS.DARK_MODE, darkMode);
-        const misc = this._globalConfigService.misc();
-        // Only write on a real difference — this is also what stops the
-        // adopt/persist pair below from ping-ponging ops between devices.
-        if (misc && misc.darkMode !== darkMode) {
-          this._globalConfigService.updateSection('misc', { darkMode }, true);
+  /** localStorage is only a cache that paints the theme before hydration; the synced global config is the source of truth. */
+  private _initDarkModePersistence(): void {
+    // The value read at construction is not a change, and the config it would be compared with has not hydrated yet.
+    let lastDarkMode = this.darkMode();
+    effect(() => {
+      const darkMode = this.darkMode();
+      localStorage.setItem(LS.DARK_MODE, darkMode);
+      if (darkMode === lastDarkMode) {
+        return;
+      }
+      lastDarkMode = darkMode;
+      const misc = untracked(() => this._globalConfigService.misc());
+      // Only write on a real difference, so adopting a synced value below never echoes it back as a new op.
+      if (misc && misc.darkMode !== darkMode) {
+        this._globalConfigService.updateSection('misc', { darkMode }, true);
+      }
+    });
+
+    // Adopt the synced value: initial hydration, and later changes made on another device.
+    this._globalConfigService.misc$
+      .pipe(
+        map((misc) => misc?.darkMode),
+        filter((darkMode): darkMode is DarkModeCfg => !!darkMode),
+        distinctUntilChanged(),
+        takeUntilDestroyed(this._destroyRef),
+      )
+      .subscribe((darkMode) => {
+        if (this.darkMode() !== darkMode) {
+          this.darkMode.set(darkMode);
         }
       });
-
-      // Adopt the synced value (initial hydration, and later changes made on
-      // another device). Equality-guarded, so this never fights the effect above.
-      this._globalConfigService.misc$
-        .pipe(
-          map((misc) => misc?.darkMode),
-          filter((darkMode): darkMode is DarkModeCfg => !!darkMode),
-          distinctUntilChanged(),
-          takeUntilDestroyed(this._destroyRef),
-        )
-        .subscribe((darkMode) => {
-          if (this.darkMode() !== darkMode) {
-            this.darkMode.set(darkMode);
-          }
-        });
-    });
   }
 
   private _setDarkTheme(isDarkTheme: boolean): void {

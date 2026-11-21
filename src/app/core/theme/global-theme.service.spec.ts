@@ -1,5 +1,27 @@
+import { signal, WritableSignal } from '@angular/core';
+import { TestBed } from '@angular/core/testing';
+import { HttpClient } from '@angular/common/http';
+import { MatIconRegistry } from '@angular/material/icon';
+import { DomSanitizer } from '@angular/platform-browser';
+import { Router } from '@angular/router';
+import { MaterialCssVarsService } from 'angular-material-css-vars';
+import { BehaviorSubject, NEVER } from 'rxjs';
 import { type WorkContextThemeCfg } from '../../features/work-context/work-context.model';
-import { GlobalWallpaperCfg, resolveBackground } from './global-theme.service';
+import { WorkContextService } from '../../features/work-context/work-context.service';
+import { GlobalConfigService } from '../../features/config/global-config.service';
+import { MiscConfig } from '../../features/config/global-config.model';
+import { LayoutService } from '../../core-ui/layout/layout.service';
+import { ChromeExtensionInterfaceService } from '../chrome-extension-interface/chrome-extension-interface.service';
+import { ImexViewService } from '../../imex/imex-meta/imex-view.service';
+import { CapacitorPlatformService } from '../platform/capacitor-platform.service';
+import { InputIntentService } from '../input-intent/input-intent.service';
+import { LS } from '../persistence/storage-keys.const';
+import {
+  DarkModeCfg,
+  GlobalThemeService,
+  GlobalWallpaperCfg,
+  resolveBackground,
+} from './global-theme.service';
 
 describe('resolveBackground()', () => {
   const contextTheme: WorkContextThemeCfg = {
@@ -129,5 +151,89 @@ describe('resolveBackground()', () => {
       );
       expect(negativeBlur.blur).toBe(0);
     });
+  });
+});
+
+describe('GlobalThemeService dark mode persistence', () => {
+  const baseMisc = { isDisableAnimations: false } as MiscConfig;
+  let misc$: BehaviorSubject<MiscConfig>;
+  let misc: WritableSignal<MiscConfig>;
+  let updateSection: jasmine.Spy;
+  let storedDarkMode: string | null;
+
+  const emitMisc = (value: MiscConfig): void => {
+    misc.set(value);
+    misc$.next(value);
+  };
+
+  const setup = (cached: DarkModeCfg, initialMisc: MiscConfig): GlobalThemeService => {
+    localStorage.setItem(LS.DARK_MODE, cached);
+    misc$ = new BehaviorSubject(initialMisc);
+    misc = signal(initialMisc);
+    updateSection = jasmine.createSpy('updateSection');
+    TestBed.configureTestingModule({
+      providers: [
+        GlobalThemeService,
+        { provide: GlobalConfigService, useValue: { misc$, misc, updateSection } },
+        { provide: WorkContextService, useValue: { currentTheme$: NEVER } },
+        { provide: Router, useValue: { events: NEVER, url: '' } },
+        { provide: LayoutService, useValue: {} },
+        { provide: MaterialCssVarsService, useValue: {} },
+        { provide: MatIconRegistry, useValue: {} },
+        { provide: DomSanitizer, useValue: {} },
+        { provide: ChromeExtensionInterfaceService, useValue: {} },
+        { provide: ImexViewService, useValue: {} },
+        { provide: HttpClient, useValue: {} },
+        { provide: CapacitorPlatformService, useValue: {} },
+        { provide: InputIntentService, useValue: {} },
+      ],
+    });
+    const service = TestBed.inject(GlobalThemeService);
+    TestBed.runInInjectionContext(() => service['_initDarkModePersistence']());
+    TestBed.flushEffects();
+    return service;
+  };
+
+  beforeEach(() => {
+    storedDarkMode = localStorage.getItem(LS.DARK_MODE);
+  });
+
+  afterEach(() => {
+    if (storedDarkMode === null) {
+      localStorage.removeItem(LS.DARK_MODE);
+    } else {
+      localStorage.setItem(LS.DARK_MODE, storedDarkMode);
+    }
+  });
+
+  it('saves nothing on a reload, before or after the config hydrates', () => {
+    setup('dark', baseMisc);
+    expect(updateSection).not.toHaveBeenCalled();
+
+    emitMisc({ ...baseMisc, darkMode: 'dark' });
+    TestBed.flushEffects();
+    expect(updateSection).not.toHaveBeenCalled();
+  });
+
+  it('saves a change made by the user once', () => {
+    const service = setup('dark', { ...baseMisc, darkMode: 'dark' });
+
+    service.darkMode.set('light');
+    TestBed.flushEffects();
+    emitMisc({ ...baseMisc, darkMode: 'light' });
+    TestBed.flushEffects();
+
+    expect(updateSection).toHaveBeenCalledOnceWith('misc', { darkMode: 'light' }, true);
+  });
+
+  it('adopts a value synced from another browser without saving it back', () => {
+    const service = setup('dark', { ...baseMisc, darkMode: 'dark' });
+
+    emitMisc({ ...baseMisc, darkMode: 'light' });
+    TestBed.flushEffects();
+
+    expect(service.darkMode()).toBe('light');
+    expect(localStorage.getItem(LS.DARK_MODE)).toBe('light');
+    expect(updateSection).not.toHaveBeenCalled();
   });
 });
