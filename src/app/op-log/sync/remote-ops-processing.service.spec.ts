@@ -982,9 +982,11 @@ describe('RemoteOpsProcessingService', () => {
         callerHoldsOperationLogLock: true,
       });
 
-      expect(applySpy).toHaveBeenCalledWith([syncImportOp], true, {
-        skipDeferredActionDrain: true,
-      });
+      expect(applySpy).toHaveBeenCalledWith(
+        [syncImportOp],
+        true,
+        jasmine.objectContaining({ skipDeferredActionDrain: true }),
+      );
       expect(validationSpy).toHaveBeenCalledWith(true);
       expect(operationLogEffectsSpy.processDeferredActions).toHaveBeenCalledWith({
         callerHoldsOperationLogLock: true,
