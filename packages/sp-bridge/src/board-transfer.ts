@@ -10,7 +10,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import type { AppRulesImportCounts } from './app-rules-protocol';
+import type { AppRulesImportCheck, AppRulesImportCounts } from './app-rules-protocol';
+import type { ImportFile } from './import-check';
 import type { ImportIdentity, StateStore } from './state-store';
 import { isOutcomeUnknown } from './sync-client';
 
@@ -136,14 +137,32 @@ const REFUSALS = {
   ],
   'too-large': [
     413,
-    'The app rules do not have the free memory to check a file this size, so nothing was imported. Smaller boards may be resident; try again later, or import a smaller file.',
+    'Checking this file needs more memory than the import check may use, so nothing was imported.',
   ],
 } as const;
 
-/** Replaces the board with a backup file, as the app's own restore does. `body` is unusable afterwards: its bytes move to the app rules. */
+/** A checked import, its data sealed for the upload; the plain data is gone by then. */
+type SealedCheck =
+  | (Omit<Extract<AppRulesImportCheck, { accepted: true }>, 'bytes'> & {
+      sealed: Uint8Array;
+    })
+  | Extract<AppRulesImportCheck, { accepted: false }>;
+
+/** Each form of the file lives only until the next exists: the check takes the body, and the checked data goes once it is sealed. */
+const checkAndSeal = async (
+  store: StateStore,
+  file: ImportFile,
+): Promise<SealedCheck> => {
+  const check = await store.appRules.checkImport(file);
+  if (!check.accepted) return check;
+  const { bytes, ...rest } = check;
+  return { ...rest, sealed: await store.sealBackupImport(new Uint8Array(bytes)) };
+};
+
+/** Replaces the board with a backup file, as the app's own restore does. Takes the bytes out of `file`. */
 export const importBoard = async (
   store: StateStore,
-  body: Buffer,
+  file: ImportFile,
 ): Promise<ImportResult> => {
   const tag = `sp-bridge: ${store.boardName}: import`;
   if (store.appRules.blocked) {
@@ -163,15 +182,17 @@ export const importBoard = async (
       );
     }
     void store.state;
-    const bodySize = body.byteLength;
-    const bodySha256 = createHash('sha256').update(body).digest('hex');
+    if (!file.body)
+      throw new ImportError(400, 'Send the backup file as the request body.');
+    const bodySize = file.body.byteLength;
+    const bodySha256 = createHash('sha256').update(file.body).digest('hex');
     const unsettled = readUnsettled(store.dataDir, store.boardName);
     const retry = unsettled?.bodySha256 === bodySha256 ? unsettled : null;
 
     result = await store.exclusive(async () => {
-      let check: Awaited<ReturnType<StateStore['appRules']['checkImport']>>;
+      let check: SealedCheck;
       try {
-        check = await store.appRules.checkImport(body);
+        check = await checkAndSeal(store, file);
       } catch (err) {
         throw new ImportError(
           503,
@@ -207,9 +228,10 @@ export const importBoard = async (
       }
 
       const identity = retry ?? store.newImportIdentity();
-      const json = new Uint8Array(check.bytes);
+      const { sealed, schemaVersion } = check;
+      // A retry sends the same sealed bytes: the same op to the server.
       const upload = (): ReturnType<StateStore['uploadBackupImport']> =>
-        store.uploadBackupImport(json, check.schemaVersion, identity);
+        store.uploadBackupImport(sealed, schemaVersion, identity);
       // A refusal only says that attempt stored nothing, so once any attempt of this import got no answer, only an acceptance settles it.
       let unknown = retry !== null;
       const unknownOutcome = (reason: string): ImportError => {

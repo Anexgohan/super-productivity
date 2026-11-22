@@ -1,9 +1,9 @@
 /**
  * Headless stand-ins for the app parts an action build runs without a UI (anex/app-actions).
  *
- * Each method a follow-up rule calls forwards to the app's own selector or action creator, copied from the service it stands in for,
- * so the rules stay the app's and only the plumbing between them and the store is ours. A method no rule here reaches is absent:
- * a call to one fails the build, rather than letting a change upload without its follow-ups.
+ * Each method a follow-up rule calls forwards to the app's own selector or action creator, copied from the service it stands in for.
+ * The rules stay the app's, and only the plumbing between them and the store is ours.
+ * A method no rule here reaches is absent: a call to one fails the build, rather than letting a change upload without its follow-ups.
  */
 import { BehaviorSubject, EMPTY, Observable, of } from 'rxjs';
 import { select } from '@ngrx/store';

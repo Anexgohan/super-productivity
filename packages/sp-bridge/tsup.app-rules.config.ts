@@ -21,7 +21,11 @@ const productionEnvironment: Plugin = {
 };
 
 export default defineConfig({
-  entry: { 'app-rules-worker': 'app-rules/worker.ts' },
+  // The import check runs in a process of its own (src/import-check.ts), so it is a file of its own.
+  entry: {
+    'app-rules-worker': 'app-rules/worker.ts',
+    'import-check': 'app-rules/import-check.ts',
+  },
   format: ['esm'],
   target: 'node22',
   platform: 'node',

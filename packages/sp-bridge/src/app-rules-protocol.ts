@@ -38,8 +38,6 @@ export type AppRulesRequest =
   | { id: number; board: string; kind: 'export' }
   /** The same file, written by the worker to `path`. */
   | { id: number; board: string; kind: 'export-file'; path: string }
-  /** Checks a backup file for an import into `board`, as the app checks one; the bytes are transferred, not copied. */
-  | { id: number; board: string; kind: 'import-check'; bytes: ArrayBuffer }
   /** Builds an app action into the ops a browser would upload for it; the board itself is left as it is. */
   | {
       id: number;
@@ -134,10 +132,15 @@ export type AppRulesImportCheck =
     }
   | {
       accepted: false;
-      /** `too-large`: the app rules lack the free memory to check a file this size. */
+      /** `too-large`: checking the file needs more memory than the import check may use. */
       reason: 'not-json' | 'invalid' | 'still-invalid' | 'too-large';
       errors: string[];
     };
+
+/** The import check process's first line: the check, with the length of the accepted bytes that follow in place of the bytes. */
+export type ImportCheckHeader =
+  | Extract<AppRulesImportCheck, { accepted: false }>
+  | (Omit<Extract<AppRulesImportCheck, { accepted: true }>, 'bytes'> & { bytes: number });
 
 export type AppRulesResponse =
   | {
@@ -155,7 +158,6 @@ export type AppRulesResponse =
   | { id: number; ok: true; kind: 'close' }
   | { id: number; ok: true; kind: 'export'; bytes: ArrayBuffer }
   | { id: number; ok: true; kind: 'export-file'; seq: number; size: number }
-  | { id: number; ok: true; kind: 'import-check'; check: AppRulesImportCheck }
   | { id: number; ok: true; kind: 'act'; result: AppRulesActResult }
   /** `statusCode` and `errors` when the request was refused for a reason the caller can act on, such as an invalid input. */
   | { id: number; ok: false; error: string; statusCode?: number; errors?: string[] };

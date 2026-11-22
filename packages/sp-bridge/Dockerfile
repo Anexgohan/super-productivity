@@ -78,6 +78,8 @@ ENV NODE_ENV=production
 COPY --from=builder /repo /app
 # One self-contained file: the app's own rules, which compute every board the API answers from.
 COPY --from=app-rules /repo/packages/sp-bridge/dist/app-rules-worker.js /app/packages/sp-bridge/dist/app-rules-worker.js
+# The import check, run in a short-lived process of its own for each import.
+COPY --from=app-rules /repo/packages/sp-bridge/dist/import-check.js /app/packages/sp-bridge/dist/import-check.js
 
 EXPOSE 1902
 # The main thread's heap limit, set explicitly. Without it Node sizes the heap from the container's cap (about 259 MB at

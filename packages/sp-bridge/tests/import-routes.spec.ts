@@ -20,10 +20,12 @@ import type { UserBoards } from '../src/user-boards';
 import { IMPORT_BODY_LIMIT_BYTES } from '../src/board-transfer';
 
 const imports = vi.hoisted(() => [] as { board: string; size: number }[]);
+/** For each import answered, whether the request still held the body afterwards. */
+const bodyKeptByRequest: boolean[] = [];
 vi.mock('../src/board-transfer', async (original) => ({
   ...(await original<typeof import('../src/board-transfer')>()),
-  importBoard: async (store: { boardName: string }, body: Buffer) => {
-    imports.push({ board: store.boardName, size: body.length });
+  importBoard: async (store: { boardName: string }, file: { body: Buffer }) => {
+    imports.push({ board: store.boardName, size: file.body.length });
     return { imported: true };
   },
   exportBoard: async (store: { boardName: string }) =>
@@ -103,6 +105,9 @@ beforeAll(async () => {
   });
   const boards = { forUser: async (u: UserRow) => boardOf(u) } as unknown as UserBoards;
   app = createRestServer({} as BridgeCore, {} as StateStore, auth, undefined, boards);
+  app.addHook('onResponse', async (req) => {
+    if (req.url.startsWith('/api/import')) bodyKeptByRequest.push(req.body !== undefined);
+  });
   await app.ready();
 }, 60_000);
 
@@ -175,6 +180,12 @@ describe('POST /api/import', () => {
     expect(
       (await importAs(1, { password: PASSWORD, query: '?boardOf=99' })).statusCode,
     ).toBe(404);
+  });
+
+  it('leaves the body to the import alone, so the request keeps no copy while it runs', async () => {
+    bodyKeptByRequest.splice(0);
+    expect((await importAs(1, { password: PASSWORD })).statusCode).toBe(200);
+    expect(bodyKeptByRequest).toEqual([false]);
   });
 
   it("still refuses an admin every other write to another account's board", async () => {

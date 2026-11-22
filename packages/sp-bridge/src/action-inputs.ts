@@ -1,8 +1,9 @@
 /**
  * The inputs of the app actions the API offers (anex/app-actions): one schema per action, named as the app's action creator.
  *
- * Shared by the routes, which list them, and the app rules, which check them. Ids and fields only, never raw action props,
- * so a caller can't send a malformed entity: each action's builder fills the rest from the board, as the app's own service does.
+ * Shared by the routes, which list them, and the app rules, which check them.
+ * Ids and fields only, never raw action props, so a caller can't send a malformed entity.
+ * Each action's builder fills the rest from the board, as the app's own service does.
  * Each input is a public API shape: add fields, never rename or remove one.
  */
 import { z } from 'zod';

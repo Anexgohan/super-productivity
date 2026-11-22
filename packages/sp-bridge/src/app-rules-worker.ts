@@ -6,8 +6,10 @@
  * fail or run out of memory without taking the bridge down. When they fail, every board answers with an error until the
  * worker is back: there is no second copy to fall back to. The worker restarts by itself, waiting longer each time.
  */
+import { dirname, join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { AppRulesRequest, AppRulesResponse } from './app-rules-protocol';
+import type { ImportCheckOptions } from './import-check';
 
 /** Heap cap for the worker, all boards together. The bridge must outlive it, so this stays well under the container cap. */
 const HEAP_LIMIT_MB = 96;
@@ -53,12 +55,21 @@ export class AppRulesWorker {
   private readonly _listeners = new Set<AppRulesWorkerListener>();
   private _exclusive: Promise<void> = Promise.resolve();
 
+  /** The import check, built beside the worker; it runs in a process of its own, never in the worker. */
+  readonly importCheck: ImportCheckOptions;
+
   constructor(
     private readonly _workerPath: string,
     /** Tests shorten the first restart delay; the bridge keeps the default. */
     private readonly _firstRestartDelayMs = FIRST_RESTART_DELAY_MS,
+    /** Tests lower the import check's limits; the bridge keeps the defaults. */
+    importCheck: Partial<ImportCheckOptions> = {},
   ) {
     this._restartDelayMs = _firstRestartDelayMs;
+    this.importCheck = {
+      path: join(dirname(_workerPath), 'import-check.js'),
+      ...importCheck,
+    };
   }
 
   /** Null while running; the reason while stopped. */

@@ -1,5 +1,4 @@
 /** Export and import checks with the app's own code: its backup steps, validation again after a repair, device-only sync settings stripped. */
-import { getHeapStatistics } from 'node:v8';
 import {
   CROSS_MODEL_VERSION,
   type AppDataComplete,
@@ -67,44 +66,31 @@ export const encodeBackup = (appData: Record<string, unknown>): ArrayBuffer => {
   });
 };
 
-/** Heap a check takes per byte of the file at its peak, with a little room. */
-const CHECK_HEAP_PER_BYTE = 4;
-/** The same when a character past U+00FF makes V8 hold the whole decoded text at two bytes a character. */
-const CHECK_HEAP_PER_BYTE_TWO_BYTE = 6;
-
-/** True when the UTF-8 holds a character past U+00FF: only those start with a byte of 0xC4 or more. */
-const decodesToTwoByte = (bytes: Uint8Array): boolean => {
-  for (let i = 0; i < bytes.length; i++) if (bytes[i] >= 0xc4) return true;
-  return false;
-};
-
 const refused = (
-  reason: 'not-json' | 'invalid' | 'still-invalid' | 'too-large',
+  reason: 'not-json' | 'invalid' | 'still-invalid',
   errors: string[],
-): AppRulesImportCheck => ({ accepted: false, reason, errors });
+): CheckedImport => ({ accepted: false, reason, errors });
 
 const messageOf = (err: unknown): string =>
   (err instanceof Error ? err.message : String(err)).slice(0, 200);
 
-/** Checks a backup file, wrapped or bare, for an import; on success the data comes back as compact JSON bytes, ready to upload. */
-export const checkImport = async (bytes: ArrayBuffer): Promise<AppRulesImportCheck> => {
-  // In use, garbage included, so this errs towards refusing: a check the heap cannot hold would end the worker for every board.
-  const heap = getHeapStatistics();
-  const free = heap.heap_size_limit - heap.used_heap_size;
-  const perByte = decodesToTwoByte(new Uint8Array(bytes))
-    ? CHECK_HEAP_PER_BYTE_TWO_BYTE
-    : CHECK_HEAP_PER_BYTE;
-  const need = perByte * bytes.byteLength;
-  if (need > free) {
-    return refused('too-large', [
-      `needs about ${Math.ceil(need / 1048576)} MB of the app rules' memory, ${Math.floor(free / 1048576)} MB is free`,
-    ]);
-  }
+/** A checked import as the check process has it: the data to upload as compact JSON text, or why it was refused. */
+export type CheckedImport =
+  | (Omit<Extract<AppRulesImportCheck, { accepted: true }>, 'bytes'> & { json: string })
+  | Extract<AppRulesImportCheck, { accepted: false }>;
+
+/** Checks a backup file's text, wrapped or bare, for an import. Runs only in the import check process (import-check.ts). */
+export const checkImport = async (file: {
+  text: string | null;
+}): Promise<CheckedImport> => {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(new TextDecoder().decode(bytes));
+    parsed = JSON.parse(file.text ?? '');
   } catch {
     return refused('not-json', []);
+  } finally {
+    // The text can be twice the file's size; the checks after the parse never need it.
+    file.text = null;
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     return refused('invalid', ['(root): expected an object']);
@@ -135,7 +121,7 @@ export const checkImport = async (bytes: ArrayBuffer): Promise<AppRulesImportChe
 
   return {
     accepted: true,
-    bytes: encodeJson(stripLocalOnlySyncSettingsFromAppData(prepared.data)),
+    json: JSON.stringify(stripLocalOnlySyncSettingsFromAppData(prepared.data)),
     migratedLegacy: prepared.migratedLegacy,
     repaired: prepared.repaired,
     counts: countsOf(prepared.data),
