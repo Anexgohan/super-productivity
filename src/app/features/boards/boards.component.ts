@@ -2,15 +2,21 @@ import {
   ChangeDetectionStrategy,
   Component,
   computed,
+  DestroyRef,
   effect,
   ElementRef,
   inject,
   signal,
+  viewChild,
 } from '@angular/core';
 import { MatTab, MatTabContent, MatTabGroup, MatTabLabel } from '@angular/material/tabs';
 import { Store } from '@ngrx/store';
 import { T } from '../../t.const';
 import { MatIcon } from '@angular/material/icon';
+import { MatIconButton } from '@angular/material/button';
+import { MatFormField, MatPrefix, MatSuffix } from '@angular/material/form-field';
+import { MatInput } from '@angular/material/input';
+import { BoardSearchService } from './board-search.service';
 import { MatMenuModule } from '@angular/material/menu';
 import { nanoid } from 'nanoid';
 import { BoardComponent } from './board/board.component';
@@ -21,7 +27,7 @@ import {
   CdkDropList,
   CdkDropListGroup,
 } from '@angular/cdk/drag-drop';
-import { toSignal } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { selectAllBoards } from './store/boards.selectors';
 import { selectTaskEntities } from '../tasks/store/task.selectors';
 import { selectUnarchivedVisibleProjects } from '../project/store/project.selectors';
@@ -62,6 +68,11 @@ import { SnackService } from '../../core/snack/snack.service';
     CdkDrag,
     TranslatePipe,
     BoardEditComponent,
+    MatFormField,
+    MatInput,
+    MatPrefix,
+    MatSuffix,
+    MatIconButton,
   ],
   templateUrl: './boards.component.html',
   styleUrl: './boards.component.scss',
@@ -77,6 +88,8 @@ export class BoardsComponent {
   private _globalProjectScope = inject(GlobalProjectScopeService);
   private _translateService = inject(TranslateService);
   private _snackService = inject(SnackService);
+  readonly boardSearch = inject(BoardSearchService);
+  private _filterInput = viewChild<ElementRef<HTMLInputElement>>('filterInput');
 
   /** Every board, in stored order — the order `sortBoards` operates on. */
   private _allBoards = toSignal(this.store.select(selectAllBoards));
@@ -112,6 +125,12 @@ export class BoardsComponent {
   });
 
   constructor() {
+    this.boardSearch.focusRequests$
+      .pipe(takeUntilDestroyed())
+      .subscribe(() => this._filterInput()?.nativeElement.focus());
+    // Leaving Boards drops the filter, so coming back shows every card.
+    inject(DestroyRef).onDestroy(() => this.boardSearch.setQuery(''));
+
     effect(() => {
       localStorage.setItem(LS.SELECTED_BOARD, this.selectedTabIndex().toString());
     });

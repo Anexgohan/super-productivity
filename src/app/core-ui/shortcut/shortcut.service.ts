@@ -21,6 +21,7 @@ import { fromEvent, merge, Observable, of } from 'rxjs';
 import { PluginBridgeService } from '../../plugins/plugin-bridge.service';
 import { TaskShortcutService } from '../../features/tasks/task-shortcut.service';
 import { TODAY_TAG } from '../../features/tag/tag.const';
+import { BoardSearchService } from '../../features/boards/board-search.service';
 
 // NOTE: Relying on Angular CDK overlay CSS class names keeps shortcut suppression simple.
 // If CDK changes these class names we only need to adjust the helpers below.
@@ -45,6 +46,7 @@ export class ShortcutService {
   private _pluginBridgeService = inject(PluginBridgeService);
   private _taskShortcutService = inject(TaskShortcutService);
   private _overlayContainer = inject(OverlayContainer);
+  private _boardSearch = inject(BoardSearchService);
 
   isCtrlPressed$: Observable<boolean> = fromEvent(document, 'keydown').pipe(
     switchMap((ev: Event) => {
@@ -154,7 +156,12 @@ export class ShortcutService {
       // } else if (checkKeyCombo(ev, keys.goToFocusMode)) {
       //   this._router.navigate(['/focus-view']);
     } else if (checkKeyCombo(ev, keys.showSearchBar)) {
-      this._router.navigate(['/search']);
+      // On Boards the search filters the cards in place.
+      if (this._router.url.split(/[?#]/)[0] === '/boards') {
+        this._boardSearch.focusRequests$.next();
+      } else {
+        this._router.navigate(['/search']);
+      }
       ev.preventDefault();
     } else if (checkKeyCombo(ev, keys.focusSideNav)) {
       this._focusSideNav();

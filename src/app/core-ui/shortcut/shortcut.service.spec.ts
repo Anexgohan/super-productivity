@@ -14,13 +14,15 @@ import { PluginBridgeService } from '../../plugins/plugin-bridge.service';
 import { TaskShortcutService } from '../../features/tasks/task-shortcut.service';
 import { OverlayContainer } from '@angular/cdk/overlay';
 import { signal } from '@angular/core';
-import { of } from 'rxjs';
+import { of, Subject } from 'rxjs';
+import { BoardSearchService } from '../../features/boards/board-search.service';
 
 describe('ShortcutService', () => {
   let service: ShortcutService;
   let mockTaskShortcutService: any;
   let mockRouter: any;
   let mockConfigService: any;
+  let focusRequests$: Subject<void>;
 
   beforeEach(() => {
     mockTaskShortcutService = {
@@ -39,6 +41,7 @@ describe('ShortcutService', () => {
       cfg: signal({
         keyboard: {
           goToScheduledView: 'Shift+S',
+          showSearchBar: 'Shift+F',
         },
       }),
       appFeatures: signal({
@@ -46,9 +49,12 @@ describe('ShortcutService', () => {
       }),
     };
 
+    focusRequests$ = new Subject<void>();
+
     TestBed.configureTestingModule({
       providers: [
         ShortcutService,
+        { provide: BoardSearchService, useValue: { focusRequests$ } },
         { provide: TaskShortcutService, useValue: mockTaskShortcutService },
         { provide: Router, useValue: mockRouter },
         { provide: GlobalConfigService, useValue: mockConfigService },
@@ -103,6 +109,31 @@ describe('ShortcutService', () => {
 
       expect(mockTaskShortcutService.handleTaskShortcuts).toHaveBeenCalledWith(ev);
       expect(mockRouter.navigate).toHaveBeenCalledWith(['/schedule']);
+    });
+
+    const pressSearch = (): void => {
+      const ev = new KeyboardEvent('keydown', { code: 'KeyF', shiftKey: true });
+      Object.defineProperty(ev, 'target', { value: document.body });
+      service.handleKeyDown(ev);
+    };
+
+    it('focuses the board filter instead of opening search on the Boards page', () => {
+      mockRouter.url = '/boards';
+      const focusSpy = jasmine.createSpy('focus');
+      focusRequests$.subscribe(focusSpy);
+
+      pressSearch();
+
+      expect(focusSpy).toHaveBeenCalledTimes(1);
+      expect(mockRouter.navigate).not.toHaveBeenCalled();
+    });
+
+    it('opens the search page from any other page', () => {
+      mockRouter.url = '/tag/TODAY/tasks';
+
+      pressSearch();
+
+      expect(mockRouter.navigate).toHaveBeenCalledWith(['/search']);
     });
   });
 });

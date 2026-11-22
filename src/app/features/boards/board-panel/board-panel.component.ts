@@ -32,6 +32,7 @@ import { AddTaskInlineComponent } from '../../planner/add-task-inline/add-task-i
 import { T } from '../../../t.const';
 import { TaskCopy } from '../../tasks/task.model';
 import { GlobalProjectScopeService } from '../../project/global-project-scope.service';
+import { BoardSearchService } from '../board-search.service';
 import { TaskService } from '../../tasks/task.service';
 import { BoardsActions } from '../store/boards.actions';
 import { moveItemInArray } from '../../../util/move-item-in-array';
@@ -147,6 +148,10 @@ export class BoardPanelComponent {
   });
 
   private _globalProjectScope = inject(GlobalProjectScopeService);
+  private _boardSearch = inject(BoardSearchService);
+
+  // A column saves its order from the cards it shows, so dragging among hidden cards would reorder them.
+  isFiltering = this._boardSearch.isFiltering;
 
   /**
    * The panel's own project scope narrows the global one; it never widens it.
@@ -211,10 +216,12 @@ export class BoardPanelComponent {
     // assignment, and the header's project scope.
     const boardProjectIds = this.boardProjectIds();
     const boardScope = isAllProjects(boardProjectIds) ? null : boardProjectIds;
+    const matchingIds = this._boardSearch.matchingIds();
     const allFilteredTasks = this.allTasks().filter(
       (task) =>
         (!globalScope || task.projectId === globalScope) &&
         (!boardScope || boardScope.includes(task.projectId)) &&
+        (!matchingIds || matchingIds.has(task.id)) &&
         doesTaskMatchPanel(task, panelCfg, isInBacklog),
     );
 

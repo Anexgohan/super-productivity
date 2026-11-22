@@ -21,6 +21,7 @@ import { WorkContextService } from '../../work-context/work-context.service';
 import { ProjectService } from '../../project/project.service';
 import { signal } from '@angular/core';
 import { BoardsActions } from '../store/boards.actions';
+import { BoardSearchService } from '../board-search.service';
 
 describe('BoardPanelComponent - Backlog Feature', () => {
   let component: BoardPanelComponent;
@@ -494,6 +495,36 @@ describe('BoardPanelComponent - Tag match mode, sort, inline-create computeds', 
       expect(ids).toContain('p1-task');
       expect(ids).toContain('p2-task');
       expect(ids).not.toContain('other-task');
+    });
+  });
+
+  describe('board filter', () => {
+    it('shows only the cards whose title matches, and turns dragging off', async () => {
+      await setup([
+        mkTask({ id: 'groceries', title: 'Buy groceries' }),
+        mkTask({ id: 'plumber', title: 'Call the plumber' }),
+      ]);
+      fixture.componentRef.setInput('panelCfg', {
+        id: 'p',
+        title: 'P',
+        taskIds: ['plumber', 'groceries'],
+        includedTagIds: [],
+        excludedTagIds: [],
+        taskDoneState: 1,
+        scheduledState: 1,
+        isParentTasksOnly: false,
+        projectIds: [''],
+      } as BoardPanelCfg);
+      fixture.detectChanges();
+      const boardSearch = TestBed.inject(BoardSearchService);
+
+      await boardSearch.setQuery('plumber');
+      expect(component.tasks().map((t) => t.id)).toEqual(['plumber']);
+      expect(component.isFiltering()).toBeTrue();
+
+      await boardSearch.setQuery('');
+      expect(component.tasks().map((t) => t.id)).toEqual(['plumber', 'groceries']);
+      expect(component.isFiltering()).toBeFalse();
     });
   });
 
