@@ -49,6 +49,12 @@ import {
 import { SCHEDULE_BUILDERS } from './schedule-builders';
 import { TASK_BUILDERS } from './task-builders';
 import { SECTION_BUILDERS } from './section-builders';
+import { MOVE_BUILDERS } from './move-builders';
+import { PROJECT_BUILDERS } from './project-builders';
+import { ITEM_BUILDERS } from './item-builders';
+import { MENU_TREE_BUILDERS } from './menu-tree-builders';
+import { COUNTER_BUILDERS } from './counter-builders';
+import { SHORT_SYNTAX_BUILDERS } from './short-syntax-builders';
 
 const hasOwn = (o: object, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(o, key);
@@ -180,6 +186,12 @@ const BUILDERS: { [N in ActionName]: Builder<N> } = {
   ...SCHEDULE_BUILDERS,
   ...TASK_BUILDERS,
   ...SECTION_BUILDERS,
+  ...MOVE_BUILDERS,
+  ...PROJECT_BUILDERS,
+  ...ITEM_BUILDERS,
+  ...MENU_TREE_BUILDERS,
+  ...COUNTER_BUILDERS,
+  ...SHORT_SYNTAX_BUILDERS,
 };
 
 export const buildAction = <N extends ActionName>(

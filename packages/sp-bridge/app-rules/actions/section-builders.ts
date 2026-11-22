@@ -11,6 +11,7 @@ import {
   deleteSection,
   removeTaskFromSection,
   updateSection,
+  updateSectionOrder,
 } from '../../../../src/app/features/section/store/section.actions';
 import {
   selectAllSections,
@@ -30,6 +31,7 @@ import {
   ActionInputError,
   built,
   existingTask,
+  isPermutation,
   type BuildContext,
   type Builder,
 } from './build-context';
@@ -39,7 +41,8 @@ type SectionAction =
   | 'updateSection'
   | 'deleteSection'
   | 'addTaskToSection'
-  | 'removeTaskFromSection';
+  | 'removeTaskFromSection'
+  | 'updateSectionOrder';
 
 const projectsOf = (ctx: BuildContext): ProjectState =>
   ctx.select(selectProjectFeatureState as never) as ProjectState;
@@ -164,5 +167,23 @@ export const SECTION_BUILDERS: { [N in SectionAction]: Builder<N> } = {
         workContextAfterTaskId: anchor,
       }),
     );
+  },
+
+  // As the work view's section drag: every section of the context, so a stale caller can't drop one.
+  updateSectionOrder: (ctx, input) => {
+    const contextId = 'projectId' in input ? input.projectId : TODAY_TAG.id;
+    if ('projectId' in input && !projectsOf(ctx).entities[contextId]) {
+      throw new ActionInputError(`Project not found: ${contextId}`, 404);
+    }
+    const current = (ctx.select(selectAllSections as never) as Section[])
+      .filter((s) => s.contextId === contextId)
+      .map((s) => s.id);
+    if (!isPermutation(current, input.sectionIds)) {
+      throw new ActionInputError(
+        'sectionIds must list every section of that project or of Today once.',
+        409,
+      );
+    }
+    return built(updateSectionOrder({ contextId, ids: input.sectionIds }));
   },
 };

@@ -1,6 +1,6 @@
 /**
- * Every action the app saves has a decision for the API (anex/app-actions): offered as an app action, written by a legacy route, planned
- * for a later stage, or not offered, with the reason. An action the app adds fails here until someone decides.
+ * Every action the app saves has a decision for the API (anex/app-actions): offered, written by a legacy route, or not offered, with the reason.
+ * An action the app adds fails here until someone decides.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -9,8 +9,8 @@ import { ActionType } from '../../../src/app/op-log/core/action-types.enum';
 import { REMIND_OPTIONS, type ActionName } from '../src/action-inputs';
 import { TaskReminderOptionId } from '../../../src/app/features/tasks/task.model';
 
-/** The app action each API action builds first that is saved. */
-const OFFERED: Record<ActionName, ActionType> = {
+/** The app actions each API action builds that are saved, the one it builds first leading. */
+const OFFERED: Record<ActionName, ActionType | ActionType[]> = {
   deleteTasks: ActionType.TASK_SHARED_DELETE_MULTIPLE,
   deleteTask: ActionType.TASK_SHARED_DELETE,
   updateTask: ActionType.TASK_SHARED_UPDATE,
@@ -35,48 +35,38 @@ const OFFERED: Record<ActionName, ActionType> = {
   removeTaskFromSection: ActionType.SECTION_REMOVE_TASK,
   archiveProject: ActionType.PROJECT_ARCHIVE,
   unarchiveProject: ActionType.PROJECT_UNARCHIVE,
-};
-
-/** Per-action routes for the card's Stage 4, by step. */
-const LATER: Record<string, (keyof typeof ActionType)[]> = {
-  'one move route with a target position': [
-    'TASK_SHARED_MOVE_IN_TODAY',
-    'PROJECT_MOVE_TASK_IN_BACKLOG',
-    'TASK_MOVE_SUB',
-    'PROJECT_MOVE_TO_BACKLOG',
-    'PROJECT_MOVE_FROM_BACKLOG',
-    'PROJECT_MOVE_ALL_BACKLOG',
+  moveTask: [
+    ActionType.WORK_CONTEXT_MOVE,
+    ActionType.PROJECT_MOVE_TASK_IN_BACKLOG,
+    ActionType.PROJECT_MOVE_TO_BACKLOG,
+    ActionType.PROJECT_MOVE_FROM_BACKLOG,
+    ActionType.TASK_MOVE_SUB,
   ],
-  'project, tag and section order and state': [
-    'PROJECT_COMPLETE',
-    'PROJECT_REOPEN',
-    'PROJECT_TOGGLE_HIDE',
-    'PROJECT_UPDATE_ORDER',
-    'TAG_UPDATE_ORDER',
-    'SECTION_UPDATE_ORDER',
+  moveAllBacklogToRegular: ActionType.PROJECT_MOVE_ALL_BACKLOG,
+  completeProject: ActionType.PROJECT_COMPLETE,
+  reopenProject: ActionType.PROJECT_REOPEN,
+  setProjectHidden: ActionType.PROJECT_TOGGLE_HIDE,
+  setProjectBacklog: ActionType.PROJECT_UPDATE,
+  updateSectionOrder: ActionType.SECTION_UPDATE_ORDER,
+  updateAttachment: ActionType.ATTACHMENT_UPDATE,
+  deleteAttachment: ActionType.ATTACHMENT_DELETE,
+  skipRepeatInstance: ActionType.REPEAT_CFG_DELETE_INSTANCE,
+  updateNoteOrder: ActionType.NOTE_UPDATE_ORDER,
+  moveNote: ActionType.NOTE_MOVE_TO_PROJECT,
+  updateProjectTree: ActionType.MENU_TREE_UPDATE_PROJECT,
+  updateTagTree: ActionType.MENU_TREE_UPDATE_TAG,
+  updateFolder: ActionType.MENU_TREE_UPDATE_FOLDER,
+  deleteFolder: ActionType.MENU_TREE_DELETE_FOLDER,
+  restoreDeletedTask: ActionType.TASK_SHARED_RESTORE_DELETED,
+  addCounter: ActionType.COUNTER_ADD,
+  updateCounter: ActionType.COUNTER_UPDATE,
+  deleteCounter: ActionType.COUNTER_DELETE,
+  setCounterForDay: ActionType.COUNTER_SET_FOR_DATE,
+  setMetric: ActionType.METRIC_UPSERT,
+  addTaskFromText: [
+    ActionType.TASK_SHARED_ADD,
+    ActionType.TASK_SHARED_APPLY_SHORT_SYNTAX,
   ],
-  'attachments, repeat instances and notes': [
-    'ATTACHMENT_UPDATE',
-    'ATTACHMENT_DELETE',
-    'REPEAT_CFG_DELETE_INSTANCE',
-    'NOTE_UPDATE_ORDER',
-    'NOTE_MOVE_TO_PROJECT',
-  ],
-  'sidebar folders': [
-    'MENU_TREE_UPDATE_PROJECT',
-    'MENU_TREE_UPDATE_TAG',
-    'MENU_TREE_UPDATE_FOLDER',
-    'MENU_TREE_DELETE_FOLDER',
-  ],
-  'restore a deleted task': ['TASK_SHARED_RESTORE_DELETED'],
-  'counters and metrics': [
-    'COUNTER_ADD',
-    'COUNTER_UPDATE',
-    'COUNTER_DELETE',
-    'COUNTER_SET_FOR_DATE',
-    'METRIC_UPSERT',
-  ],
-  "short syntax through the app's own parser": ['TASK_SHARED_APPLY_SHORT_SYNTAX'],
 };
 
 /** Actions the API never offers, by reason. */
@@ -94,7 +84,15 @@ const NOT_OFFERED: Record<string, (keyof typeof ActionType)[]> = {
       'TASK_ADD_TAGS_SHORT_SYNTAX',
     ],
   'an internal notice, not a change': ['ARCHIVE_REMOTE_DATA_APPLIED'],
-  'never dispatched by the app': ['BOARDS_UPDATE_PANEL_CFG', 'LOAD_BACKUP_DATA'],
+  'never dispatched by the app': [
+    'BOARDS_UPDATE_PANEL_CFG',
+    'LOAD_BACKUP_DATA',
+    'TASK_SHARED_MOVE_IN_TODAY',
+  ],
+  'never dispatched by the app; the sidebar order is the menu tree': [
+    'PROJECT_UPDATE_ORDER',
+    'TAG_UPDATE_ORDER',
+  ],
   "a browser's own storage migration or recovery": [
     'MIGRATION_GENESIS_IMPORT',
     'RECOVERY_DATA_IMPORT',
@@ -148,7 +146,6 @@ const NOT_OFFERED: Record<string, (keyof typeof ActionType)[]> = {
     'COUNTER_UPDATE_ALL',
     'COUNTER_UPDATE_ORDER',
     'COUNTER_SET_TODAY',
-    'WORK_CONTEXT_MOVE',
   ],
   'screen or device state': [
     'TASK_UPDATE_UI',
@@ -195,8 +192,8 @@ const legacyWrites = (): Set<string> => {
 describe('app action decisions', () => {
   it('gives every action the app saves exactly one decision', () => {
     const legacy = legacyWrites();
-    const offered = new Set<string>(Object.values(OFFERED));
-    const listed = [...Object.values(LATER), ...Object.values(NOT_OFFERED)]
+    const offered = new Set<string>(Object.values(OFFERED).flat());
+    const listed = Object.values(NOT_OFFERED)
       .flat()
       .map((key) => ActionType[key]);
 

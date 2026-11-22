@@ -27,6 +27,57 @@ const remind = z.enum(REMIND_OPTIONS);
 const duration = z.number().int().min(1);
 const anchor = z.union([id, z.null()]);
 
+/** A node of a sidebar tree as the app stores it: a folder (`f`) or an item, a project (`p`) or a tag (`t`). */
+export type MenuTreeInputNode =
+  | { k: 'p' | 't'; id: string }
+  | {
+      k: 'f';
+      id: string;
+      name: string;
+      isExpanded?: boolean;
+      children: MenuTreeInputNode[];
+    };
+
+const folderName = z.string().trim().min(1).max(200);
+
+const menuTreeOf = (item: 'p' | 't'): z.ZodType<MenuTreeInputNode[]> => {
+  const node: z.ZodType<MenuTreeInputNode> = z.lazy(() =>
+    z.union([
+      z.strictObject({ k: z.literal(item), id }),
+      z.strictObject({
+        k: z.literal('f'),
+        id,
+        name: folderName,
+        isExpanded: z.boolean().optional(),
+        children: z.array(node),
+      }),
+    ]),
+  );
+  return z.array(node);
+};
+
+const menuTreeName = z.enum(['project', 'tag']);
+
+const counterType = z.enum(['StopWatch', 'ClickCounter', 'RepeatedCountdownReminder']);
+
+/** A counter's settings, as its settings dialog edits them. */
+const counterSettings = z.strictObject({
+  title: z.string().min(1).optional(),
+  type: counterType.optional(),
+  icon: z.string().min(1).nullable().optional(),
+  isEnabled: z.boolean().optional(),
+  isHideButton: z.boolean().optional(),
+  isTrackStreaks: z.boolean().optional(),
+  streakMinValue: z.number().int().min(1).optional(),
+  streakMode: z.enum(['specific-days', 'weekly-frequency']).optional(),
+  // Weekday 0 (Sunday) to 6, as the app keys them.
+  streakWeekDays: z
+    .partialRecord(z.enum(['0', '1', '2', '3', '4', '5', '6']), z.boolean())
+    .optional(),
+  streakWeeklyFrequency: z.number().int().min(1).max(7).optional(),
+  countdownDuration: duration.optional(),
+});
+
 const taskChanges = z
   .strictObject({
     title: z.string().min(1).optional(),
@@ -116,6 +167,94 @@ export const ACTION_INPUTS = {
   }),
   archiveProject: z.strictObject({ projectId: id }),
   unarchiveProject: z.strictObject({ projectId: id }),
+  // The task goes after `afterTaskId` in the list, the top if null; a backlog list is the project's backlog.
+  moveTask: z.strictObject({
+    taskId: id,
+    list: z.union([
+      z.strictObject({ today: z.literal(true) }),
+      z.strictObject({ tagId: id }),
+      z.strictObject({ projectId: id, backlog: z.boolean().optional() }),
+      z.strictObject({ parentId: id }),
+    ]),
+    afterTaskId: anchor,
+  }),
+  moveAllBacklogToRegular: z.strictObject({ projectId: id }),
+  // A project with unfinished tasks needs `unfinished`: move them to the Inbox, or mark them done.
+  completeProject: z.strictObject({
+    projectId: id,
+    unfinished: z.enum(['moveToInbox', 'markDone']).optional(),
+  }),
+  reopenProject: z.strictObject({ projectId: id }),
+  setProjectHidden: z.strictObject({ projectId: id, hidden: z.boolean() }),
+  // Turning the backlog off moves its tasks into the regular list, as in the app.
+  setProjectBacklog: z.strictObject({ projectId: id, enabled: z.boolean() }),
+  // Every section of the project or of Today, in the new order.
+  updateSectionOrder: z.union([
+    z.strictObject({ projectId: id, sectionIds: ids }),
+    z.strictObject({ today: z.literal(true), sectionIds: ids }),
+  ]),
+  updateAttachment: z.strictObject({
+    taskId: id,
+    attachmentId: id,
+    changes: z
+      .strictObject({
+        title: z.string().optional(),
+        path: z.string().min(1).optional(),
+      })
+      .refine((c) => Object.keys(c).length > 0, 'expected at least one change'),
+  }),
+  deleteAttachment: z.strictObject({ taskId: id, attachmentId: id }),
+  // Skips one future day of a repeating task.
+  skipRepeatInstance: z.strictObject({ repeatCfgId: id, day: dayStr }),
+  // Every note of the project or of Today, in the new order.
+  updateNoteOrder: z.union([
+    z.strictObject({ projectId: id, noteIds: ids }),
+    z.strictObject({ today: z.literal(true), noteIds: ids }),
+  ]),
+  moveNote: z.strictObject({ noteId: id, projectId: id }),
+  // The whole sidebar tree: folders hold projects (or tags) and folders; a new folder needs a new unique id.
+  updateProjectTree: z.strictObject({ tree: menuTreeOf('p') }),
+  updateTagTree: z.strictObject({ tree: menuTreeOf('t') }),
+  updateFolder: z.strictObject({ tree: menuTreeName, folderId: id, name: folderName }),
+  // The folder's projects or tags leave the tree with it; the sidebar then lists them at the top level.
+  deleteFolder: z.strictObject({ tree: menuTreeName, folderId: id }),
+  // A task deleted on any device in the last 7 days, back where it was, with its subtasks.
+  restoreDeletedTask: z.strictObject({ taskId: id }),
+  addCounter: counterSettings.extend({
+    title: z.string().min(1),
+    type: counterType,
+  }),
+  updateCounter: z.strictObject({
+    counterId: id,
+    changes: counterSettings.refine(
+      (c) => Object.keys(c).length > 0,
+      'expected at least one change',
+    ),
+  }),
+  deleteCounter: z.strictObject({ counterId: id }),
+  // A stopwatch counts ms; the other counters count clicks.
+  setCounterForDay: z.strictObject({
+    counterId: id,
+    day: dayStr,
+    value: z.number().int().min(0),
+  }),
+  // The day's evaluation, as its sheet writes it: only the fields given change.
+  setMetric: z.strictObject({
+    day: dayStr,
+    changes: z
+      .strictObject({
+        notes: z.string().nullable().optional(),
+        impactOfWork: z.number().int().min(1).max(4).nullable().optional(),
+        energyCheckin: z.number().int().min(1).max(3).nullable().optional(),
+        remindTomorrow: z.boolean().optional(),
+      })
+      .refine((c) => Object.keys(c).length > 0, 'expected at least one change'),
+  }),
+  // A new task from one line in the user's short syntax, such as "Write report #work +Acme @tomorrow 1h".
+  addTaskFromText: z.strictObject({
+    text: z.string().trim().min(1),
+    projectId: id.optional(),
+  }),
 } as const;
 
 export type ActionName = keyof typeof ACTION_INPUTS;

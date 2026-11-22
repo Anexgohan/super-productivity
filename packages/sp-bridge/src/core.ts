@@ -644,6 +644,7 @@ export class BridgeCore {
    *  - { today: true } → the TODAY list
    * `taskIds` must be a permutation of that list's current members (reorder
    * only - no adds or drops).
+   * Each task out of place becomes the app's own move of that task after the one before it, as a drag in a browser does.
    */
   async reorderTasks(
     container: { projectId?: string; parentId?: string; today?: boolean },
@@ -660,38 +661,37 @@ export class BridgeCore {
     }
 
     let current: string[];
-    let op;
+    let list: Record<string, unknown>;
     if (container.projectId) {
       const project = this._bucket('PROJECT')[container.projectId];
       if (!project) throw err(`Unknown projectId: ${container.projectId}`, 400);
       current = Array.isArray(project.taskIds) ? (project.taskIds as string[]) : [];
-      this._assertPermutation(current, taskIds);
-      op = await this.ops.updateProject(
-        container.projectId,
-        { taskIds },
-        this.store.nextWriteClock(),
-      );
+      list = { projectId: container.projectId };
     } else if (container.parentId) {
       const parent = this.getTask(container.parentId);
       if (!parent) throw err(`Unknown parentId: ${container.parentId}`, 400);
       current = Array.isArray(parent.subTaskIds) ? (parent.subTaskIds as string[]) : [];
-      this._assertPermutation(current, taskIds);
-      op = await this.ops.updateTask(
-        container.parentId,
-        { subTaskIds: taskIds },
-        this.store.nextWriteClock(),
-      );
+      list = { parentId: container.parentId };
     } else {
       const today = this._bucket('TAG')[TODAY_TAG_ID];
       current = today && Array.isArray(today.taskIds) ? (today.taskIds as string[]) : [];
-      this._assertPermutation(current, taskIds);
-      op = await this.ops.updateTag(
-        TODAY_TAG_ID,
-        { taskIds },
-        this.store.nextWriteClock(),
-      );
+      list = { today: true };
     }
-    await this.store.submitOps([op]);
+    this._assertPermutation(current, taskIds);
+
+    // With the tasks before position i already in place, the task due at i moves there unless it is there.
+    const order = [...current];
+    const steps: ActStep[] = [];
+    taskIds.forEach((taskId, i) => {
+      if (order[i] === taskId) return;
+      order.splice(order.indexOf(taskId), 1);
+      order.splice(i, 0, taskId);
+      steps.push({
+        name: 'moveTask',
+        input: { taskId, list, afterTaskId: i === 0 ? null : taskIds[i - 1] },
+      });
+    });
+    await this._actSteps(steps, {});
     return { reordered: taskIds };
   }
 
@@ -788,107 +788,21 @@ export class BridgeCore {
   }
 
   /**
-   * Creates a task from a short-syntax string, e.g.
-   *   "Ship the release #urgent +Pankha @tomorrow 1h30m"
-   *   #tag  → add tag (created if it doesn't exist)
-   *   +proj → move to project by title (must already exist)
-   *   @date → dueDay: YYYY-MM-DD | today | tomorrow
-   *   1h/30m/1h30m (bare token) → time estimate
+   * Creates a task from short syntax, e.g. "Ship the release #urgent +Pankha @tomorrow 1h30m", through the app's parser and settings.
+   * New #tags are created, as a browser's confirm answered yes does.
+   * The task goes to `defaultProjectId`, else the default project, else the Inbox.
    */
   async createTaskFromShortSyntax(
     text: string,
     defaultProjectId?: string,
   ): Promise<Record<string, unknown>> {
-    if (!text || typeof text !== 'string' || !text.trim()) {
-      throw err('text (non-empty string) is required', 400);
-    }
-    const parsed = this._parseShortSyntax(text);
-    if (!parsed.title) throw err('short-syntax has no title text', 400);
-
-    // Resolve project by title (case-insensitive); unknown project is an error.
-    let projectId = defaultProjectId;
-    if (parsed.projectName) {
-      const match = this.listProjects().find(
-        (p) => String(p.title ?? '').toLowerCase() === parsed.projectName!.toLowerCase(),
-      );
-      if (!match) throw err(`Unknown project: +${parsed.projectName}`, 400);
-      projectId = match.id as string;
-    }
-
-    // Resolve tags by title; create any that don't exist yet.
-    const tagIds: string[] = [];
-    for (const name of parsed.tagNames) {
-      const existing = this.listTags().find(
-        (t) => String(t.title ?? '').toLowerCase() === name.toLowerCase(),
-      );
-      if (existing) {
-        tagIds.push(existing.id as string);
-      } else {
-        const created = await this.createTag({ title: name });
-        tagIds.push(created.id as string);
-      }
-    }
-
-    return this.createTask({
-      title: parsed.title,
-      ...(projectId ? { projectId } : {}),
-      ...(tagIds.length ? { tagIds } : {}),
-      ...(parsed.dueDay ? { dueDay: parsed.dueDay } : {}),
-      ...(parsed.timeEstimate ? { timeEstimate: parsed.timeEstimate } : {}),
+    const { refs } = await this.act('addTaskFromText', {
+      text,
+      ...(defaultProjectId ? { projectId: defaultProjectId } : {}),
     });
-  }
-
-  private _parseShortSyntax(text: string): {
-    title: string;
-    tagNames: string[];
-    projectName: string | null;
-    dueDay?: string;
-    timeEstimate?: number;
-  } {
-    const tagNames: string[] = [];
-    let projectName: string | null = null;
-    let dueDay: string | undefined;
-    let timeEstimate: number | undefined;
-    const titleParts: string[] = [];
-
-    for (const tok of text.trim().split(/\s+/)) {
-      if (tok.length > 1 && tok.startsWith('#')) {
-        tagNames.push(tok.slice(1));
-      } else if (tok.length > 1 && tok.startsWith('+')) {
-        projectName = tok.slice(1);
-      } else if (tok.length > 1 && tok.startsWith('@')) {
-        const d = this._parseDueToken(tok.slice(1));
-        if (d) dueDay = d;
-        else titleParts.push(tok);
-      } else {
-        const ms = this._parseDurationToken(tok);
-        if (ms !== null) timeEstimate = ms;
-        else titleParts.push(tok);
-      }
-    }
-    return { title: titleParts.join(' '), tagNames, projectName, dueDay, timeEstimate };
-  }
-
-  private _parseDueToken(v: string): string | undefined {
-    const lower = v.toLowerCase();
-    if (lower === 'today') return localToday();
-    if (lower === 'tomorrow') {
-      const d = new Date();
-      d.setDate(d.getDate() + 1);
-      return d.toLocaleDateString('en-CA');
-    }
-    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
-    return undefined;
-  }
-
-  private _parseDurationToken(v: string): number | null {
-    const m = /^(?:(\d+)h)?(?:(\d+)m(?:in)?)?$/.exec(v);
-    if (!m || (!m[1] && !m[2])) return null;
-    const hours = m[1] ? parseInt(m[1], 10) : 0;
-    const mins = m[2] ? parseInt(m[2], 10) : 0;
-    const hourMs = hours * 3600000;
-    const minMs = mins * 60000;
-    return hourMs + minMs;
+    const task = this.getTask(refs.taskId);
+    if (!task) throw err('The new task was not read back', 500);
+    return task;
   }
 
   // ── Tags ────────────────────────────────────────────────────────────────────
@@ -953,20 +867,27 @@ export class BridgeCore {
     if (!existing) throw err('Project not found', 404);
     const bad = Object.keys(changes).filter((k) => !ALLOWED_PROJECT_FIELDS.has(k));
     if (bad.length) throw err(`Field(s) not writable: ${bad.join(', ')}`, 400);
-    const { isArchived, ...rest } = changes;
+    const { isArchived, isEnableBacklog, ...rest } = changes;
     if (isArchived !== undefined && typeof isArchived !== 'boolean') {
       throw err('isArchived must be true or false', 400);
     }
-    // Archiving is the app's own action; the other fields are still a plain update.
-    const steps: ActStep[] =
-      isArchived === undefined
-        ? []
-        : [
-            {
-              name: isArchived ? 'archiveProject' : 'unarchiveProject',
-              input: { projectId: id },
-            },
-          ];
+    if (isEnableBacklog !== undefined && typeof isEnableBacklog !== 'boolean') {
+      throw err('isEnableBacklog must be true or false', 400);
+    }
+    // Archiving and the backlog switch are the app's own actions; the other fields are still a plain update.
+    const steps: ActStep[] = [];
+    if (isArchived !== undefined) {
+      steps.push({
+        name: isArchived ? 'archiveProject' : 'unarchiveProject',
+        input: { projectId: id },
+      });
+    }
+    if (isEnableBacklog !== undefined) {
+      steps.push({
+        name: 'setProjectBacklog',
+        input: { projectId: id, enabled: isEnableBacklog },
+      });
+    }
     const plainOps: OpThunk[] =
       Object.keys(rest).length > 0
         ? [() => this.ops.updateProject(id, rest, this.store.nextWriteClock())]
@@ -1305,13 +1226,27 @@ export class BridgeCore {
     ) {
       throw err(`Unknown projectId: ${String(changes.projectId)}`, 400);
     }
+    // A move to another project is the app's own action; the other fields are still a plain update.
+    const { projectId, ...rest } = changes;
+    const isMove =
+      projectId !== undefined && projectId !== null && projectId !== existing.projectId;
+    const steps: ActStep[] = isMove
+      ? [{ name: 'moveNote', input: { noteId: id, projectId } }]
+      : [];
+    const plain = isMove ? rest : changes;
     // The client stamps this on every edit; without it the note sorts as untouched.
-    const op = await this.ops.updateNote(
-      id,
-      { ...changes, modified: Date.now() },
-      this.store.nextWriteClock(),
-    );
-    await this.store.submitOps([op]);
+    const plainOps: OpThunk[] =
+      Object.keys(plain).length > 0
+        ? [
+            () =>
+              this.ops.updateNote(
+                id,
+                { ...plain, modified: Date.now() },
+                this.store.nextWriteClock(),
+              ),
+          ]
+        : [];
+    await this._actSteps(steps, {}, plainOps);
     return this._bucket('NOTE')[id] ?? existing;
   }
 

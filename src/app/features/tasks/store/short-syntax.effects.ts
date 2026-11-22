@@ -15,14 +15,12 @@ import {
   withLatestFrom,
 } from 'rxjs/operators';
 import { GlobalConfigService } from '../../config/global-config.service';
-import { unique } from '../../../util/unique';
 import { TaskService } from '../task.service';
 import { EMPTY, from, of } from 'rxjs';
 import { ProjectService } from '../../project/project.service';
 import { TagService } from '../../tag/tag.service';
 import { shortSyntax } from '../short-syntax';
-import { remindOptionToMilliseconds } from '../util/remind-option-to-milliseconds';
-import { getDeadlineAutoPlanFields } from '../util/get-deadline-auto-plan-fields';
+import { newTagsActions, shortSyntaxActions } from './short-syntax-actions';
 import { environment } from '../../../../environments/environment';
 import { SnackService } from '../../../core/snack/snack.service';
 import { T } from '../../../t.const';
@@ -30,7 +28,6 @@ import { MatDialog } from '@angular/material/dialog';
 import { DialogConfirmComponent } from '../../../ui/dialog-confirm/dialog-confirm.component';
 import { LayoutService } from '../../../core-ui/layout/layout.service';
 import { DEFAULT_GLOBAL_CONFIG } from '../../config/default-global-config.const';
-import { getDbDateStr } from '../../../util/get-db-date-str';
 import { WorkContextService } from '../../work-context/work-context.service';
 import { DateService } from '../../../core/date/date.service';
 
@@ -136,126 +133,29 @@ export class ShortSyntaxEffects {
                 projectId: r?.projectId,
               });
             }
-            const isAddDefaultProjectIfNecessary: boolean =
-              !!defaultProjectId &&
-              !task.projectId &&
-              !task.parentId &&
-              task.projectId !== defaultProjectId &&
-              originalAction.type === TaskSharedActions.addTask.type;
-
-            if (!r) {
-              if (isAddDefaultProjectIfNecessary) {
-                return [
-                  TaskSharedActions.moveToOtherProject({
-                    task: { ...task, subTasks: [] },
-                    targetProjectId: defaultProjectId as string,
-                  }),
-                ];
-              }
-              return [] as Action[];
+            const { actions, isProjectRefusedForRepeat, isTimeSpentReplaced } =
+              shortSyntaxActions({
+                task,
+                parse: r,
+                isAddTask: originalAction.type === TaskSharedActions.addTask.type,
+                defaultProjectId,
+                defaultTaskRemindOption:
+                  this._globalConfigService.cfg()?.reminder.defaultTaskRemindOption ??
+                  DEFAULT_GLOBAL_CONFIG.reminder.defaultTaskRemindOption!,
+                dateService: this._dateService,
+              });
+            if (isProjectRefusedForRepeat) {
+              this._snackService.open({
+                ico: 'warning',
+                msg: T.F.TASK.S.CANNOT_ASSIGN_PROJECT_FOR_REPEATABLE_TASK,
+              });
             }
-
-            const actions: Action[] = [];
-            const { taskChanges, attachments } = r;
-
-            // Build scheduling info from parsed short syntax
-            let schedulingInfo:
-              | {
-                  day?: string;
-                  isAddToTop?: boolean;
-                  dueWithTime?: number;
-                  remindAt?: number | null;
-                  isMoveToBacklog?: boolean;
-                }
-              | undefined;
-
-            if (taskChanges.dueWithTime && !taskChanges.remindAt) {
-              const { dueWithTime } = taskChanges;
-              if (taskChanges.hasPlannedTime === false) {
-                // Plan for day only (no specific time)
-                const plannedDay = new Date(dueWithTime);
-                schedulingInfo = {
-                  day: getDbDateStr(plannedDay),
-                  isAddToTop: false,
-                };
-              } else {
-                // Schedule with specific time
-                schedulingInfo = {
-                  dueWithTime,
-                  remindAt: remindOptionToMilliseconds(
-                    dueWithTime,
-                    this._globalConfigService.cfg()?.reminder.defaultTaskRemindOption ??
-                      DEFAULT_GLOBAL_CONFIG.reminder.defaultTaskRemindOption!,
-                  ),
-                  isMoveToBacklog: false,
-                };
-              }
-            }
-
-            // Determine target project
-            let targetProjectId: string | undefined;
-            if (r.projectId && r.projectId !== task.projectId && !task.parentId) {
-              if (task.repeatCfgId) {
-                this._snackService.open({
-                  ico: 'warning',
-                  msg: T.F.TASK.S.CANNOT_ASSIGN_PROJECT_FOR_REPEATABLE_TASK,
-                });
-              } else {
-                targetProjectId = r.projectId;
-              }
-            } else if (isAddDefaultProjectIfNecessary) {
-              targetProjectId = defaultProjectId as string;
-            }
-
-            // Build task changes including tagIds update
-            const tagIds: string[] = [...(r.taskChanges.tagIds || task.tagIds)];
-            const isEqualTags =
-              tagIds.length === task.tagIds.length &&
-              tagIds.every((id, i) => id === task.tagIds[i]);
-            const finalTaskChanges = { ...taskChanges };
-            if (tagIds && tagIds.length && !isEqualTags) {
-              finalTaskChanges.tagIds = unique(tagIds);
-            }
-
-            // Add parsed URL attachments to task (merge with existing)
-            if (attachments.length > 0) {
-              finalTaskChanges.attachments = [
-                ...(task.attachments || []),
-                ...attachments,
-              ];
-            }
-
-            // Use compound action for atomic state update
-            const autoPlanFields = getDeadlineAutoPlanFields(
-              this._dateService,
-              finalTaskChanges.deadlineDay,
-              finalTaskChanges.deadlineWithTime,
-            );
-
-            delete finalTaskChanges.hasDeadlineTime;
 
             // The parser writes an absolute per-day total. Persist any earlier
             // additive timer batch first so replay observes the same order as
             // the live store: delta, then absolute replacement.
-            if (finalTaskChanges.timeSpentOnDay) {
+            if (isTimeSpentReplaced) {
               this._taskTimeSyncService.flushOne(task.id);
-            }
-
-            actions.push(
-              TaskSharedActions.applyShortSyntax({
-                task,
-                taskChanges: finalTaskChanges,
-                targetProjectId,
-                schedulingInfo,
-                ...autoPlanFields,
-              }),
-            );
-
-            // New tag creation requires user confirmation, so remains separate
-            if (r.newTagTitles.length) {
-              actions.push(
-                addNewTagsFromShortSyntax({ taskId: task.id, newTitles: r.newTagTitles }),
-              );
             }
 
             return actions;
@@ -297,27 +197,11 @@ export class ShortSyntaxEffects {
             // NOTE: it is important to get a fresh task here, since otherwise we might run into #3728
             withLatestFrom(this._taskService.getByIdOnce$(taskId)),
             mergeMap(([isConfirm, task]) => {
-              const actions: Action[] = [];
-              if (isConfirm) {
-                const newTagIds = [...task.tagIds];
-                uniqueNewTitles.forEach((newTagTitle) => {
-                  const { action, id } = this._tagService.getAddTagActionAndId({
-                    title: newTagTitle,
-                  });
-                  actions.push(action);
-                  newTagIds.push(id);
-                });
-                actions.push(
-                  TaskSharedActions.updateTask({
-                    task: {
-                      id: task.id,
-                      changes: {
-                        tagIds: unique(newTagIds),
-                      },
-                    },
-                  }),
-                );
-              }
+              const actions: Action[] = isConfirm
+                ? newTagsActions(task, uniqueNewTitles, (tag) =>
+                    this._tagService.getAddTagActionAndId(tag),
+                  )
+                : [];
               return of(...actions);
             }),
           );

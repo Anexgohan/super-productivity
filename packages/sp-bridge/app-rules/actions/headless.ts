@@ -174,6 +174,13 @@ export class HeadlessWorkContextService {
   }
 }
 
+/** HydrationStateService: a build applies only the caller's own actions, never remote ops. */
+export class HeadlessHydrationState {
+  isApplyingRemoteOps(): boolean {
+    return false;
+  }
+}
+
 /** MatDialog: no one is there to answer, so every dialog is cancelled, as closing it would. */
 export class HeadlessMatDialog {
   open(): { afterClosed: () => Observable<undefined> } {

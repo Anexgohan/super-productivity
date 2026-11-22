@@ -80,6 +80,9 @@ import { logicalDayChange } from './logical-day';
 import { nextCheckpointHold } from '../src/checkpoints';
 import { encodeBackup, validationErrorsOf } from './board-transfer';
 import { act } from './actions/act';
+import { keptDeletedTasks, recordDeletedTasks, type DeletedTask } from './deleted-tasks';
+import { TaskSharedActions } from '../../../src/app/root-store/meta/task-shared.actions';
+import type { RestoreDeletedTaskPayload } from '../../../src/app/root-store/meta/undo-task-delete.meta-reducer';
 import type { ActionWhen, ActStep } from '../src/action-inputs';
 
 /** Bump when the cache shape changes; an older cache is then discarded and the app rules rebuild from seq 0. */
@@ -99,6 +102,8 @@ export interface AppRulesCache {
   mergedClock: Record<string, number>;
   /** Why no checkpoint may be written as of `seq`; saved with it, so no restart resumes past an archive failure without its hold. */
   checkpointHeldBack?: string | null;
+  /** The tasks deleted in the last 7 days, by task id, as the app's undo would put them back. */
+  deletedTasks?: Record<string, DeletedTask>;
 }
 
 /** The one stand-in for IndexedDB. Clones on the way in and out, as a database round trip would. */
@@ -146,6 +151,7 @@ export class AppRules {
   private _mergedClock: Record<string, number> = {};
   private _checkpointHeldBack: string | null = null;
   private _filteredEntityIds = new Set<string>();
+  private _deletedTasks: Record<string, DeletedTask> = {};
   private readonly _archive = new MemoryArchiveStore();
 
   private readonly _archiveHandler: ArchiveOperationHandler;
@@ -224,11 +230,13 @@ export class AppRules {
     this._sawArchiveOp = cache.sawArchiveOp;
     this._mergedClock = cache.mergedClock ?? {};
     this._filteredEntityIds = new Set(cache.filteredEntityIds ?? []);
+    this._deletedTasks = cache.deletedTasks ?? {};
     this._checkpointHeldBack =
       cache.checkpointHeldBack === undefined ? heldBack : cache.checkpointHeldBack;
   }
 
   toCache(): AppRulesCache {
+    this._deletedTasks = keptDeletedTasks(this._deletedTasks, Date.now());
     return {
       version: APP_RULES_CACHE_VERSION,
       seq: this._seq,
@@ -240,6 +248,7 @@ export class AppRules {
       mergedClock: this._mergedClock,
       filteredEntityIds: [...this._filteredEntityIds],
       checkpointHeldBack: this._checkpointHeldBack,
+      deletedTasks: this._deletedTasks,
     };
   }
 
@@ -313,34 +322,38 @@ export class AppRules {
 
     if (validOps.length > 0) {
       const failures: BulkReplayReducerFailure[] = [];
-      const replay = await replayOperationBatch({
-        ops: this._withOwnSyncSettings(validOps),
-        dispatcher: {
-          dispatch: (action: Action) =>
-            runWithBulkReplayFailureCollector(
-              (failure) => failures.push(failure),
-              () => {
-                this._state = this._reducer(this._state, action);
-              },
-            ),
-        },
-        createBulkApplyAction: (operations: Operation[]) =>
-          bulkApplyOperations({ operations, localClientId: this._clientId }),
-        getReducerFailures: () => failures,
-        remoteApplyWindow: {
-          startApplyingRemoteOps: () => undefined,
-          endApplyingRemoteOps: () => undefined,
-          startPostSyncCooldown: () => undefined,
-        },
-        deferredLocalActions: { processDeferredActions: () => undefined },
-        archiveSideEffects: this._archiveHandler,
-        operationToAction: convertOpToAction,
-        isArchiveAffectingAction,
-        onRemoteArchiveDataApplied: () => {
-          this._sawArchiveOp = true;
-          this._state = this._reducer(this._state, remoteArchiveDataApplied());
-        },
+      let replay!: Awaited<ReturnType<typeof replayOperationBatch>>;
+      const deleted = await recordDeletedTasks(async () => {
+        replay = await replayOperationBatch({
+          ops: this._withOwnSyncSettings(validOps),
+          dispatcher: {
+            dispatch: (action: Action) =>
+              runWithBulkReplayFailureCollector(
+                (failure) => failures.push(failure),
+                () => {
+                  this._state = this._reducer(this._state, action);
+                },
+              ),
+          },
+          createBulkApplyAction: (operations: Operation[]) =>
+            bulkApplyOperations({ operations, localClientId: this._clientId }),
+          getReducerFailures: () => failures,
+          remoteApplyWindow: {
+            startApplyingRemoteOps: () => undefined,
+            endApplyingRemoteOps: () => undefined,
+            startPostSyncCooldown: () => undefined,
+          },
+          deferredLocalActions: { processDeferredActions: () => undefined },
+          archiveSideEffects: this._archiveHandler,
+          operationToAction: convertOpToAction,
+          isArchiveAffectingAction,
+          onRemoteArchiveDataApplied: () => {
+            this._sawArchiveOp = true;
+            this._state = this._reducer(this._state, remoteArchiveDataApplied());
+          },
+        });
       });
+      this._keepDeletedTasks(deleted, validOps);
 
       result.applied = replay.appliedOps.length;
       result.reducerFailures = (replay.reducerFailures ?? []).map((f) => ({
@@ -387,6 +400,31 @@ export class AppRules {
     );
     result.checkpointHeldBack = this._checkpointHeldBack;
     return result;
+  }
+
+  /** Keeps what each delete just applied would put back, with its op's time; a later delete of the same task replaces it. */
+  private _keepDeletedTasks(
+    deleted: RestoreDeletedTaskPayload[],
+    ops: Operation[],
+  ): void {
+    if (deleted.length === 0) return;
+    const deletedAt = new Map(
+      ops
+        .filter(
+          (op) => op.actionType === TaskSharedActions.deleteTask.type && op.entityId,
+        )
+        .map((op) => [op.entityId as string, op.timestamp]),
+    );
+    for (const payload of deleted) {
+      const id = payload.task.id;
+      this._deletedTasks[id] = { deletedAt: deletedAt.get(id) ?? Date.now(), payload };
+    }
+  }
+
+  /** What the app's undo would put back for a task deleted in the last 7 days. */
+  deletedTask(id: string): RestoreDeletedTaskPayload | undefined {
+    const entry = keptDeletedTasks(this._deletedTasks, Date.now())[id];
+    return entry?.payload;
   }
 
   /**
@@ -446,6 +484,7 @@ export class AppRules {
         state: this._state,
         reducer: this._reducer,
         archive: this._archive,
+        deletedTask: (id) => this.deletedTask(id),
       },
       steps,
       when,

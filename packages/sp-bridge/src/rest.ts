@@ -69,7 +69,7 @@ const DOCS = {
     'POST /api/notes':
       'create a note; body: {content (required), projectId?, isPinnedToToday?, backgroundColor?, imgUrl?}',
     'PATCH /api/notes/:id':
-      'update a note; writable: content, isPinnedToToday, backgroundColor, imgUrl, isLock, projectId',
+      "update a note; writable: content, isPinnedToToday, backgroundColor, imgUrl, isLock, projectId; a new projectId runs the app's moveNote",
     'DELETE /api/notes/:id': 'delete a note',
     'POST /api/tasks/:id/repeat-cfg':
       'make an existing task recurring (the only way a repeat config is created, as in the UI); body: {repeatCycle: DAILY|WEEKLY|MONTHLY|YEARLY, repeatEvery?, startDate?, startTime?, weekday booleans, defaultEstimate?, notes?, tagIds?, isPaused?, repeatFromCompletionDate?, waitForCompletion?}; 409 if it already repeats',
@@ -88,7 +88,7 @@ const DOCS = {
     'POST /api/import':
       "admin only: replace a board with a backup file sent as the body (up to 30 MB), as the app's own restore does; wipes the board's server history and drops changes browsers have not synced. With a key, send your password as X-Current-Password. ?boardOf=<accountId> for another account's board. The board is saved first: the reply names the file, and ?saved=<name> with no body imports it back",
     'POST /api/tasks/from-syntax':
-      'create a task from short syntax; body: {text: "Title #tag +Project @tomorrow 1h30m", projectId?}. #tag adds/creates a tag, +Project moves by title, @date sets dueDay (YYYY-MM-DD|today|tomorrow), a bare 1h/30m/1h30m token sets the estimate',
+      'create a task from short syntax through the app\'s own parser and your short-syntax settings, as the app\'s addTaskFromText action; body: {text: "Title #tag +Project @tomorrow 1h30m", projectId?}. New #tags are created; with no projectId the task goes to your default project, else the Inbox',
     'POST /api/tasks/:id/links':
       'attach a link to a task; body: {url (required), title?}',
     'POST /api/tasks/:id/issue-link':
@@ -102,7 +102,7 @@ const DOCS = {
     'POST /api/tasks/:id/reparent':
       'reparent a task; body: {parentId: string | null} (null promotes it to a top-level task)',
     'POST /api/tasks/reorder':
-      'reorder a task list (permutation only); body: {taskIds: string[]} + exactly one of {projectId} | {parentId} | {today: true}',
+      "reorder a task list (permutation only), as the app's per-task moves (moveTask); body: {taskIds: string[]} + exactly one of {projectId} | {parentId} | {today: true}",
     'POST /api/today/plan':
       "add tasks to the TODAY list, as the app's planTasksForToday action; body: {taskIds: string[], today?: YYYY-MM-DD}",
     'POST /api/today/remove':
@@ -130,7 +130,7 @@ const DOCS = {
     'POST /api/projects':
       'create project; body: {title (required), color?, isEnableBacklog?}',
     'PATCH /api/projects/:id':
-      "update project; body: partial of {title, isEnableBacklog, isArchived}; isArchived runs the app's archiveProject or unarchiveProject (unarchiving reopens a completed project; the Inbox 400)",
+      "update project; body: partial of {title, isEnableBacklog, isArchived}; isArchived runs the app's archiveProject or unarchiveProject (unarchiving reopens a completed project; the Inbox 400); isEnableBacklog runs setProjectBacklog, and turning it off moves the backlog into the regular list",
     'GET /api/boards':
       'list boards with their panels; an account that has never edited a board gets the app defaults rather than [], so this matches what its owner sees in a browser. [] means every board was deleted',
     'GET /api/boards/:id': 'single board by id',

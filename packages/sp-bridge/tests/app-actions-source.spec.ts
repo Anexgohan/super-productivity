@@ -67,6 +67,7 @@ const boardOf = (overrides: Partial<ActBoard> = {}): ActBoard => ({
   clientId: 'B_bridge',
   ...seeded(),
   archive: noArchive,
+  deletedTask: () => undefined,
   ...overrides,
 });
 

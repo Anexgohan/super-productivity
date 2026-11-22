@@ -6,6 +6,8 @@
  */
 import { combineReducers, compose, type ActionReducer } from '@ngrx/store';
 import { META_REDUCERS } from '../../../src/app/root-store/meta/meta-reducer-registry';
+import { undoTaskDeleteMetaReducer } from '../../../src/app/root-store/meta/undo-task-delete.meta-reducer';
+import { deletedTaskRecorder } from './deleted-tasks';
 import {
   LAYOUT_FEATURE_NAME,
   layoutReducer,
@@ -109,5 +111,13 @@ export const buildRootReducer = (): ActionReducer<RootState> => {
   const combined = combineReducers(
     reducers as unknown as Parameters<typeof combineReducers>[0],
   );
-  return compose(...META_REDUCERS)(combined) as ActionReducer<RootState>;
+  // The API's recorder of deleted tasks sits just inside the app's undo capture (deleted-tasks.ts).
+  const undoAt = META_REDUCERS.indexOf(undoTaskDeleteMetaReducer);
+  if (undoAt < 0) throw new Error('The app no longer captures deleted tasks for undo');
+  const metaReducers = [
+    ...META_REDUCERS.slice(0, undoAt + 1),
+    deletedTaskRecorder,
+    ...META_REDUCERS.slice(undoAt + 1),
+  ];
+  return compose(...metaReducers)(combined) as ActionReducer<RootState>;
 };

@@ -16,6 +16,8 @@ import {
   TimeTrackingActions,
 } from '../../../../src/app/features/time-tracking/store/time-tracking.actions';
 import { unique } from '../../../../src/app/util/unique';
+import { selectProjectFeatureState } from '../../../../src/app/features/project/store/project.selectors';
+import type { ProjectState } from '../../../../src/app/features/project/project.model';
 import {
   ActionInputError,
   built,
@@ -29,7 +31,8 @@ type TaskAction =
   | 'restoreTask'
   | 'logTime'
   | 'removeTimeSpent'
-  | 'updateManyTasks';
+  | 'updateManyTasks'
+  | 'restoreDeletedTask';
 
 const withSubTasks = (ctx: BuildContext, id: string): TaskWithSubTasks =>
   ctx.select(selectTaskByIdWithSubTaskData as never, { id }) as TaskWithSubTasks;
@@ -105,5 +108,35 @@ export const TASK_BUILDERS: { [N in TaskAction]: Builder<N> } = {
         TaskSharedActions.updateTask({ task: { id: taskId, changes } }),
       ),
     );
+  },
+
+  // As the delete snack's undo, from what the app captured when the delete was applied here.
+  restoreDeletedTask: (ctx, { taskId }) => {
+    const payload = ctx.deletedTask(taskId);
+    if (!payload) {
+      throw new ActionInputError(
+        `No task ${taskId} was deleted in the last 7 days.`,
+        404,
+      );
+    }
+    if (ctx.select(selectTaskById as never, { id: taskId })) {
+      throw new ActionInputError(`Task ${taskId} exists again.`, 409);
+    }
+    const parentId = payload.parentContext?.parentTaskId;
+    if (parentId && !ctx.select(selectTaskById as never, { id: parentId })) {
+      throw new ActionInputError(
+        'The task’s parent is gone, so it would have none.',
+        409,
+      );
+    }
+    const projectId = payload.projectContext?.projectId;
+    const projects = ctx.select(selectProjectFeatureState as never) as ProjectState;
+    if (projectId && !projects.entities[projectId]) {
+      throw new ActionInputError(
+        'The task’s project is gone, so it would have none.',
+        409,
+      );
+    }
+    return built(TaskSharedActions.restoreDeletedTask(payload));
   },
 };

@@ -24,6 +24,10 @@ import { TaskInternalEffects } from '../../../../src/app/features/tasks/store/ta
 import { TaskRepeatCfgEffects } from '../../../../src/app/features/task-repeat-cfg/store/task-repeat-cfg.effects';
 import { GlobalConfigEffects } from '../../../../src/app/features/config/store/global-config.effects';
 import { TaskReminderEffects } from '../../../../src/app/features/tasks/store/task-reminder.effects';
+import { HydrationStateService } from '../../../../src/app/op-log/apply/hydration-state.service';
+import { ProjectEffects } from '../../../../src/app/features/project/store/project.effects';
+import { TaskRelatedModelEffects } from '../../../../src/app/features/tasks/store/task-related-model.effects';
+import type { RestoreDeletedTaskPayload } from '../../../../src/app/root-store/meta/undo-task-delete.meta-reducer';
 import { LanguageService } from '../../../../src/app/core/language/language.service';
 import { SnackService } from '../../../../src/app/core/snack/snack.service';
 import { UserProfileService } from '../../../../src/app/features/user-profile/user-profile.service';
@@ -66,6 +70,7 @@ import { buildAction } from './registry';
 import { ActionInputError, type BuildContext } from './build-context';
 import { realNow, withCallerClock } from './clock';
 import {
+  HeadlessHydrationState,
   HeadlessMatDialog,
   HeadlessStore,
   HeadlessTaskService,
@@ -88,6 +93,10 @@ export const FOLLOW_UP_EFFECTS: FollowUpEffects[] = [
   { effects: GlobalConfigEffects, only: ['setStartOfNextDayDiffOnChange'] },
   // A task marked done drops its reminders, which only the device that marks it does.
   { effects: TaskReminderEffects, only: ['unscheduleDoneTask$'] },
+  // A move into the done or undone part of a list sets the task's done state; the auto-add to Today follows tracking, which runs only on a device.
+  { effects: TaskRelatedModelEffects, only: ['moveTaskToUnDone$', 'moveTaskToDone$'] },
+  // Turning a project's backlog off moves its backlog into the regular list.
+  { effects: ProjectEffects, only: ['moveAllProjectToTodayListWhenBacklogIsDisabled$'] },
 ];
 
 /** Rounds of the event loop a build waits for follow-ups that read the archive or another promise; none of them waits on a timer. */
@@ -191,6 +200,7 @@ export interface ActBoard {
   state: RootState;
   reducer: (state: RootState, action: Action) => RootState;
   archive: ArchiveReader;
+  deletedTask(id: string): RestoreDeletedTaskPayload | undefined;
 }
 
 interface ParsedStep {
@@ -268,6 +278,7 @@ const build = async (
       { provide: LOCAL_ACTIONS, useValue: actions$ as Observable<Action> },
       { provide: ArchiveStoreService, useValue: readOnlyArchive(board.archive) },
       { provide: MatDialog, useClass: HeadlessMatDialog },
+      { provide: HydrationStateService, useClass: HeadlessHydrationState },
       { provide: WorkContextService, useClass: HeadlessWorkContextService },
       {
         provide: GlobalTrackingIntervalService,
@@ -307,6 +318,7 @@ const build = async (
       (selector as (s: RootState, p: unknown) => never)(state, props),
     archive: injector.get(TaskArchiveService),
     dateService,
+    deletedTask: (id) => board.deletedTask(id),
   };
 
   const subscriptions = FOLLOW_UP_EFFECTS.flatMap(({ effects, only }) =>
