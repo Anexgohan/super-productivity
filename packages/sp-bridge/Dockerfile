@@ -82,7 +82,6 @@ COPY --from=app-rules /repo/packages/sp-bridge/dist/app-rules-worker.js /app/pac
 COPY --from=app-rules /repo/packages/sp-bridge/dist/import-check.js /app/packages/sp-bridge/dist/import-check.js
 
 EXPOSE 1902
-# The main thread's heap limit, set explicitly. Without it Node sizes the heap from the container's cap (about 259 MB at
-# 256m) and lets garbage pile up until near it; with the app-rules worker (its own 96 MB limit) and the encryption key
-# beside it, a rebuild from scratch then reached the cap. Live data on the main thread is far below this.
-CMD ["node", "--max-old-space-size=96", "packages/sp-bridge/dist/index.js", "serve"]
+# The main thread's heap limit, set explicitly from the container's cap (`dist/heap-limits.js` prints it; the worker's is set the same way).
+# Without it Node sizes the heap from the whole container cap and lets garbage pile up until near it, with the worker and the encryption key beside it.
+CMD ["sh", "-c", "exec node --max-old-space-size=$(node packages/sp-bridge/dist/heap-limits.js) packages/sp-bridge/dist/index.js serve"]

@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['src/index.ts'],
+  entry: { index: 'src/index.ts', 'heap-limits': 'src/heap-limits-cli.ts' },
   format: ['esm'],
   // Matches the runtime image (node:24-alpine). Must be >= node22 or esbuild
   // does not know `node:sqlite` is a builtin and rewrites it to a bare

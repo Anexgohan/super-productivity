@@ -61,7 +61,7 @@ services:
       start_period: 30s
     security_opt:
       - no-new-privileges:true
-    mem_limit: ${SP_BRIDGE_MEM_LIMIT:-256m}
+    mem_limit: ${SP_BRIDGE_MEM_LIMIT:-1g}
 
   # External postgres? Comment out this service and the two depends_on above, create an empty database, then set POSTGRES_HOST/PORT in .env. Schema is created on first start.
   sp_postgres:

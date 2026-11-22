@@ -9,10 +9,9 @@
 import { dirname, join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { AppRulesRequest, AppRulesResponse } from './app-rules-protocol';
+import { heapLimits } from './heap-limits';
 import type { ImportCheckOptions } from './import-check';
 
-/** Heap cap for the worker, all boards together. The bridge must outlive it, so this stays well under the container cap. */
-const HEAP_LIMIT_MB = 96;
 /** A request the worker has not answered by then means it is stuck; it is restarted rather than allowed to hold memory. */
 const REQUEST_TIMEOUT_MS = 120_000;
 const FIRST_RESTART_DELAY_MS = 5_000;
@@ -138,7 +137,8 @@ export class AppRulesWorker {
     let worker: Worker;
     try {
       worker = new Worker(this._workerPath, {
-        resourceLimits: { maxOldGenerationSizeMb: HEAP_LIMIT_MB },
+        // The worker's heap cap, all boards together, sized from the container's cap so that the bridge outlives it.
+        resourceLimits: { maxOldGenerationSizeMb: heapLimits().workerMb },
       });
     } catch (err) {
       this._error = err instanceof Error ? err.message : String(err);

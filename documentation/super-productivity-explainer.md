@@ -682,19 +682,19 @@ Set `TZ` to the timezone the browsers run in: the bridge works out the day from 
 
 | Variable                                                             | Default                                    |
 | -------------------------------------------------------------------- | ------------------------------------------ |
-| `SUPERSYNC_MEM_LIMIT` / `SP_BRIDGE_MEM_LIMIT` / `POSTGRES_MEM_LIMIT` | `512m` / `256m` / `256m`                   |
+| `SUPERSYNC_MEM_LIMIT` / `SP_BRIDGE_MEM_LIMIT` / `POSTGRES_MEM_LIMIT` | `512m` / `1g` / `256m`                     |
 | `PG_SHARED_BUFFERS`                                                  | `64MB`, keep well under the postgres cap   |
 | `PG_MAX_CONNECTIONS`                                                 | `20`, ample for this stack's three clients |
 | `SYNC_STORAGE_LIMIT`                                                 | unset: each account's stored quota, 100 MB |
 
-`SP_BRIDGE_MEM_LIMIT` is the one that grows with real use: the bridge holds every resident account's board in memory, so it scales with the number of cards and accounts.
+`SP_BRIDGE_MEM_LIMIT` is the one that grows with real use: the bridge holds every resident account's board in memory, so it scales with the number of cards and accounts. It also sizes the bridge's two heaps (below), so raise this one value rather than anything else.
 
 **The API's cards come from the app's own rules.** The server is the one source of truth for every board: the bridge computes each board with the app's own code (its reducers, its archive handling and its filter for changes made outdated by a full import, built from the app's source into `app-rules-worker.js`), so the API answers exactly what every browser shows. Before this the bridge had its own rewritten copy of those rules, which had drifted: done cards kept their In Progress tag, `doneOn` stayed empty, tag task lists fell out of step and archived cards stayed live.
 
 - **One worker for every board:** a single worker thread holds the app's rules for every resident account's board, each with its own cache file (`app-rules-cache.json` for the container account, `app-rules-cache.user-<id>.json` for the others). Boards sync through it one at a time, so only one downloaded page is held at once. An idle account's board is dropped from memory and reopens from its cache.
 - **When it cannot answer:** if the worker fails, runs out of its memory or hangs, every board answers `503` with the reason until it is back; it restarts by itself, waiting longer after each failure. A board that reaches a change from a newer app version stops there, as a browser does, and answers `503` until the bridge is updated. There is no second copy to fall back to.
 - **Where to watch it:** `GET /api/status` has an `appRules` block: the board's state, how far it has synced, dropped and failed changes, the worker's memory and any error.
-- **What it costs:** on the production copy (about 1,100 changes, 126 cards) the worker's heap held at about 35 to 45 MB. The worker's heap is capped at 96 MB and the bridge's main thread at 96 MB (`--max-old-space-size` in the bridge's Dockerfile), so both clean up long before the container's cap; without the main thread's limit, Node sized it from the whole container and a rebuild from scratch reached the cap.
+- **What it costs:** on the production copy (about 1,100 changes, 126 cards) the worker's heap held at about 35 to 45 MB. Both heaps are sized from `SP_BRIDGE_MEM_LIMIT`: the worker's at 50% of it and the bridge's main thread at 20% (`--max-old-space-size`, set by the bridge's start command), neither below 96 MB. At the `1g` default that is 512 MB and 204 MB, and both clean up long before the container's cap; without the main thread's limit, Node sized it from the whole container and a rebuild from scratch reached the cap.
 
 **The bridge writes checkpoints.** A checkpoint is a board's full state as the app's own rules computed it, as of the newest change: "this is the full, correct state as of change N". The sync format stores it as a REPAIR, its existing change type for a full state that other devices' later edits are replayed on top of. Browsers that are behind start from it instead of replaying the whole history, and history before it becomes something the server can delete, which is what stops sync storage from growing (see "What the server keeps" below).
 
