@@ -20,6 +20,7 @@ import type {
   AppRulesRow,
 } from './app-rules-protocol';
 import type { AppRulesWorker } from './app-rules-worker';
+import { runImportCheck, type ImportFile } from './import-check';
 import { normalizeFullState, type EntityMap } from './state-view';
 
 export class AppRulesUnavailableError extends Error {
@@ -244,20 +245,9 @@ export class AppRulesBoard {
     return res.result;
   }
 
-  /** Checks a backup file for an import into this board. `body` may be unusable afterwards: its bytes move to the worker. */
-  async checkImport(body: Uint8Array): Promise<AppRulesImportCheck> {
-    const bytes =
-      body.byteOffset === 0 &&
-      body.byteLength === body.buffer.byteLength &&
-      body.buffer instanceof ArrayBuffer
-        ? body.buffer
-        : new Uint8Array(body).buffer;
-    const res = await this._worker.request(
-      { kind: 'import-check', board: this._opts.board, bytes },
-      [bytes],
-    );
-    if (res.kind !== 'import-check') throw new Error('unexpected import-check reply');
-    return res.check;
+  /** Checks a backup file for an import into this board, in a process of its own (import-check.ts). Takes the bytes out of `file`. */
+  checkImport(file: ImportFile): Promise<AppRulesImportCheck> {
+    return runImportCheck(file, this._worker.importCheck);
   }
 
   /** Drops the board from the worker's memory; its cache file stays for the next start. */

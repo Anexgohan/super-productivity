@@ -363,13 +363,17 @@ export class StateStore {
     return { opId: uuidv7(), vectorClock: this.nextWriteClock() };
   }
 
-  /** Uploads `json` as this board's full state the way the app's restore does: encrypted, by snapshot, with a clean slate. */
+  /** A checked import's data, encrypted with the board's password as every full state travels. */
+  sealBackupImport(json: Uint8Array): Promise<Uint8Array> {
+    return encryptBytes(json, this.cfg.encryptionPassword);
+  }
+
+  /** Uploads a sealed import as this board's full state the way the app's restore does: by snapshot, with a clean slate. */
   async uploadBackupImport(
-    json: Uint8Array,
+    state: Uint8Array,
     schemaVersion: number,
     identity: ImportIdentity,
   ): ReturnType<SyncClient['uploadSnapshotBytes']> {
-    const state = await encryptBytes(json, this.cfg.encryptionPassword);
     return this._client.uploadSnapshotBytes(
       {
         clientId: this._clientId,

@@ -10,7 +10,6 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { parentPort } from 'node:worker_threads';
 import type { AppRulesRequest, AppRulesResponse } from '../src/app-rules-protocol';
 import { AppRules, APP_RULES_CACHE_VERSION, type AppRulesCache } from './app-rules';
-import { checkImport } from './board-transfer';
 
 if (!parentPort) throw new Error('app rules: must run as a worker thread');
 const port = parentPort;
@@ -56,14 +55,6 @@ const handle = async (req: AppRulesRequest): Promise<AppRulesResponse> => {
   if (req.kind === 'close') {
     boards.delete(req.board);
     return { id: req.id, ok: true, kind: 'close' };
-  }
-  if (req.kind === 'import-check') {
-    return {
-      id: req.id,
-      ok: true,
-      kind: 'import-check',
-      check: await checkImport(req.bytes),
-    };
   }
   const board = boards.get(req.board);
   if (!board) throw new Error(`board ${req.board} is not open`);
@@ -112,7 +103,6 @@ const handle = async (req: AppRulesRequest): Promise<AppRulesResponse> => {
 const transferOf = (res: AppRulesResponse): ArrayBuffer[] => {
   if (!res.ok) return [];
   if (res.kind === 'export') return [res.bytes];
-  if (res.kind === 'import-check' && res.check.accepted) return [res.check.bytes];
   return [];
 };
 

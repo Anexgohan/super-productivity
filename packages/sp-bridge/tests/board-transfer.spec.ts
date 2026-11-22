@@ -25,6 +25,7 @@ import {
   uuidv7,
 } from '../src/op-factory';
 import { AppRulesWorker } from '../src/app-rules-worker';
+import { runImportCheck } from '../src/import-check';
 import { BridgeCore } from '../src/core';
 import type { AppRulesImportCheck } from '../src/app-rules-protocol';
 import type { BridgeConfig } from '../src/config';
@@ -266,15 +267,11 @@ const withoutDeviceSync = (data: AppData): AppData => {
 
 const bytesOf = (value: unknown): Buffer => Buffer.from(JSON.stringify(value));
 
-const check = async (value: unknown): Promise<AppRulesImportCheck> => {
-  const buf = typeof value === 'string' ? Buffer.from(value) : bytesOf(value);
-  const bytes = new Uint8Array(buf).buffer;
-  const res = await worker.request({ kind: 'import-check', board: 'check', bytes }, [
-    bytes,
-  ]);
-  if (res.kind !== 'import-check') throw new Error('unexpected reply');
-  return res.check;
-};
+const check = (value: unknown): Promise<AppRulesImportCheck> =>
+  runImportCheck(
+    { body: typeof value === 'string' ? Buffer.from(value) : bytesOf(value) },
+    worker.importCheck,
+  );
 
 const checkedData = (c: AppRulesImportCheck): AppData => {
   if (!c.accepted) throw new Error(`refused: ${c.reason} ${c.errors.join('; ')}`);
@@ -366,6 +363,22 @@ describe('import check: the app own backup steps', () => {
     expect('isManualSyncOnly' in sync).toBe(false);
   }, 60_000);
 
+  it('gives back the checked data whole, characters beyond U+FFFF included wherever the output is cut', async () => {
+    // One such character is two halves; one more character in front puts a half on each side of every cut.
+    for (const lead of ['', 'a']) {
+      const data = structuredClone(initialAppData);
+      const title = `${lead}${'😀'.repeat(700_000)}`;
+      (
+        data.project as { entities: Record<string, AppData> }
+      ).entities.INBOX_PROJECT.title = title;
+      const checked = checkedData(await check(data));
+      expect(
+        (checked.project as { entities: Record<string, AppData> }).entities.INBOX_PROJECT
+          .title === title,
+      ).toBe(true);
+    }
+  }, 60_000);
+
   it('accepts the wrapped backup file and the bare data alike', async () => {
     const wrapped = await check({
       timestamp: 1,
@@ -436,7 +449,7 @@ describe('import', () => {
     const seen = store.appRules.mergedClock;
     const expected = checkedData(await check(JSON.parse(file.toString('utf8'))));
 
-    const result = await importBoard(store, Buffer.from(file));
+    const result = await importBoard(store, { body: Buffer.from(file) });
 
     expect(sync.imports).toHaveLength(1);
     const body = sync.imports[0];
@@ -476,7 +489,9 @@ describe('import', () => {
       sync.push(await browser.addTask(buildTaskEntity({ title: 'late' }), nextClock()));
       return null;
     };
-    expect(await importBoard(store, file)).toMatchObject({ droppedServerChanges: 1 });
+    expect(await importBoard(store, { body: file })).toMatchObject({
+      droppedServerChanges: 1,
+    });
   }, 60_000);
 
   it('the board reads its own import back: it becomes the imported board', async () => {
@@ -486,7 +501,7 @@ describe('import', () => {
     const store = await startStore(sync);
     const expected = checkedData(await check(JSON.parse(file.toString('utf8'))));
 
-    await importBoard(store, file);
+    await importBoard(store, { body: file });
 
     const after = await snapshotOf(store);
     expect(withoutDeviceSync(after)).toEqual(expected);
@@ -507,7 +522,7 @@ describe('import', () => {
       savedAtUpload = JSON.parse(readFileSync(join(savedDir(store), name), 'utf8'));
       return null;
     };
-    const result = await importBoard(store, Buffer.from(file));
+    const result = await importBoard(store, { body: Buffer.from(file) });
     expect(
       tasksOf((savedAtUpload as unknown as { data: AppData }).data)[taskId].title,
     ).toBe('seeded task');
@@ -519,7 +534,7 @@ describe('import', () => {
     const sync2 = new FakeSync();
     await seed(sync2);
     const store2 = await startStore(sync2, blockedDir);
-    const err = await importBoard(store2, Buffer.from(file)).catch((e) => e);
+    const err = await importBoard(store2, { body: Buffer.from(file) }).catch((e) => e);
     expect(err).toBeInstanceOf(ImportError);
     expect(err.statusCode).toBe(500);
     expect(sync2.imports).toHaveLength(0);
@@ -533,7 +548,7 @@ describe('import', () => {
     const rowsBefore = sync.rows.length;
     sync.respond = async () => json({ error: 'Compressed payload too large' }, 413);
 
-    const err = await importBoard(store, file).catch((e) => e);
+    const err = await importBoard(store, { body: file }).catch((e) => e);
 
     expect(err).toBeInstanceOf(ImportError);
     expect(err.statusCode).toBe(413);
@@ -555,7 +570,7 @@ describe('import', () => {
     const dir = join(dataDir, PRE_IMPORT_DIR);
     const names: string[] = [];
     for (let i = 0; i < 4; i++) {
-      names.push((await importBoard(store, Buffer.from(file))).savedBefore);
+      names.push((await importBoard(store, { body: Buffer.from(file) })).savedBefore);
       if (i === 0) writeFileSync(join(dir, other), '{}');
     }
     expect(readdirSync(dir).sort()).toEqual([...names.slice(1), other].sort());
@@ -566,10 +581,12 @@ describe('import', () => {
     const sync = new FakeSync();
     const { taskId } = await seed(sync);
     const store = await startStore(sync);
-    const { savedBefore } = await importBoard(store, file);
+    const { savedBefore } = await importBoard(store, { body: file });
     expect(store.state.TASK?.[taskId]).toBeUndefined();
 
-    await importBoard(store, readSavedFile(store.dataDir, store.boardName, savedBefore));
+    await importBoard(store, {
+      body: readSavedFile(store.dataDir, store.boardName, savedBefore),
+    });
     expect(store.state.TASK?.[taskId]).toBeDefined();
 
     const refusal = (name: string): number => {
@@ -594,7 +611,7 @@ describe('import', () => {
     expect(store.beginImport()).toBe(true);
     const write = await store.submitOps([]).catch((e) => e);
     expect(write.statusCode).toBe(409);
-    const second = await importBoard(store, Buffer.from('{}')).catch((e) => e);
+    const second = await importBoard(store, { body: Buffer.from('{}') }).catch((e) => e);
     expect(second.statusCode).toBe(409);
     store.endImport();
   }, 60_000);
@@ -611,7 +628,7 @@ describe('import failures', () => {
     const file = await exportBoard(store);
     sync.respond = async () => json({ error: 'Compressed payload too large' }, 413);
     for (let i = 0; i < 4; i++) {
-      const err = await importBoard(store, Buffer.from(file)).catch((e) => e);
+      const err = await importBoard(store, { body: Buffer.from(file) }).catch((e) => e);
       expect(err.statusCode).toBe(413);
       expect(err.message).toContain('The board is unchanged.');
     }
@@ -624,7 +641,7 @@ describe('import failures', () => {
     const store = await startStore(sync);
     sync.loseAnswers = 1;
 
-    const result = await importBoard(store, bytesOf(initialAppData));
+    const result = await importBoard(store, { body: bytesOf(initialAppData) });
 
     expect(result).toMatchObject({ imported: true, readBack: true });
     expect(sync.imports.map((b) => b.opId)).toEqual([
@@ -642,7 +659,7 @@ describe('import failures', () => {
     const file = bytesOf(initialAppData);
     sync.loseAnswers = 2;
 
-    const err = await importBoard(store, Buffer.from(file)).catch((e) => e);
+    const err = await importBoard(store, { body: Buffer.from(file) }).catch((e) => e);
 
     expect(err.statusCode).toBe(502);
     expect(err.message).not.toContain('unchanged');
@@ -653,7 +670,7 @@ describe('import failures', () => {
     // A sync of the board in between ends the wait for writes; the unsettled import is still remembered.
     await store.refresh();
     expect(store.writesClosed).toBeNull();
-    const again = await importBoard(store, Buffer.from(file));
+    const again = await importBoard(store, { body: Buffer.from(file) });
     expect(again).toMatchObject({ savedBefore: err.details.savedBefore, readBack: true });
     expect(new Set(sync.imports.map((b) => b.opId)).size).toBe(1);
     expect(importsOnServer(sync)).toBe(1);
@@ -675,7 +692,7 @@ describe('import failures', () => {
       sync.loseAnswers = 1;
       sync.respond = async () => (sync.imports.length >= 2 ? answer() : null);
 
-      const err = await importBoard(store, Buffer.from(file)).catch((e) => e);
+      const err = await importBoard(store, { body: Buffer.from(file) }).catch((e) => e);
 
       expect(err.statusCode).toBe(502);
       expect(err.message).not.toContain('unchanged');
@@ -693,7 +710,7 @@ describe('import failures', () => {
       const { id } = (await core.createTask({ title: 'after the import' })) as {
         id: string;
       };
-      const again = await importBoard(store, Buffer.from(file));
+      const again = await importBoard(store, { body: Buffer.from(file) });
       expect(again).toMatchObject({ savedBefore: err.details.savedBefore });
       expect(new Set(sync.imports.map((b) => b.opId)).size).toBe(1);
       expect(importsOnServer(sync)).toBe(1);
@@ -708,12 +725,12 @@ describe('import failures', () => {
     const store = await startStore(sync);
     const file = bytesOf(initialAppData);
     sync.loseAnswers = 2;
-    const err = await importBoard(store, Buffer.from(file)).catch((e) => e);
+    const err = await importBoard(store, { body: Buffer.from(file) }).catch((e) => e);
     expect(err.details).toMatchObject({ outcome: 'unknown' });
     await store.refresh();
 
     sync.respond = async () => json({ error: 'Token expired' }, 401);
-    const refused = await importBoard(store, Buffer.from(file)).catch((e) => e);
+    const refused = await importBoard(store, { body: Buffer.from(file) }).catch((e) => e);
 
     expect(refused.statusCode).toBe(502);
     expect(refused.details).toMatchObject({
@@ -723,7 +740,7 @@ describe('import failures', () => {
     expect((await store.submitOps([]).catch((e) => e)).statusCode).toBe(409);
     sync.respond = null;
     await store.refresh();
-    await importBoard(store, Buffer.from(file));
+    await importBoard(store, { body: Buffer.from(file) });
     expect(new Set(sync.imports.map((b) => b.opId)).size).toBe(1);
   }, 60_000);
 
@@ -732,13 +749,14 @@ describe('import failures', () => {
     await seed(sync);
     const store = await startStore(sync);
     sync.loseAnswers = 2;
-    const err = await importBoard(store, bytesOf(initialAppData)).catch((e) => e);
+    const err = await importBoard(store, { body: bytesOf(initialAppData) }).catch(
+      (e) => e,
+    );
     expect(err.statusCode).toBe(502);
 
-    const other = await importBoard(
-      store,
-      Buffer.from(JSON.stringify(initialAppData, null, 1)),
-    );
+    const other = await importBoard(store, {
+      body: Buffer.from(JSON.stringify(initialAppData, null, 1)),
+    });
     expect(other.savedBefore).not.toBe(err.details.savedBefore);
     expect(new Set(sync.imports.map((b) => b.opId)).size).toBe(2);
   }, 60_000);
@@ -748,15 +766,16 @@ describe('import failures', () => {
     await seed(sync);
     const store = await startStore(sync);
     sync.loseAnswers = 2;
-    const err = await importBoard(store, bytesOf(initialAppData)).catch((e) => e);
+    const err = await importBoard(store, { body: bytesOf(initialAppData) }).catch(
+      (e) => e,
+    );
     expect(err.statusCode).toBe(502);
 
     sync.respond = async () => json({ error: 'Compressed payload too large' }, 413);
     for (let i = 0; i < 3; i++) {
-      await importBoard(
-        store,
-        Buffer.from(JSON.stringify(initialAppData, null, i + 1)),
-      ).catch(() => undefined);
+      await importBoard(store, {
+        body: Buffer.from(JSON.stringify(initialAppData, null, i + 1)),
+      }).catch(() => undefined);
     }
     const saved = readdirSync(savedDir(store)).filter((n) => n.startsWith('pre-import.'));
     expect(saved).toHaveLength(4);
@@ -779,7 +798,7 @@ describe('import failures', () => {
       return sync.fetch(url, init);
     });
 
-    const result = await importBoard(store, bytesOf(initialAppData));
+    const result = await importBoard(store, { body: bytesOf(initialAppData) });
 
     expect(result).toMatchObject({ imported: true, readBack: false });
     expect(store.state.TASK?.[taskId]).toBeDefined();
@@ -800,30 +819,70 @@ describe('import failures', () => {
     expect(sync.rows.map((r) => r.op.opType)).toEqual(['BACKUP_IMPORT', 'CRT']);
   }, 60_000);
 
-  // Last in the file: should the check ever let this through, the worker every test here shares dies with it.
-  it('refuses a file the app rules have no memory to check, and the worker keeps answering', async () => {
+  it("refuses a file whose check runs out of the check's memory, nothing saved or uploaded, and the worker keeps answering", async () => {
     const sync = new FakeSync();
-    const { taskId } = await seed(sync);
+    await seed(sync);
     const store = await startStore(sync);
-    const file = await exportOf(store);
-    // A character past U+00FF doubles the decoded text, so this is far over what the heap holds.
-    Object.assign(tasksOf(file.data)[taskId], {
-      title: 'done ✓',
-      notes: 'a'.repeat(24 * 1024 * 1024),
-    });
+    const heapMb = worker.importCheck.heapMb;
+    // A small cap stands in for a file too big for the real one; a million tiny values need far more than their few MB of text.
+    worker.importCheck.heapMb = 48;
+    try {
+      const entries = Array.from({ length: 1_000_000 }, (_, i) => `"k${i}":0`);
+      const err = await importBoard(store, {
+        body: Buffer.from(`{${entries.join(',')}}`),
+      }).catch((e) => e);
 
-    const err = await importBoard(store, bytesOf(file)).catch((e) => e);
-
-    expect({ status: err.statusCode, message: err.message }).toMatchObject({
-      status: 413,
-    });
-    expect(err.details.errors[0]).toMatch(
-      /^needs about \d+ MB of the app rules' memory, \d+ MB is free$/,
-    );
+      expect({ status: err.statusCode, errors: err.details.errors }).toEqual({
+        status: 413,
+        errors: ['needs more than the 48 MB the import check may use'],
+      });
+    } finally {
+      worker.importCheck.heapMb = heapMb;
+    }
     expect(sync.imports).toHaveLength(0);
+    expect(existsSync(savedDir(store)) ? readdirSync(savedDir(store)) : []).toEqual([]);
     expect(store.appRules.blocked).toBe(false);
-    expect(await importBoard(store, bytesOf(initialAppData))).toMatchObject({
+    expect(await importBoard(store, { body: bytesOf(initialAppData) })).toMatchObject({
       imported: true,
     });
   }, 120_000);
+
+  it('refuses the many-tiny-values file at the real cap and stays up', async () => {
+    const sync = new FakeSync();
+    await seed(sync);
+    const store = await startStore(sync);
+    const entries = Array.from({ length: 900_000 }, (_, i) => `"k${i}":0`);
+
+    const err = await importBoard(store, {
+      body: Buffer.from(`{${entries.join(',')}}`),
+    }).catch((e) => e);
+
+    expect([413, 422]).toContain(err.statusCode);
+    expect(sync.imports).toHaveLength(0);
+    expect(store.appRules.blocked).toBe(false);
+    expect((await worker.request({ kind: 'snapshot', board: 'seed' })).kind).toBe(
+      'snapshot',
+    );
+  }, 120_000);
+
+  it('lets go of the file once the check has it', async () => {
+    const sync = new FakeSync();
+    await seed(sync);
+    const store = await startStore(sync);
+    const file = { body: bytesOf(initialAppData) as Buffer | null };
+    const heldAt: Record<string, boolean> = {};
+    const seal = store.sealBackupImport.bind(store);
+    vi.spyOn(store, 'sealBackupImport').mockImplementation((data) => {
+      heldAt.seal = file.body !== null;
+      return seal(data);
+    });
+    const exportToFile = store.appRules.exportToFile.bind(store.appRules);
+    vi.spyOn(store.appRules, 'exportToFile').mockImplementation((path) => {
+      heldAt.save = file.body !== null;
+      return exportToFile(path);
+    });
+
+    expect(await importBoard(store, file)).toMatchObject({ imported: true });
+    expect(heldAt).toEqual({ seal: false, save: false });
+  }, 60_000);
 });

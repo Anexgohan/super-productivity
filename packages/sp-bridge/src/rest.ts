@@ -29,6 +29,7 @@ import {
   type Principal,
 } from './auth/principal';
 import type { UserBoards } from './user-boards';
+import type { ImportFile } from './import-check';
 import {
   exportBoard,
   IMPORT_BODY_LIMIT_BYTES,
@@ -311,6 +312,23 @@ const PUBLIC_PATHS = new Set([
   // no user account to authenticate as.
   '/api/internal/webapp-token',
 ]);
+
+/** The file an import names, its body or a saved file. The request lets go of the body, so the import check alone holds it. */
+const importFileOf = (
+  req: FastifyRequest<{ Querystring: { saved?: string } }>,
+  store: StateStore,
+): ImportFile => {
+  const sent = Buffer.isBuffer(req.body) && req.body.length > 0 ? req.body : null;
+  const saved = req.query.saved;
+  if (saved !== undefined && sent) {
+    throw new ImportError(400, 'Send either a file or ?saved=<name>, not both.');
+  }
+  const body =
+    saved !== undefined ? readSavedFile(store.dataDir, store.boardName, saved) : sent;
+  if (!body) throw new ImportError(400, 'Send the backup file as the request body.');
+  req.body = undefined;
+  return { body };
+};
 
 export const createRestServer = (
   core: BridgeCore,
@@ -1341,19 +1359,7 @@ export const createRestServer = (
         if (!(await passwords.provedPassword(req, reply, caller))) return reply;
         try {
           const board = await boardFor(req);
-          const sent = Buffer.isBuffer(req.body) && req.body.length > 0 ? req.body : null;
-          const saved = req.query.saved;
-          if (saved !== undefined && sent) {
-            throw new ImportError(400, 'Send either a file or ?saved=<name>, not both.');
-          }
-          const body =
-            saved !== undefined
-              ? readSavedFile(board.store.dataDir, board.store.boardName, saved)
-              : sent;
-          if (!body) {
-            throw new ImportError(400, 'Send the backup file as the request body.');
-          }
-          return await importBoard(board.store, body);
+          return await importBoard(board.store, importFileOf(req, board.store));
         } catch (err) {
           const details = err instanceof ImportError ? err.details : {};
           const e = err as { statusCode?: number; message?: string };

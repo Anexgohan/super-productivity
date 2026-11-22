@@ -22,7 +22,7 @@ const main = async (): Promise<void> => {
   );
   await (store as unknown as { _client: SyncClient })._client.authenticate();
   const json = new Uint8Array(Buffer.alloc(Number(process.argv[2]) * 1024 * 1024, 0x61));
-  const res = await store.uploadBackupImport(json, 4, {
+  const res = await store.uploadBackupImport(await store.sealBackupImport(json), 4, {
     opId: 'op',
     vectorClock: { B: 1 },
   });

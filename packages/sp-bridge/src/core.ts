@@ -469,8 +469,8 @@ export class BridgeCore {
   }
 
   /**
-   * Runs an app action as a browser would (anex/app-actions): the app rules build its ops, follow-ups included, and they
-   * are uploaded together. Returns the uploaded op ids and the ids the action names, such as a new entity's.
+   * Runs an app action as a browser would (anex/app-actions): the app rules build its ops, follow-ups included, and upload them together.
+   * Returns the uploaded op ids and the ids the action names, such as a new entity's.
    */
   async act(
     name: string,
