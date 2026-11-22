@@ -1,8 +1,7 @@
 /**
  * Sidebar folders (anex/app-actions), built as MenuTreeService builds a drag in the sidebar or a folder's rename and delete.
  *
- * The app's reducer takes any tree it is given, so a builder checks what the sidebar guarantees: each id once, and every item a real
- * project or tag.
+ * The app's reducer takes any tree it is given, so a builder checks what the sidebar guarantees: each id once, and every item a real project or tag.
  */
 import {
   deleteFolder,

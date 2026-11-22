@@ -174,7 +174,7 @@ Sharing is all-or-nothing and applies to everyone signed in, not only to viewers
 
 **Projects** · [create](#post-apiprojects) · [update](#patch-apiprojectsid) · [delete](#delete-apiprojectsid)
 
-**Export and import** · [export](#get-apiexport) · [import](#post-apiimport)
+**Export and import** · [export](#get-apiexport) · [import](#post-apiimport) · [move to a new install](#moving-a-board-to-a-new-install)
 
 **Boards** · [list](#get-apiboards) · [single](#get-apiboardsid) · [create](#post-apiboards) · [update](#patch-apiboardsid) · [delete](#delete-apiboardsid) · [reorder](#put-apiboardsorder) · [add column](#post-apiboardsidpanels) · [update column](#patch-apiboardsidpanelspanelid) · [delete column](#delete-apiboardsidpanelspanelid) · [card order](#put-apipanelspanelidtaskids)
 
@@ -957,6 +957,22 @@ The file goes through the app's own import steps first: a bare state or the wrap
 | the board could not be saved first                            | `500`, nothing imported                                                             |
 
 While an import runs, other writes to that board answer `409 An import is replacing this board. Try again once it has finished.`, and after it, until the board has read the import back, `409` with the reason `writesClosed` gives.
+
+### Moving a board to a new install
+
+To bring a board from an older install into a new one, export it from the old install and import it into the new one. No file needs to be kept in between: the export can be piped straight into the import.
+
+```bash
+curl -H "X-Api-Key: $OLD_KEY" http://old-host:18230/api/export |
+  curl -H "X-Api-Key: $NEW_KEY" -H "X-Current-Password: $NEW_PW" \
+    -X POST --data-binary @- http://new-host:18230/api/import
+```
+
+`$OLD_KEY` is a key of the old install's account, and `$NEW_KEY` an admin key of the new one, with that admin's password. Add `?boardOf=<accountId>` to the import to fill another account's board on the new install. Keep the reply's `savedBefore`: it undoes the move.
+
+An install from before `GET /api/export` existed has no export route, and its [docs](#get-apidocs) list none. Export the board from a browser signed in to the old install instead, with **Settings > Import/Export**, and send that file to the import as `--data-binary @<file>`. A file in an older backup format is upgraded by the import, and `migratedLegacy` in the reply says so.
+
+Check the move with the new install's [status](#get-apistatus) counts against the old one's, then sign in to the new install in a browser. A browser still open on the old install keeps syncing there: the move copies the board, it does not shut the old one.
 
 ---
 
