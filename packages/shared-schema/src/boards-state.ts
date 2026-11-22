@@ -167,7 +167,7 @@ export const sortBoardsInState = (boardCfgs: BoardCfg[], ids: string[]): BoardCf
 
 /**
  * Only the first board holding `panelId` is touched; duplicate panel ids are a load-time repair, not something to fan out to.
- * `movedTaskId` is the card dropped into the panel: it leaves the stored order of that board's other panels in the same pass.
+ * `movedTaskId` is the card dropped in from another panel: it leaves the stored order of that board's other panels in the same pass.
  */
 export const updatePanelTaskIdsInState = (
   boardCfgs: BoardCfg[],

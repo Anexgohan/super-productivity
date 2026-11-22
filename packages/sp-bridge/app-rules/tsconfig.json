@@ -12,6 +12,8 @@
   "include": [
     "./**/*.ts",
     "../src/app-rules-protocol.ts",
-    "../../../src/app/core/window-ea.d.ts"
+    "../../../src/app/core/window-ea.d.ts",
+    // The app's typing of toPromise, which its polyfills load and its services rely on.
+    "../../../src/app/rxjs-to-promise.polyfill.ts"
   ]
 }

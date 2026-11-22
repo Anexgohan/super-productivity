@@ -1,7 +1,9 @@
+// The gap keeps the picker apart from the page title that follows it in the header.
 :host {
   display: flex;
   align-items: center;
   min-width: 0;
+  margin-right: var(--s2);
 }
 
 .scope-btn {

@@ -1138,6 +1138,8 @@ export class BridgeCore {
       appRules,
       // When this board was last checkpointed and what is counted since (anex/checkpoints).
       checkpoint: this.store.checkpointStatus,
+      // Why API writes are refused right now after an import, or null.
+      writesClosed: this.store.writesClosed,
     };
   }
 

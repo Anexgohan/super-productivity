@@ -9,6 +9,7 @@ import {
   deriveKeyFromPassword,
   encrypt,
   encryptBatch,
+  encryptBytes,
   getArgon2Params,
   getSessionKeyCacheStats,
   isCryptoSubtleAvailable,
@@ -95,6 +96,16 @@ describe('encryption', () => {
     const encrypted = await encrypt(DATA, PASSWORD);
     expect(encrypted).not.toBe(DATA);
     await expect(decrypt(encrypted, PASSWORD)).resolves.toBe(DATA);
+  });
+
+  it('encryptBytes gives the same wire format as encrypt, as bytes', async () => {
+    const text = 'Grüße, ✓ and some ascii';
+    const bytes = await encryptBytes(new TextEncoder().encode(text), PASSWORD);
+    const asBase64 = Buffer.from(bytes).toString('base64');
+    await expect(decrypt(asBase64, PASSWORD)).resolves.toBe(text);
+    const viaString = Buffer.from(await encrypt(text, PASSWORD), 'base64');
+    expect(bytes.length).toBe(viaString.length);
+    expect(Buffer.from(bytes.subarray(0, 16))).toEqual(viaString.subarray(0, 16));
   });
 
   it('fails to decrypt with the wrong password', async () => {

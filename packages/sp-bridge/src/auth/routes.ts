@@ -12,7 +12,12 @@ import { hashPassword, needsRehash, verifyPassword } from './passwords';
 import { AuthStore, ROLES, isRole, type ApiKeyRow, type Role } from './store';
 import { formatApiKey, materialFor, mintSalt } from './api-key';
 import { SessionManager, SESSION_COOKIE, parseCookies } from './session';
-import { needsCallerPassword, type Principal } from './principal';
+import {
+  callerPasswordFrom,
+  IMPORT_PATH,
+  needsCallerPassword,
+  type Principal,
+} from './principal';
 import { renderLoginPage } from './login-page';
 
 const USERNAME_PATTERN = /^[a-zA-Z0-9_.-]{3,32}$/;
@@ -132,24 +137,20 @@ export const sessionFromRequest = (
   return sessions.verify(token);
 };
 
-export const registerAuthRoutes = (
-  app: FastifyInstance,
-  {
-    store,
-    sessions,
-    jwtSecret,
-    webUrl,
-    purgeSyncAccount,
-    forgetBoardReadToken,
-    principalOf,
-  }: AuthDeps,
-): void => {
-  const limiter = new LoginRateLimiter();
-  const appHome = webUrl || '/';
-
-  /** The caller, by key or by cookie, resolved once by the REST auth hook with the role read from the database. */
-  const callerOf = (req: FastifyRequest): Principal | undefined => principalOf(req);
-
+/** The caller's password checks, shared by the account routes and the import route. */
+export const callerPasswordGuard = (
+  store: Pick<AuthStore, 'setPassword'>,
+): {
+  checkPassword: (
+    user: { id: number; username: string; passwordHash: string },
+    password: string,
+  ) => Promise<boolean>;
+  provedPassword: (
+    req: FastifyRequest,
+    reply: FastifyReply,
+    caller: Principal,
+  ) => Promise<boolean>;
+} => {
   /**
    * Checks a typed password and, when it matches a hash made before the switch to Argon2id (anex/argon2id-passwords),
    * stores a fresh one. The password is only ever available here, so this is how each old account moves over.
@@ -178,13 +179,16 @@ export const registerAuthRoutes = (
     caller: Principal,
   ): Promise<boolean> => {
     if (!caller.viaKey) return true;
-    if (!needsCallerPassword(req.method, req.url, req.body)) return true;
-    const given = (req.body as { currentPassword?: unknown } | undefined)
-      ?.currentPassword;
+    const route = req.routeOptions.url ?? '';
+    if (!needsCallerPassword(req.method, route, req.body)) return true;
+    const given = callerPasswordFrom(route, req.headers, req.body);
     if (typeof given !== 'string' || !given) {
       await reply.status(403).send({
-        error:
-          'This also needs your account password when using an API key. Add currentPassword to the body.',
+        error: `This also needs your account password when using an API key. ${
+          route === IMPORT_PATH
+            ? 'Send it in the X-Current-Password header.'
+            : 'Add currentPassword to the body.'
+        }`,
       });
       return false;
     }
@@ -195,6 +199,29 @@ export const registerAuthRoutes = (
     }
     return true;
   };
+
+  return { checkPassword, provedPassword };
+};
+
+export const registerAuthRoutes = (
+  app: FastifyInstance,
+  {
+    store,
+    sessions,
+    jwtSecret,
+    webUrl,
+    purgeSyncAccount,
+    forgetBoardReadToken,
+    principalOf,
+  }: AuthDeps,
+): void => {
+  const limiter = new LoginRateLimiter();
+  const appHome = webUrl || '/';
+
+  /** The caller, by key or by cookie, resolved once by the REST auth hook with the role read from the database. */
+  const callerOf = (req: FastifyRequest): Principal | undefined => principalOf(req);
+
+  const { checkPassword, provedPassword } = callerPasswordGuard(store);
 
   // The bridge is an API server, so "/" would otherwise 404. Send humans to the
   // app (or the login page if they have no session yet) rather than JSON.

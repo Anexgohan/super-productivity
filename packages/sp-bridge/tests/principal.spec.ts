@@ -7,34 +7,38 @@ import { boardTargetFor, needsCallerPassword } from '../src/auth/principal';
  */
 describe('needsCallerPassword', () => {
   it('gates minting a key', () => {
-    expect(needsCallerPassword('POST', '/api/auth/users/1/keys', {})).toBe(true);
+    expect(needsCallerPassword('POST', '/api/auth/users/:id/keys', {})).toBe(true);
   });
 
   it('gates revoking and deleting a key', () => {
-    expect(needsCallerPassword('POST', '/api/auth/users/1/keys/4/revoke', {})).toBe(true);
-    expect(needsCallerPassword('DELETE', '/api/auth/users/1/keys/4', undefined)).toBe(
-      true,
-    );
+    expect(
+      needsCallerPassword('POST', '/api/auth/users/:id/keys/:keyId/revoke', {}),
+    ).toBe(true);
+    expect(
+      needsCallerPassword('DELETE', '/api/auth/users/:id/keys/:keyId', undefined),
+    ).toBe(true);
   });
 
   it('gates publishing a board', () => {
     expect(
-      needsCallerPassword('PUT', '/api/auth/users/2/public', { isPublic: true }),
+      needsCallerPassword('PUT', '/api/auth/users/:id/public', { isPublic: true }),
     ).toBe(true);
   });
 
   it('gates a role change but not a rename or an email edit on the same route', () => {
-    expect(needsCallerPassword('PUT', '/api/auth/users/2', { role: 'admin' })).toBe(true);
-    expect(needsCallerPassword('PUT', '/api/auth/users/2', { username: 'sam' })).toBe(
+    expect(needsCallerPassword('PUT', '/api/auth/users/:id', { role: 'admin' })).toBe(
+      true,
+    );
+    expect(needsCallerPassword('PUT', '/api/auth/users/:id', { username: 'sam' })).toBe(
       false,
     );
-    expect(needsCallerPassword('PUT', '/api/auth/users/2', { email: 'a@b.c' })).toBe(
+    expect(needsCallerPassword('PUT', '/api/auth/users/:id', { email: 'a@b.c' })).toBe(
       false,
     );
   });
 
   it('leaves reading keys free, which is how delegated management works here', () => {
-    expect(needsCallerPassword('GET', '/api/auth/users/1/keys', undefined)).toBe(false);
+    expect(needsCallerPassword('GET', '/api/auth/users/:id/keys', undefined)).toBe(false);
   });
 
   it('leaves ordinary board and account traffic free', () => {
@@ -43,16 +47,20 @@ describe('needsCallerPassword', () => {
     expect(needsCallerPassword('PUT', '/api/auth/password', { newPassword: 'x' })).toBe(
       false,
     );
-    expect(needsCallerPassword('DELETE', '/api/auth/users/2', undefined)).toBe(false);
+    expect(needsCallerPassword('DELETE', '/api/auth/users/:id', undefined)).toBe(false);
   });
 
-  it('ignores the query string and is case-insensitive on the method', () => {
-    expect(needsCallerPassword('post', '/api/auth/users/1/keys?label=ci', {})).toBe(true);
+  it('is case-insensitive on the method', () => {
+    expect(needsCallerPassword('post', '/api/auth/users/:id/keys', {})).toBe(true);
   });
 
-  it('does not match a path that merely looks similar', () => {
-    expect(needsCallerPassword('POST', '/api/auth/users/abc/keys', {})).toBe(false);
-    expect(needsCallerPassword('POST', '/api/auth/users/1/keys/extra', {})).toBe(false);
+  it('does not match a route that merely looks similar', () => {
+    expect(needsCallerPassword('POST', '/api/auth/users/:id/keys/:keyId', {})).toBe(
+      false,
+    );
+    expect(needsCallerPassword('PUT', '/api/auth/users/order', { role: 'x' })).toBe(
+      false,
+    );
   });
 });
 

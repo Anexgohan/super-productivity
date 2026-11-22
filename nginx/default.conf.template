@@ -65,6 +65,18 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # A whole-board import is the backup file itself: the bridge allows 30 MB here, so nginx must too, and a large board can take minutes.
+    location = /api/import {
+        set $bridge_import "${SP_BRIDGE_INTERNAL_URL}";
+        proxy_pass $bridge_import$request_uri;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        client_max_body_size 30m;
+        proxy_read_timeout 300s;
+    }
+
     location /login {
         set $bridge_login "${SP_BRIDGE_INTERNAL_URL}";
         proxy_pass $bridge_login$request_uri;

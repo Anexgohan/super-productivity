@@ -14,6 +14,7 @@ import type { SuperSyncServerOperation } from '@sp/shared-schema';
 import type {
   AppRulesApplyResult,
   AppRulesCheckpoint,
+  AppRulesImportCheck,
   AppRulesRow,
 } from './app-rules-protocol';
 import type { AppRulesWorker } from './app-rules-worker';
@@ -203,6 +204,42 @@ export class AppRulesBoard {
     });
     if (res.kind !== 'checkpoint') throw new Error('unexpected checkpoint reply');
     return res.checkpoint;
+  }
+
+  /** The board as the app's own backup file. Throws a 503 when the app rules cannot answer. */
+  async exportBackup(): Promise<Buffer> {
+    void this.view;
+    const res = await this._worker.request({ kind: 'export', board: this._opts.board });
+    if (res.kind !== 'export') throw new Error('unexpected export reply');
+    return Buffer.from(res.bytes);
+  }
+
+  /** Writes the board's backup file to `path`; returns the seq it holds. */
+  async exportToFile(path: string): Promise<{ seq: number; size: number }> {
+    void this.view;
+    const res = await this._worker.request({
+      kind: 'export-file',
+      board: this._opts.board,
+      path,
+    });
+    if (res.kind !== 'export-file') throw new Error('unexpected export-file reply');
+    return { seq: res.seq, size: res.size };
+  }
+
+  /** Checks a backup file for an import into this board. `body` may be unusable afterwards: its bytes move to the worker. */
+  async checkImport(body: Uint8Array): Promise<AppRulesImportCheck> {
+    const bytes =
+      body.byteOffset === 0 &&
+      body.byteLength === body.buffer.byteLength &&
+      body.buffer instanceof ArrayBuffer
+        ? body.buffer
+        : new Uint8Array(body).buffer;
+    const res = await this._worker.request(
+      { kind: 'import-check', board: this._opts.board, bytes },
+      [bytes],
+    );
+    if (res.kind !== 'import-check') throw new Error('unexpected import-check reply');
+    return res.check;
   }
 
   /** Drops the board from the worker's memory; its cache file stays for the next start. */

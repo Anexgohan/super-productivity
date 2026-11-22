@@ -10,6 +10,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { parentPort } from 'node:worker_threads';
 import type { AppRulesRequest, AppRulesResponse } from '../src/app-rules-protocol';
 import { AppRules, APP_RULES_CACHE_VERSION, type AppRulesCache } from './app-rules';
+import { checkImport } from './board-transfer';
 
 if (!parentPort) throw new Error('app rules: must run as a worker thread');
 const port = parentPort;
@@ -56,6 +57,14 @@ const handle = async (req: AppRulesRequest): Promise<AppRulesResponse> => {
     boards.delete(req.board);
     return { id: req.id, ok: true, kind: 'close' };
   }
+  if (req.kind === 'import-check') {
+    return {
+      id: req.id,
+      ok: true,
+      kind: 'import-check',
+      check: await checkImport(req.bytes),
+    };
+  }
   const board = boards.get(req.board);
   if (!board) throw new Error(`board ${req.board} is not open`);
   if (req.kind === 'apply') {
@@ -63,6 +72,25 @@ const handle = async (req: AppRulesRequest): Promise<AppRulesResponse> => {
     const result = await board.rules.applyRows(req.rows);
     if (board.rules.seq !== before) persist(board);
     return { id: req.id, ok: true, kind: 'apply', result };
+  }
+  if (req.kind === 'export') {
+    const { bytes } = await board.rules.exportBackup();
+    return { id: req.id, ok: true, kind: 'export', bytes };
+  }
+  if (req.kind === 'export-file') {
+    const { seq, bytes } = await board.rules.exportBackup();
+    const tmp = `${req.path}.tmp`;
+    writeFileSync(tmp, new Uint8Array(bytes));
+    renameSync(tmp, req.path);
+    return { id: req.id, ok: true, kind: 'export-file', seq, size: bytes.byteLength };
+  }
+  if (req.kind === 'act') {
+    return {
+      id: req.id,
+      ok: true,
+      kind: 'act',
+      result: await board.rules.act(req.name, req.input, req.when),
+    };
   }
   if (req.kind === 'checkpoint') {
     return {
@@ -80,6 +108,14 @@ const handle = async (req: AppRulesRequest): Promise<AppRulesResponse> => {
   };
 };
 
+/** Byte replies move to the bridge rather than being copied. */
+const transferOf = (res: AppRulesResponse): ArrayBuffer[] => {
+  if (!res.ok) return [];
+  if (res.kind === 'export') return [res.bytes];
+  if (res.kind === 'import-check' && res.check.accepted) return [res.check.bytes];
+  return [];
+};
+
 let queue: Promise<void> = Promise.resolve();
 port.on('message', (req: AppRulesRequest) => {
   queue = queue.then(async () => {
@@ -87,12 +123,17 @@ port.on('message', (req: AppRulesRequest) => {
     try {
       res = await handle(req);
     } catch (err) {
+      const refusal = err as { statusCode?: unknown; errors?: unknown };
       res = {
         id: req.id,
         ok: false,
         error: err instanceof Error ? err.message : String(err),
+        ...(typeof refusal.statusCode === 'number'
+          ? { statusCode: refusal.statusCode }
+          : {}),
+        ...(Array.isArray(refusal.errors) ? { errors: refusal.errors as string[] } : {}),
       };
     }
-    port.postMessage(res);
+    port.postMessage(res, transferOf(res));
   });
 });

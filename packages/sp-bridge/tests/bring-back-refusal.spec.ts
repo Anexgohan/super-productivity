@@ -1,23 +1,17 @@
 /**
  * A browser marks its "bring it back" saves in the clear, so the server can refuse one a later delete beats.
  * A refused one is withdrawn without an error.
- * Runs the app's own upload and rejected-ops services from source, with fakes for what they reach.
+ * Runs the app's own upload conversion and rejected-ops service from source, with fakes for what they reach.
  */
 import '@angular/compiler';
 import '../app-rules/globals';
 import { Injector, ɵINJECTOR_SCOPE as INJECTOR_SCOPE } from '@angular/core';
 import { describe, expect, it, vi } from 'vitest';
-import { OperationLogUploadService } from '../../../src/app/op-log/sync/operation-log-upload.service';
+import { syncOpFromOperation } from '../../../src/app/op-log/sync/upload-payload.util';
 import { RejectedOpsHandlerService } from '../../../src/app/op-log/sync/rejected-ops-handler.service';
 import { OperationLogStoreService } from '../../../src/app/op-log/persistence/operation-log-store.service';
 import { SnackService } from '../../../src/app/core/snack/snack.service';
 import { RepairOperationService } from '../../../src/app/op-log/validation/repair-operation.service';
-import { LockService } from '../../../src/app/op-log/sync/lock.service';
-import { OperationEncryptionService } from '../../../src/app/op-log/sync/operation-encryption.service';
-import { StateSnapshotService } from '../../../src/app/op-log/backup/state-snapshot.service';
-import { SyncProviderManager } from '../../../src/app/op-log/sync-providers/provider-manager.service';
-import { ContainerAuthorityService } from '../../../src/app/imex/sync/container-authority.service';
-import { ServerOrderService } from '../../../src/app/op-log/sync/server-order.service';
 import type {
   Operation,
   OperationLogEntry,
@@ -27,23 +21,6 @@ import type { SyncOperation } from '../../../src/app/op-log/sync-providers/provi
 // The services below are only injected; their modules load the app's UI, which needs a browser.
 vi.mock('../../../src/app/op-log/persistence/operation-log-store.service', () => ({
   OperationLogStoreService: class {},
-}));
-vi.mock('../../../src/app/op-log/sync/lock.service', () => ({ LockService: class {} }));
-vi.mock('../../../src/app/op-log/sync/operation-encryption.service', () => ({
-  OperationEncryptionService: class {},
-}));
-vi.mock('../../../src/app/op-log/backup/state-snapshot.service', () => ({
-  StateSnapshotService: class {},
-}));
-vi.mock('../../../src/app/op-log/sync-providers/provider-manager.service', () => ({
-  SyncProviderManager: class {},
-}));
-vi.mock('../../../src/app/imex/sync/container-authority.service', () => ({
-  ContainerAuthorityService: class {},
-  IS_READ_ONLY_BOARD: () => false,
-}));
-vi.mock('../../../src/app/op-log/sync/server-order.service', () => ({
-  ServerOrderService: class {},
 }));
 vi.mock('../../../src/app/core/snack/snack.service', () => ({ SnackService: class {} }));
 vi.mock('../../../src/app/op-log/validation/repair-operation.service', () => ({
@@ -89,26 +66,7 @@ const entry = (o: Operation, seq = 1): OperationLogEntry =>
   ({ seq, op: o, appliedAt: 1, source: 'local' }) as OperationLogEntry;
 
 describe('the bring-back marker on an upload', () => {
-  const wireOp = (o: Operation): SyncOperation | null => {
-    const injector = Injector.create({
-      providers: [
-        { provide: INJECTOR_SCOPE, useValue: 'root' },
-        ...[
-          OperationLogStoreService,
-          LockService,
-          OperationEncryptionService,
-          StateSnapshotService,
-          SyncProviderManager,
-          ContainerAuthorityService,
-          ServerOrderService,
-        ].map((token) => ({ provide: token, useValue: {} })),
-      ],
-    });
-    const service = injector.get(OperationLogUploadService) as unknown as {
-      _entryToSyncOp(e: OperationLogEntry): SyncOperation | null;
-    };
-    return service._entryToSyncOp(entry(o));
-  };
+  const wireOp = (o: Operation): SyncOperation | null => syncOpFromOperation(o);
 
   it('marks a task or note bring-back, in the clear beside the payload', () => {
     expect(wireOp(bringBack())?.recreatesEntityAfterDelete).toBe(true);

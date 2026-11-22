@@ -9,7 +9,7 @@ Routes live in packages/sp-bridge/src/{rest.ts,auth/routes.ts}; GET /api/docs is
 
 # sp-bridge REST API Reference
 
-The complete endpoint contract for the containerized Super Productivity API (`sp-bridge`, v1): **60 data routes** plus **23 account routes**.
+The complete endpoint contract for the containerized Super Productivity API (`sp-bridge`, v1): **62 data routes** plus **23 account routes**.
 
 For the concepts behind it, the op-log, why boards are tags, and what the Today list is, read [`super-productivity-explainer.md`](./super-productivity-explainer.md) first.
 
@@ -99,10 +99,15 @@ Handing out or widening access needs your account password as well, but only whe
 | `POST /api/auth/users/:id/keys/:keyId/revoke` | removes one                 |
 | `PUT /api/auth/users/:id/public`              | exposes a board             |
 | `PUT /api/auth/users/:id` **with `role`**     | changes what someone may do |
+| `POST /api/import`                            | replaces a whole board      |
 
 Without it: `403 {"error":"This also needs your account password when using an API key. Add currentPassword to the body."}`. Wrong password: `403 {"error":"That password is not correct."}`.
 
-Renaming somebody or fixing their email on that last route needs nothing extra, because neither widens access. Reading keys is deliberately ungated: an admin holding a subordinate's key is how delegated management works here.
+The import is the one exception to the body field: its body is the backup file, so send the password as the `X-Current-Password` header, and a missing one is refused with `... Send it in the X-Current-Password header.`
+
+The rule follows the route a request reaches, however its path is spelled: `/api/%69mport` is the import and wants the password too.
+
+Renaming somebody or fixing their email on `PUT /api/auth/users/:id` needs nothing extra, because neither widens access. Reading keys is deliberately ungated: an admin holding a subordinate's key is how delegated management works here.
 
 ### Key format
 
@@ -167,6 +172,8 @@ Sharing is all-or-nothing and applies to everyone signed in, not only to viewers
 
 **Projects** · [create](#post-apiprojects) · [update](#patch-apiprojectsid) · [delete](#delete-apiprojectsid)
 
+**Export and import** · [export](#get-apiexport) · [import](#post-apiimport)
+
 **Boards** · [list](#get-apiboards) · [single](#get-apiboardsid) · [create](#post-apiboards) · [update](#patch-apiboardsid) · [delete](#delete-apiboardsid) · [reorder](#put-apiboardsorder) · [add column](#post-apiboardsidpanels) · [update column](#patch-apiboardsidpanelspanelid) · [delete column](#delete-apiboardsidpanelspanelid) · [card order](#put-apipanelspanelidtaskids)
 
 **Session** · [setup](#post-apiauthsetup) · [login](#post-apiauthlogin) · [logout](#post-apiauthlogout) · [status](#get-apiauthstatus) · [verify](#get-apiauthverify)
@@ -216,6 +223,8 @@ curl -H "X-Api-Key: $KEY" http://host:18230/api/status
 ```
 
 The body also carries an `appRules` block for the board: `state` (`starting`, `loading`, `ready` or `unavailable`), `seq` (the last server change applied), `droppedOps` (changes a browser drops as outdated by a full import), `reducerFailures`, `archiveFailures`, the worker's memory (`heapUsedMb`), and `error` when the board cannot answer. While `state` is not `ready`, every other route on that board answers `503` with the same reason, and `entityCounts` is empty.
+
+`writesClosed` is `null`, or why API writes to the board answer `409` for now: an [import](#post-apiimport) replaced it and the board has not read it back yet, or an import got no answer from the sync server. It clears on the board's next successful sync.
 
 A `checkpoint` block says when the bridge last checkpointed the board: `lastFullStateSeq` (the newest full state in its history), `changesSince` and `bytesSince`, `lastWrittenAt` and `lastAttemptAt` (ms since epoch, `0` if never), `lastError` (why the last attempt was refused, or `null`) and `countsComplete` (`false` until the counters reach back to a full state).
 
@@ -773,6 +782,77 @@ Removes a column. Returns `{"deleted": "<panelId>"}`, and `cols` shrinks to matc
 ### `PUT /api/panels/:panelId/taskIds`
 
 Sets the manual card order inside one column. Body: `{"taskIds": [...]}`. Panel ids are unique across boards, so no board id is needed. Unknown task ids → `400`.
+
+---
+
+## Export and import
+
+The board as the app's own backup file, and back. The file is the one **Settings > Import/Export** downloads, so either side reads the other's.
+
+### `GET /api/export`
+
+Your own board as a backup file, archives included, after a sync; when the sync fails, the board as it last synced. Any role. → the JSON file with `Content-Disposition: attachment; filename="sp-backup_<date>_<time>.json"`.
+
+```bash
+curl -H "X-Api-Key: $KEY" -o board.json http://host:18230/api/export
+```
+
+Own board only: `?boardOf=` of another account → `403 Export reads only your own board.`
+
+### `POST /api/import`
+
+Replaces a board with a backup file sent as the request body, as the app's own restore does. **Admin only**, and with a key it also wants your password in `X-Current-Password`. The body is read as the file whatever its `Content-Type`. `?boardOf=<accountId>` imports into another account's board, shared or not; it is the one write an admin may make there.
+
+```bash
+curl -H "X-Api-Key: $KEY" -H "X-Current-Password: $PW" \
+  -X POST --data-binary @board.json "http://host:18230/api/import?boardOf=4"
+```
+
+```json
+{
+  "imported": true,
+  "serverSeq": 412,
+  "savedBefore": "pre-import.user-4.2026-11-21T10-00-00.000Z.json",
+  "migratedLegacy": false,
+  "repaired": false,
+  "counts": { "tasks": 120, "projects": 4, "tags": 9, "notes": 3, "archivedTasks": 800 },
+  "droppedServerChanges": 0,
+  "readBack": true
+}
+```
+
+The file goes through the app's own import steps first: a bare state or the wrapped backup file are both accepted, a pre-v14 file is upgraded, and a damaged one is repaired. One the repair cannot fix, or still leaves invalid, is refused and nothing changes.
+
+⚠️ It is a full restore, not a merge: the board's server history is wiped and replaced. Changes a browser made but has not synced yet are dropped when that browser next syncs. `droppedServerChanges` counts server changes that arrived between the save below and the import, which the import also replaced.
+
+`readBack` is `false` when the board could not read the import back straight away. API writes to it then answer `409` until it has, which the next successful sync does; `writesClosed` in [status](#get-apistatus) says so meanwhile.
+
+**Undo.** Before anything is uploaded the board is saved, and the reply names the file in `savedBefore`. `POST /api/import?saved=<name>` with no body imports it back into the same board. The newest 3 are kept per board, failed attempts included, plus the one an import of unknown outcome saved (below) until it is settled. There is no route that lists them, so keep the name the reply gave you.
+
+**Size.** The body may be up to 30 MB. Checking it takes the app rules about four times the file's size in memory, or six times when it holds a character beyond Latin-1 (`✓`, an emoji, CJK), and a file that does not fit in what is free is refused with `413` before anything is saved or uploaded. With no other large board in memory that is about 29 MB, or 19 MB with such characters. This is an estimate from the size alone: a file made of a very large number of tiny values can need more than it estimates, and then running out of memory stops the bridge. The sync server also caps the stored board at 30 MB compressed and 60 MB uncompressed, and refuses a larger one before anything is wiped.
+
+**No answer.** When the sync server does not answer the upload, it is sent once more as the same change. If that gets no answer either, the reply is `502 {"error", "savedBefore", "outcome": "unknown"}`: the import may or may not have landed, and API writes to the board answer `409` until it next syncs and shows what the server holds. Send the same file again to settle it. The retry is the same change to the server, so it cannot restore twice, and it keeps the first attempt's saved file. Once any attempt got no answer, only an accepted one settles the import: a refusal says only that this attempt stored nothing, so it too answers `502` with `"outcome": "unknown"`, naming the refusal, and writes stay closed. A different file is a new import.
+
+| Situation                                                     | Response                                                                            |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| not an admin                                                  | `403`                                                                               |
+| password missing or wrong (key only)                          | `403`                                                                               |
+| no body, or a body and `?saved=` together, or a bad `?saved=` | `400`                                                                               |
+| not JSON                                                      | `400`                                                                               |
+| not valid and not repairable, or still invalid after repair   | `422 {"error", "errors": ["$.task.entities.x.title: expected string"]}`, at most 20 |
+| `?saved=` names no file of this board, or no such account     | `404`                                                                               |
+| another import on the board, or the board is blocked          | `409`                                                                               |
+| the sync server refused the import                            | `409 {"error", "savedBefore", "errorCode"}`, the board unchanged                    |
+| the sync server answered with another error                   | `502 {"error", "savedBefore"}`, the board unchanged                                 |
+| the sync server did not answer, now or on an earlier attempt  | `502 {"error", "savedBefore", "outcome": "unknown"}`, see **No answer**             |
+| too large for the app rules' free memory                      | `413 {"error", "errors"}`, nothing imported                                         |
+| over 30 MB                                                    | `413 The file is over the import limit of 30 MB. Nothing was imported.`             |
+| over the sync server's limit                                  | `413 {"error", "savedBefore"}`, naming both sizes, the board unchanged              |
+| sync storage full                                             | `507 {"error", "savedBefore"}`, the board unchanged                                 |
+| the board could not sync or be checked first                  | `503`, nothing imported                                                             |
+| the board could not be saved first                            | `500`, nothing imported                                                             |
+
+While an import runs, other writes to that board answer `409 An import is replacing this board. Try again once it has finished.`, and after it, until the board has read the import back, `409` with the reason `writesClosed` gives.
 
 ---
 

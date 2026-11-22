@@ -16,10 +16,26 @@ import type { AuthStore, UserRow } from './auth/store';
 import { isRole, ROLE_LEVELS } from './auth/store';
 import type { SessionManager } from './auth/session';
 import type { SyncIdentityProvider } from './auth/sync-identity';
-import { registerAuthRoutes, sessionFromRequest } from './auth/routes';
+import {
+  callerPasswordGuard,
+  registerAuthRoutes,
+  sessionFromRequest,
+} from './auth/routes';
 import { materialFor, parseKeyId, verifyApiKey } from './auth/api-key';
-import { boardTargetFor, type Principal } from './auth/principal';
+import {
+  boardTargetFor,
+  IMPORT_PATH,
+  mayWriteOtherBoard,
+  type Principal,
+} from './auth/principal';
 import type { UserBoards } from './user-boards';
+import {
+  exportBoard,
+  IMPORT_BODY_LIMIT_BYTES,
+  importBoard,
+  ImportError,
+  readSavedFile,
+} from './board-transfer';
 
 const DOCS = {
   name: 'sp-bridge API',
@@ -60,6 +76,10 @@ const DOCS = {
     'GET /api/entities': 'list materialized entity types (raw superset access)',
     'GET /api/entities/:type': 'raw entity map for a type',
     'POST /api/sync/refresh': 'force an op-log pull now',
+    'GET /api/export':
+      "your own board as the app's backup file, archives included; it imports into the app (Settings > Import) and into POST /api/import",
+    'POST /api/import':
+      "admin only: replace a board with a backup file sent as the body (up to 30 MB), as the app's own restore does; wipes the board's server history and drops changes browsers have not synced. With a key, send your password as X-Current-Password. ?boardOf=<accountId> for another account's board. The board is saved first: the reply names the file, and ?saved=<name> with no body imports it back",
     'POST /api/tasks/from-syntax':
       'create a task from short syntax; body: {text: "Title #tag +Project @tomorrow 1h30m", projectId?}. #tag adds/creates a tag, +Project moves by title, @date sets dueDay (YYYY-MM-DD|today|tomorrow), a bare 1h/30m/1h30m token sets the estimate',
     'POST /api/tasks/:id/links':
@@ -346,16 +366,16 @@ export const createRestServer = (
   const boardFor = async (
     req: FastifyRequest,
   ): Promise<{ core: BridgeCore; store: StateStore }> => {
-    const container = { core, store };
-    if (!boards || !auth?.override) return container;
-    const user = principals.get(req)?.user;
-    if (!user) return container;
     // Reading somebody else's shared board reads THAT board here too, so the API and the browser never disagree about what is on screen.
-    const target = boardOwners.get(req) ?? user;
-    return boards.forUser(
-      target,
-      await auth.override.identities.isContainerAccount(target),
-    );
+    return boardOfUser(boardOwners.get(req) ?? principals.get(req)?.user);
+  };
+
+  const boardOfUser = async (
+    user: UserRow | undefined,
+  ): Promise<{ core: BridgeCore; store: StateStore }> => {
+    const container = { core, store };
+    if (!boards || !auth?.override || !user) return container;
+    return boards.forUser(user, await auth.override.identities.isContainerAccount(user));
   };
 
   /**
@@ -533,6 +553,18 @@ export const createRestServer = (
         return reply.status(400).send({
           error: 'This server keeps one board for everyone, so boardOf selects nothing.',
         });
+      }
+      // An admin's import may name any account, shared or not; only an explicit boardOf counts, never a browser's stored choice.
+      if (
+        target.explicit &&
+        mayWriteOtherBoard(req.method, req.routeOptions.url ?? '', principal.user.role)
+      ) {
+        const exists = await auth.store.findUserById(target.id);
+        if (!exists) {
+          return reply.status(404).send({ error: `No account with id ${target.id}.` });
+        }
+        boardOwners.set(req, exists);
+        return;
       }
       const owner = await mayReadBoard(target.id);
       if (!owner) {
@@ -1202,6 +1234,90 @@ export const createRestServer = (
       }
     },
   );
+
+  // ── Whole-board export and import ─────────────────────────────────────────
+  app.get('/api/export', async (req, reply) => {
+    try {
+      if (
+        boardOwners.has(req) &&
+        new URLSearchParams(req.url.split('?')[1] ?? '').has('boardOf')
+      ) {
+        return reply.status(403).send({ error: 'Export reads only your own board.' });
+      }
+      const board = await boardOfUser(principals.get(req)?.user);
+      const file = await exportBoard(board.store);
+      const at = new Date()
+        .toISOString()
+        .slice(0, 19)
+        .replace('T', '_')
+        .replace(/:/g, '');
+      return reply
+        .header('Content-Type', 'application/json; charset=utf-8')
+        .header('Content-Disposition', `attachment; filename="sp-backup_${at}.json"`)
+        .send(file);
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  const passwords = auth && callerPasswordGuard(auth.store);
+
+  // Its own scope: the body is the file as saved, kept as bytes whatever its content type, up to the import limit.
+  app.register(async (scope) => {
+    scope.removeAllContentTypeParsers();
+    scope.addContentTypeParser('*', { parseAs: 'buffer' }, (_req, body, done) =>
+      done(null, body),
+    );
+    scope.setErrorHandler(
+      (err: { code?: string; statusCode?: number; message?: string }, _req, reply) => {
+        if (err.code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
+          return reply.status(413).send({
+            error: `The file is over the import limit of ${IMPORT_BODY_LIMIT_BYTES / 1048576} MB. Nothing was imported.`,
+          });
+        }
+        return sendError(reply, err);
+      },
+    );
+
+    scope.post<{ Querystring: { saved?: string } }>(
+      IMPORT_PATH,
+      { bodyLimit: IMPORT_BODY_LIMIT_BYTES },
+      async (req, reply) => {
+        const caller = principals.get(req);
+        if (!caller || !passwords) {
+          return reply.status(401).send({ error: 'No API key or session.' });
+        }
+        if (caller.user.role !== 'admin') {
+          return reply.status(403).send({
+            error: `Importing replaces a whole board, so it needs an admin account. Yours is ${caller.user.role}.`,
+          });
+        }
+        if (!(await passwords.provedPassword(req, reply, caller))) return reply;
+        try {
+          const board = await boardFor(req);
+          const sent = Buffer.isBuffer(req.body) && req.body.length > 0 ? req.body : null;
+          const saved = req.query.saved;
+          if (saved !== undefined && sent) {
+            throw new ImportError(400, 'Send either a file or ?saved=<name>, not both.');
+          }
+          const body =
+            saved !== undefined
+              ? readSavedFile(board.store.dataDir, board.store.boardName, saved)
+              : sent;
+          if (!body) {
+            throw new ImportError(400, 'Send the backup file as the request body.');
+          }
+          return await importBoard(board.store, body);
+        } catch (err) {
+          const details = err instanceof ImportError ? err.details : {};
+          const e = err as { statusCode?: number; message?: string };
+          return reply
+            .status(e.statusCode ?? 500)
+            .send({ error: e.message ?? 'Internal error', ...details });
+        }
+      },
+    );
+  });
 
   return app;
 };

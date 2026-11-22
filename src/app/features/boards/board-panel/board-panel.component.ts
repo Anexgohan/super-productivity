@@ -240,10 +240,11 @@ export class BoardPanelComponent {
   async drop(ev: CdkDragDrop<BoardPanelCfg, string, TaskCopy>): Promise<void> {
     const panelCfg = ev.container.data;
     const task = ev.item.data;
+    const isSamePanel = ev.previousContainer.id === ev.container.id;
 
     // In sorted mode, intra-panel drops are no-ops: the task already matches the
     // panel filter and the visible order is derived from the comparator, not taskIds.
-    if (ev.previousContainer.id === ev.container.id && !this.isManualOrder()) {
+    if (isSamePanel && !this.isManualOrder()) {
       return;
     }
 
@@ -305,7 +306,8 @@ export class BoardPanelComponent {
       BoardsActions.updatePanelCfgTaskIds({
         panelId: panelCfg.id,
         taskIds,
-        movedTaskId: task.id,
+        // A reorder within one panel keeps the card's saved place in other panels whose filters also match it.
+        ...(isSamePanel ? {} : { movedTaskId: task.id }),
       }),
     );
 

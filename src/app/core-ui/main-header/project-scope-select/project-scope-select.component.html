@@ -11,7 +11,11 @@
     >{{ scopeIcon() }}</mat-icon
   >
   <span class="scope-label">{{ label() ?? (T.MH.PROJECT_SCOPE_ALL | translate) }}</span>
-  <mat-icon class="scope-caret">arrow_drop_down</mat-icon>
+  <mat-icon
+    class="scope-caret"
+    iconPositionEnd
+    >arrow_drop_down</mat-icon
+  >
 </button>
 
 <mat-menu #scopeMenu>

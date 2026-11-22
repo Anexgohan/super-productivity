@@ -90,8 +90,14 @@ export { setLegacyKdfWarningHandler } from './encryption/legacy';
  * @returns Base64-encoded ciphertext with embedded salt and IV
  *          (format: `[SALT (16)][IV (12)][AES-GCM ciphertext + auth tag]`)
  */
-const encryptWithDerivedKey = async (data: string, key: DerivedKey): Promise<string> => {
-  const dataBuffer = TEXT_ENCODER.encode(data);
+const encryptWithDerivedKey = async (data: string, key: DerivedKey): Promise<string> =>
+  encodeBase64(await sealWithDerivedKey(TEXT_ENCODER.encode(data), key));
+
+/** The wire bytes before base64: `[SALT (16)][IV (12)][AES-GCM ciphertext + auth tag]`. */
+const sealWithDerivedKey = async (
+  dataBuffer: Uint8Array,
+  key: DerivedKey,
+): Promise<Uint8Array> => {
   const iv = getRandomBytes(IV_LENGTH);
   const encryptedContent = await aesEncrypt(key.keyBytes, iv, dataBuffer);
 
@@ -99,8 +105,7 @@ const encryptWithDerivedKey = async (data: string, key: DerivedKey): Promise<str
   buffer.set(key.salt, 0);
   buffer.set(iv, SALT_LENGTH);
   buffer.set(encryptedContent, SALT_LENGTH + IV_LENGTH);
-
-  return encodeBase64(buffer);
+  return buffer;
 };
 
 /**
@@ -126,6 +131,15 @@ const decryptWithDerivedKey = async (
 export const encrypt = async (data: string, password: string): Promise<string> => {
   const key = await getOrDeriveEncryptKey(password);
   return encryptWithDerivedKey(data, key);
+};
+
+/** encrypt() for text already UTF-8 encoded, returning the wire bytes rather than their base64, so a large payload is never held as a string. */
+export const encryptBytes = async (
+  data: Uint8Array,
+  password: string,
+): Promise<Uint8Array> => {
+  const key = await getOrDeriveEncryptKey(password);
+  return sealWithDerivedKey(data, key);
 };
 
 /** Decrypts an Argon2id-format ciphertext given an already-decoded buffer. */

@@ -12,8 +12,6 @@ import {
   FULL_STATE_OP_TYPES,
   extractFullStateFromPayload,
   assertValidFullStatePayload,
-  ActionType,
-  isMultiEntityPayload,
 } from '../core/operation.types';
 import { OpLog } from '../../core/log';
 import { LOCK_NAMES, MAX_OPS_PER_UPLOAD_REQUEST } from '../core/operation-log.const';
@@ -25,7 +23,7 @@ import {
 } from '../sync-providers/provider.interface';
 import { syncOpToOperation } from './operation-sync.util';
 import { ServerOrderService } from './server-order.service';
-import { bringsItemBack } from './server-order-delete-rule.util';
+import { syncOpFromOperation } from './upload-payload.util';
 import { OperationEncryptionService } from './operation-encryption.service';
 import { SyncProviderManager } from '../sync-providers/provider-manager.service';
 import {
@@ -40,12 +38,7 @@ import {
   EncryptNoPasswordError,
 } from '../core/errors/sync-errors';
 import { assertOpsEncryptedWhenExpected } from './assert-ops-encryption-expected';
-import {
-  stripLocalOnlySyncScheduleSettings,
-  stripLocalOnlySyncSettingsFromAppData,
-  stripLocalOnlySyncSettingsFromGlobalConfig,
-} from '../../features/config/local-only-sync-settings.util';
-import { isLwwUpdateActionType } from '../core/lww-update-action-types';
+import { stripLocalOnlySyncSettingsFromAppData } from '../../features/config/local-only-sync-settings.util';
 import { StateSnapshotService } from '../backup/state-snapshot.service';
 import {
   ContainerAuthorityService,
@@ -447,7 +440,7 @@ export class OperationLogUploadService {
       const uploadEntries: OperationLogEntry[] = [];
       const localOnlySeqs: number[] = [];
       for (const entry of regularOps) {
-        const syncOp = this._entryToSyncOp(entry);
+        const syncOp = syncOpFromOperation(entry.op);
         if (syncOp === null) {
           localOnlySeqs.push(entry.seq);
         } else {
@@ -664,106 +657,6 @@ export class OperationLogUploadService {
       ...(options?.deferAcknowledgement
         ? { selectedPendingOps, pendingAcknowledgementSeqs }
         : {}),
-    };
-  }
-
-  private _entryToSyncOp(entry: OperationLogEntry): SyncOperation | null {
-    const payload = this._sanitizeRegularOpPayloadForUpload(entry.op);
-    if (payload === null) {
-      return null;
-    }
-
-    return {
-      id: entry.op.id,
-      clientId: entry.op.clientId,
-      actionType: entry.op.actionType,
-      opType: entry.op.opType,
-      entityType: entry.op.entityType,
-      entityId: entry.op.entityId,
-      entityIds: entry.op.entityIds,
-      payload,
-      vectorClock: entry.op.vectorClock,
-      timestamp: entry.op.timestamp,
-      schemaVersion: entry.op.schemaVersion,
-      ...(entry.op.syncImportReason
-        ? { syncImportReason: entry.op.syncImportReason }
-        : {}),
-      ...(entry.op.repairBaseServerSeq !== undefined
-        ? { repairBaseServerSeq: entry.op.repairBaseServerSeq }
-        : {}),
-      ...(bringsItemBack(entry.op) ? { recreatesEntityAfterDelete: true } : {}),
-    };
-  }
-
-  private _sanitizeRegularOpPayloadForUpload(op: Operation): unknown | null {
-    if (
-      op.actionType === ActionType.TASK_SHARED_DELETE_MULTIPLE &&
-      isMultiEntityPayload(op.payload)
-    ) {
-      const actionPayload = { ...op.payload.actionPayload };
-      delete actionPayload['tasks'];
-      return {
-        ...op.payload,
-        actionPayload,
-      };
-    }
-
-    if (
-      op.entityType === 'GLOBAL_CONFIG' &&
-      isLwwUpdateActionType(op.actionType) &&
-      typeof op.payload === 'object' &&
-      op.payload !== null
-    ) {
-      if (isMultiEntityPayload(op.payload)) {
-        return {
-          ...op.payload,
-          actionPayload: stripLocalOnlySyncSettingsFromGlobalConfig(
-            op.payload.actionPayload,
-          ),
-        };
-      }
-      return stripLocalOnlySyncSettingsFromGlobalConfig(
-        op.payload as Record<string, unknown>,
-      );
-    }
-
-    if (
-      op.actionType !== ActionType.GLOBAL_CONFIG_UPDATE_SECTION ||
-      typeof op.payload !== 'object' ||
-      op.payload === null ||
-      !('actionPayload' in op.payload)
-    ) {
-      return op.payload;
-    }
-
-    const multiEntityPayload = op.payload as {
-      actionPayload?: Record<string, unknown>;
-      entityChanges?: unknown;
-    };
-    const actionPayload = multiEntityPayload.actionPayload;
-    if (
-      !actionPayload ||
-      actionPayload['sectionKey'] !== 'sync' ||
-      typeof actionPayload['sectionCfg'] !== 'object' ||
-      actionPayload['sectionCfg'] === null
-    ) {
-      return op.payload;
-    }
-
-    const sectionCfg = stripLocalOnlySyncScheduleSettings(
-      actionPayload['sectionCfg'] as Record<string, unknown>,
-    );
-    if (Object.keys(sectionCfg).length === 0) {
-      // GLOBAL_CONFIG_UPDATE_SECTION replays from actionPayload; entityChanges are empty.
-      return null;
-    }
-
-    return {
-      ...multiEntityPayload,
-      actionPayload: {
-        ...actionPayload,
-        sectionCfg,
-      },
     };
   }
 

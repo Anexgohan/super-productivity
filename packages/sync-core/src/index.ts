@@ -51,6 +51,7 @@ export {
 // the legacy-KDF warning side-channel.
 export {
   encrypt,
+  encryptBytes,
   decrypt,
   encryptBatch,
   decryptBatch,

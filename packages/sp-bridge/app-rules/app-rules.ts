@@ -73,10 +73,14 @@ import type {
   AppRulesRow,
   AppRulesCheckpoint,
   AppRulesSnapshot,
+  AppRulesActResult,
 } from '../src/app-rules-protocol';
 import { buildRootReducer, type RootState } from './root-reducer';
 import { logicalDayChange } from './logical-day';
 import { nextCheckpointHold } from '../src/checkpoints';
+import { encodeBackup, validationErrorsOf } from './board-transfer';
+import { act } from './actions/act';
+import type { ActionWhen } from '../src/action-inputs';
 
 /** Bump when the cache shape changes; an older cache is then discarded and the app rules rebuild from seq 0. */
 export const APP_RULES_CACHE_VERSION = 2;
@@ -427,14 +431,33 @@ export class AppRules {
       string,
       unknown
     >;
-    const errors: string[] = [];
-    if (!result.typiaResult.success) {
-      for (const e of result.typiaResult.errors.slice(0, 20))
-        errors.push(`${e.path}: expected ${e.expected}`);
-    }
-    if (result.crossModelError)
-      errors.push(`cross-model: ${result.crossModelError.slice(0, 300)}`);
-    return { seq, appData, validation: { isValid: result.isValid, errors } };
+    return {
+      seq,
+      appData,
+      validation: { isValid: result.isValid, errors: validationErrorsOf(result) },
+    };
+  }
+
+  /** The ops a browser would upload for an app action on this board, as it stands; the board itself is left as it is. */
+  act(name: string, input: unknown, when: ActionWhen): Promise<AppRulesActResult> {
+    return act(
+      {
+        clientId: this._clientId,
+        state: this._state,
+        reducer: this._reducer,
+        archive: this._archive,
+      },
+      name,
+      input,
+      when,
+    );
+  }
+
+  /** The board as the app's own backup file, archives included, as of `seq`. */
+  async exportBackup(): Promise<{ seq: number; bytes: ArrayBuffer }> {
+    const seq = this._seq;
+    const appData = await this._snapshot.getStateSnapshotAsync();
+    return { seq, bytes: encodeBackup(appData as unknown as Record<string, unknown>) };
   }
 
   /** The state as a browser would upload it in a full import: the app's own snapshot service, archives included. */

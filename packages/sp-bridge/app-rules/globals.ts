@@ -48,6 +48,9 @@ define('localStorage', {
   removeItem: (): void => undefined,
   clear: (): void => undefined,
 });
+// Angular's CDK, which the repeat rules' dialog imports, probes these while loading; no event ever fires in a worker.
+define('addEventListener', (): void => undefined);
+define('removeEventListener', (): void => undefined);
 // The app's dev-only error helpers call these; the production environment never does, but a dialog must never block a worker.
 define('alert', (): void => undefined);
 define('confirm', (): boolean => false);

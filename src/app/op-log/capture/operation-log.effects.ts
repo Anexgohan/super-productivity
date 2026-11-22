@@ -16,19 +16,21 @@ import {
 import { uuidv7 } from '../../util/uuid-v7';
 import { devError } from '../../util/dev-error';
 import { incrementVectorClock } from '../../core/util/vector-clock';
-import { MultiEntityPayload, Operation, ActionType } from '../core/operation.types';
+import { ActionType } from '../core/operation.types';
 import { OperationLogCompactionService } from '../persistence/operation-log-compaction.service';
 import { OpLog } from '../../core/log';
 import { SnackService } from '../../core/snack/snack.service';
 import { T } from '../../t.const';
-import { validateOperationPayload } from '../validation/validate-operation-payload';
+import {
+  hasValidEntityIdentifiers,
+  operationFromAction,
+} from './action-to-operation.util';
 import { VectorClockService } from '../sync/vector-clock.service';
 import {
   COMPACTION_THRESHOLD,
   LOCK_NAMES,
   MAX_COMPACTION_FAILURES,
 } from '../core/operation-log.const';
-import { CURRENT_SCHEMA_VERSION } from '../persistence/schema-migration.service';
 import { OperationCaptureService } from './operation-capture.service';
 import { ImmediateUploadService } from '../sync/immediate-upload.service';
 import {
@@ -177,21 +179,7 @@ export class OperationLogEffects implements DeferredLocalActionsPort {
   ): Promise<void> {
     const operationTimestamp = Date.now();
 
-    // Validate that at least one entity identifier exists for non-bulk operations
-    // Bulk operations with entityType 'ALL' don't need specific entity IDs
-    // This catches programming errors early - all persistent actions must have entity identifiers
-    // Also validates entityId is not empty/whitespace to match server-side validation
-    const isBulkAllOperation = action.meta.entityType === 'ALL';
-    const hasValidEntityId =
-      action.meta.entityId &&
-      typeof action.meta.entityId === 'string' &&
-      action.meta.entityId.trim().length > 0;
-    const hasValidEntityIds =
-      action.meta.entityIds?.length &&
-      action.meta.entityIds.every(
-        (id: unknown) => id && typeof id === 'string' && (id as string).trim().length > 0,
-      );
-    if (!isBulkAllOperation && !hasValidEntityId && !hasValidEntityIds) {
+    if (!hasValidEntityIdentifiers(action)) {
       // No queue bookkeeping needed here: the effect wrapper's `finally`
       // decrements the pending counter for this action even on early return.
       if (isDeferredWrite) {
@@ -211,15 +199,6 @@ export class OperationLogEffects implements DeferredLocalActionsPort {
       );
       return;
     }
-
-    // Extract payload (everything except type and meta)
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { type, meta, ...rawActionPayload } = action;
-
-    // Use the action's declared opType from meta. We don't derive from entity changes because
-    // some operations have different semantic meaning than their state changes suggest.
-    // E.g., moveToArchive is UPDATE (tasks moved, not deleted) but shows as DELETE in state.
-    const opType = action.meta.opType;
 
     // Validate action type exists in ActionType enum
     // This catches mismatches during development when new actions are added but not registered
@@ -257,17 +236,6 @@ export class OperationLogEffects implements DeferredLocalActionsPort {
           ? []
           : this.operationCaptureService.extractEntityChanges(action);
 
-        const actionPayload = this.addReplayDateFieldsToActionPayload(
-          action,
-          rawActionPayload,
-          operationTimestamp,
-        );
-
-        // Create multi-entity payload with action payload and computed changes
-        const multiEntityPayload: MultiEntityPayload = {
-          actionPayload: actionPayload as Record<string, unknown>,
-          entityChanges,
-        };
         const currentClock = await this.vectorClockService.getCurrentVectorClock();
         // Client ops carry full vector clocks (no pruning). The server prunes
         // AFTER comparison but BEFORE storage (see CLAUDE.md #13). Client-side
@@ -275,31 +243,13 @@ export class OperationLogEffects implements DeferredLocalActionsPort {
         // track, causing false CONCURRENT results in compareVectorClocks.
         const newClock = incrementVectorClock(currentClock, clientId);
 
-        // For bulk operations, entityIds is provided but entityId may not be.
-        // The server requires entityId for non-full-state operations.
-        // Use the first entityId from the array as the primary entityId if not explicitly set.
-        const entityIds =
-          action.meta.entityIds ??
-          (action.meta.entityId ? [action.meta.entityId] : undefined);
-        const entityId = action.meta.entityId ?? entityIds?.[0];
-
-        const op: Operation = {
+        const { op, validation: validationResult } = operationFromAction(action, {
           id: uuidv7(),
-          // NgRx action.type is string, but it matches ActionType enum values
-          actionType: action.type as ActionType,
-          opType,
-          entityType: action.meta.entityType,
-          entityId,
-          entityIds,
-          payload: multiEntityPayload,
-          clientId: clientId,
+          clientId,
           vectorClock: newClock,
           timestamp: operationTimestamp,
-          schemaVersion: CURRENT_SCHEMA_VERSION,
-        };
-
-        // CHECKPOINT A: Validate payload before persisting
-        const validationResult = validateOperationPayload(op);
+          entityChanges,
+        });
         if (!validationResult.success) {
           OpLog.err('[OperationLogEffects] Invalid operation payload', {
             error: validationResult.error,
@@ -532,46 +482,6 @@ export class OperationLogEffects implements DeferredLocalActionsPort {
       );
     }
     return false;
-  }
-
-  private addReplayDateFieldsToActionPayload(
-    action: PersistentAction,
-    actionPayload: Record<string, unknown>,
-    operationTimestamp: number,
-  ): Record<string, unknown> {
-    if (action.type !== ActionType.TASK_SHARED_UPDATE) {
-      return actionPayload;
-    }
-
-    const task = actionPayload['task'];
-    if (typeof task !== 'object' || task === null) {
-      return actionPayload;
-    }
-
-    const taskUpdate = task as Record<string, unknown>;
-    const changes = taskUpdate['changes'];
-    if (typeof changes !== 'object' || changes === null) {
-      return actionPayload;
-    }
-
-    const taskChanges = changes as Record<string, unknown>;
-    if (taskChanges['isDone'] !== true) {
-      return actionPayload;
-    }
-
-    return {
-      ...actionPayload,
-      task: {
-        ...taskUpdate,
-        changes: {
-          ...taskChanges,
-          doneOn:
-            typeof taskChanges['doneOn'] === 'number'
-              ? taskChanges['doneOn']
-              : operationTimestamp,
-        },
-      },
-    };
   }
 
   /**

@@ -11,7 +11,7 @@ import type { BridgeConfig } from './config';
 import { SyncClient } from './sync-client';
 import { SyncWebSocket } from './ws-client';
 import type { SuperSyncOperation } from '@sp/shared-schema';
-import { encrypt } from '@sp/sync-core';
+import { encrypt, encryptBytes } from '@sp/sync-core';
 import type { AppRulesWorker } from './app-rules-worker';
 import { AppRulesBoard, type AppRulesBoardStatus } from './app-rules-board';
 import type { EntityMap } from './state-view';
@@ -27,6 +27,12 @@ const WS_FALLBACK_POLL_MS = 5 * 60_000;
 
 /** The cache of the bridge's former rewritten copy of the app's rules; nothing reads it any more. */
 const FORMER_CACHE_FILE = 'bridge-state-cache';
+
+/** The op id and clock of one backup import, kept so a retry is the same op to the server. */
+export interface ImportIdentity {
+  opId: string;
+  vectorClock: Record<string, number>;
+}
 
 export class StateStore {
   private readonly _client: SyncClient;
@@ -217,6 +223,9 @@ export class StateStore {
       }
       this.lastSyncAt = Date.now();
       this.lastError = null;
+      if (this._writesClosed && this._board.seq >= this._writesClosed.untilSeq) {
+        this._writesClosed = null;
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.lastError = message;
@@ -300,6 +309,80 @@ export class StateStore {
   }
 
   private _ownClockFloor = 0;
+  private _importing = false;
+  private _writesClosed: { reason: string; untilSeq: number } | null = null;
+
+  get boardName(): string {
+    return this._boardName;
+  }
+
+  get dataDir(): string {
+    return this.cfg.dataDir;
+  }
+
+  /** The app rules' board, for a whole-board export or import (board-transfer.ts). */
+  get appRules(): AppRulesBoard {
+    return this._board;
+  }
+
+  /** Runs `task` with the worker to this board alone, as a sync does. */
+  exclusive<T>(task: () => Promise<T>): Promise<T> {
+    return this._worker.exclusive(task);
+  }
+
+  /** True while an import replaces this board; API writes to it are refused meanwhile. */
+  get importing(): boolean {
+    return this._importing;
+  }
+
+  /** Marks an import as running; false when one already is. */
+  beginImport(): boolean {
+    if (this._importing) return false;
+    this._importing = true;
+    return true;
+  }
+
+  endImport(): void {
+    this._importing = false;
+  }
+
+  /** Why API writes to this board are refused after an import, or null. */
+  get writesClosed(): string | null {
+    return this._writesClosed?.reason ?? null;
+  }
+
+  /** Refuses API writes until a refresh has applied server change `untilSeq`; 0 reopens them on any successful refresh. */
+  closeWritesUntil(untilSeq: number, reason: string): void {
+    this._writesClosed = { reason, untilSeq };
+  }
+
+  /** A fresh id and clock for a backup import; a retry of the same import reuses them, so the server stores it once. */
+  newImportIdentity(): ImportIdentity {
+    return { opId: uuidv7(), vectorClock: this.nextWriteClock() };
+  }
+
+  /** Uploads `json` as this board's full state the way the app's restore does: encrypted, by snapshot, with a clean slate. */
+  async uploadBackupImport(
+    json: Uint8Array,
+    schemaVersion: number,
+    identity: ImportIdentity,
+  ): ReturnType<SyncClient['uploadSnapshotBytes']> {
+    const state = await encryptBytes(json, this.cfg.encryptionPassword);
+    return this._client.uploadSnapshotBytes(
+      {
+        clientId: this._clientId,
+        reason: 'recovery',
+        vectorClock: identity.vectorClock,
+        schemaVersion,
+        isPayloadEncrypted: true,
+        syncImportReason: 'BACKUP_RESTORE',
+        opId: identity.opId,
+        snapshotOpType: 'BACKUP_IMPORT',
+        isCleanSlate: true,
+      },
+      state,
+    );
+  }
 
   /**
    * Vector clock for the bridge's next write: component-wise max of everything
@@ -320,6 +403,15 @@ export class StateStore {
    * Refused while the app rules cannot answer: a write the server cannot then read back would be blind.
    */
   async submitOps(ops: SuperSyncOperation[]): Promise<void> {
+    if (this._importing || this._writesClosed) {
+      throw Object.assign(
+        new Error(
+          this._writesClosed?.reason ??
+            'An import is replacing this board. Try again once it has finished.',
+        ),
+        { statusCode: 409 },
+      );
+    }
     void this._board.view;
     await this._client.uploadOps(ops, this._board.seq);
     await this.refresh();

@@ -20,6 +20,7 @@ import { selectAllTasksInActiveProjects } from '../../tasks/store/task.selectors
 import { WorkContextService } from '../../work-context/work-context.service';
 import { ProjectService } from '../../project/project.service';
 import { signal } from '@angular/core';
+import { BoardsActions } from '../store/boards.actions';
 
 describe('BoardPanelComponent - Backlog Feature', () => {
   let component: BoardPanelComponent;
@@ -888,5 +889,73 @@ describe('BoardPanelComponent - drop()', () => {
     const [taskArg, tagsArg] = updateTagsSpy.calls.mostRecent().args;
     expect(taskArg).toBe(task);
     expect(tagsArg).toEqual(['other', 'need']);
+  });
+
+  describe('movedTaskId', () => {
+    const manualPanel = {
+      id: 'a',
+      title: 'A',
+      taskIds: ['t2', 't1'],
+      includedTagIds: [],
+      excludedTagIds: [],
+      taskDoneState: 1,
+      scheduledState: 1,
+      isParentTasksOnly: false,
+      projectIds: [''],
+    } as BoardPanelCfg;
+
+    const dispatchedTaskIdsUpdate = (): ReturnType<
+      typeof BoardsActions.updatePanelCfgTaskIds
+    > => {
+      const actions = dispatchSpy.calls
+        .allArgs()
+        .map(([action]) => action)
+        .filter((action) => action.type === BoardsActions.updatePanelCfgTaskIds.type);
+      expect(actions.length).toBe(1);
+      return actions[0];
+    };
+
+    it('is left off a reorder within the same panel', async () => {
+      const t1 = mkTask({ id: 't1' });
+      await setup([t1, mkTask({ id: 't2' })]);
+      fixture.componentRef.setInput('panelCfg', manualPanel);
+      fixture.detectChanges();
+
+      await component.drop(
+        mkDropEvent({
+          panelCfg: manualPanel,
+          task: t1,
+          previousContainerId: 'a',
+          containerId: 'a',
+          previousIndex: 1,
+          currentIndex: 0,
+        }),
+      );
+
+      const action = dispatchedTaskIdsUpdate();
+      expect(action.taskIds).toEqual(['t1', 't2']);
+      expect('movedTaskId' in action).toBeFalse();
+    });
+
+    it('names the card dropped in from another panel', async () => {
+      const t3 = mkTask({ id: 't3' });
+      await setup([mkTask({ id: 't1' }), mkTask({ id: 't2' })]);
+      fixture.componentRef.setInput('panelCfg', manualPanel);
+      fixture.detectChanges();
+
+      await component.drop(
+        mkDropEvent({
+          panelCfg: manualPanel,
+          task: t3,
+          previousContainerId: 'b',
+          containerId: 'a',
+          currentIndex: 0,
+        }),
+      );
+
+      const action = dispatchedTaskIdsUpdate();
+      expect(action.taskIds).toEqual(['t3', 't2', 't1']);
+      expect(action.movedTaskId).toBe('t3');
+    });
   });
 });

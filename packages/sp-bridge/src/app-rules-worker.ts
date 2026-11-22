@@ -76,7 +76,11 @@ export class AppRulesWorker {
     return () => this._listeners.delete(listener);
   }
 
-  request(req: AppRulesRequestBody): Promise<AppRulesReply> {
+  /** `transfer` moves those buffers to the worker instead of copying them; they are unusable here afterwards. */
+  request(
+    req: AppRulesRequestBody,
+    transfer: ArrayBuffer[] = [],
+  ): Promise<AppRulesReply> {
     const worker = this._worker;
     if (!worker || this._error) {
       return Promise.reject(new Error(this._error ?? 'app rules are not running'));
@@ -96,7 +100,7 @@ export class AppRulesWorker {
         );
       }, REQUEST_TIMEOUT_MS);
       this._pending.set(id, { resolve, reject, timer });
-      worker.postMessage({ ...req, id } as AppRulesRequest);
+      worker.postMessage({ ...req, id } as AppRulesRequest, transfer);
     });
   }
 

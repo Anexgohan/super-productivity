@@ -11,8 +11,6 @@ import { Operation, OpType, ActionType } from '../core/operation.types';
 import { CURRENT_SCHEMA_VERSION } from '../persistence/schema-migration.service';
 import { uuidv7 } from '../../util/uuid-v7';
 import { loadAllData } from '../../root-store/meta/load-all-data.action';
-import { isDataRepairPossible } from '../validation/is-data-repair-possible.util';
-import { recordCriticalErrorTime } from '../../util/critical-error-signal';
 import { OpLog } from '../../core/log';
 import {
   AppDataComplete,
@@ -20,7 +18,7 @@ import {
   AllModelConfig,
 } from '../model/model-config';
 import { CompleteBackup } from '../core/types/sync.types';
-import { normalizeGlobalConfigStartOfNextDay } from '../../features/config/normalize-start-of-next-day-config';
+import { prepareBackupForImport } from './prepare-backup-import.util';
 import { extractEntityKeysFromState } from '../persistence/extract-entity-keys';
 import { OperationWriteFlushService } from '../sync/operation-write-flush.service';
 import { LockService } from '../sync/lock.service';
@@ -101,66 +99,7 @@ export class BackupService {
     try {
       this._imexViewService.setDataImportInProgress(true);
 
-      // 1. Normalize backup structure
-      let backupData: AppDataComplete;
-
-      if ('crossModelVersion' in data && 'timestamp' in data && 'data' in data) {
-        backupData = data.data;
-      } else {
-        backupData = data as AppDataComplete;
-      }
-
-      // 2. Migrate legacy backups (pre-v14) that have the old data shape
-      const { isLegacyBackupData, migrateLegacyBackup } =
-        await import('./migrate-legacy-backup');
-      if (isLegacyBackupData(backupData as unknown as Record<string, unknown>)) {
-        OpLog.normal(
-          'BackupService: Detected legacy backup format, running migration...',
-        );
-        backupData = migrateLegacyBackup(
-          backupData as unknown as Record<string, unknown>,
-        );
-      }
-
-      const normalizedGlobalConfig = normalizeGlobalConfigStartOfNextDay(
-        backupData.globalConfig,
-      );
-      if (normalizedGlobalConfig) {
-        backupData = {
-          ...backupData,
-          globalConfig: normalizedGlobalConfig,
-        };
-      }
-
-      // 3. Validate data
-      const { validateFull } = await import('../validation/validation-fn');
-      const validationResult = validateFull(backupData);
-      let validatedData = backupData;
-
-      if (!validationResult.isValid) {
-        // Damaged backup data — hold off the rating prompt.
-        recordCriticalErrorTime();
-        // Try to repair
-        OpLog.normal('BackupService: Validation failed, attempting repair...', {
-          success: validationResult.typiaResult.success,
-          errors:
-            'errors' in validationResult.typiaResult
-              ? validationResult.typiaResult.errors.length
-              : 0,
-          hasArchiveYoung: !!backupData.archiveYoung,
-          hasArchiveOld: !!backupData.archiveOld,
-        });
-        if (isDataRepairPossible(backupData)) {
-          const errors =
-            'errors' in validationResult.typiaResult
-              ? validationResult.typiaResult.errors
-              : [];
-          const { dataRepair } = await import('../validation/data-repair');
-          validatedData = dataRepair(backupData, errors).data;
-        } else {
-          throw new Error('Data validation failed and repair not possible');
-        }
-      }
+      const { data: validatedData } = await prepareBackupForImport(data);
 
       // 4. Persist to operation log
       await this._operationWriteFlushService.flushPendingWrites();
