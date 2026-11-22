@@ -28,7 +28,7 @@ import {
   type NewNoteInput,
 } from './op-factory';
 import { getArchiveTask, listArchiveTasks, type ArchiveTaskFilter } from './archive';
-import type { ActionWhen } from './action-inputs';
+import type { ActionWhen, ActStep } from './action-inputs';
 
 const ALLOWED_TAG_FIELDS = new Set(['title', 'color', 'icon']);
 const ALLOWED_PROJECT_FIELDS = new Set(['title', 'isEnableBacklog', 'isArchived']);
@@ -83,6 +83,20 @@ const ALLOWED_PANEL_FIELDS = new Set([
 ]);
 /** Virtual tag - membership is derived, never created/deleted as an entity. */
 const TODAY_TAG_ID = 'TODAY';
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** The task fields the app's update action takes as they are; the due fields and the time total go through their own actions. */
+const PLAIN_TASK_FIELDS = new Set(['title', 'notes', 'isDone', 'timeEstimate']);
+/** Fields no app action offers yet, still written as a plain update. */
+const LEGACY_TASK_FIELDS = new Set(['doneOn', 'projectId', 'tagIds']);
+
+/** A task edit as the app's actions make it: the plain fields' update, the other actions in order, and the fields left to the plain op. */
+interface TaskEdit {
+  plain: Record<string, unknown>;
+  steps: ActStep[];
+  legacy: Record<string, unknown>;
+}
+
+type OpThunk = () => Promise<SuperSyncOperation>;
 
 const err = (message: string, statusCode: number): Error =>
   Object.assign(new Error(message), { statusCode });
@@ -303,41 +317,93 @@ export class BridgeCore {
     return this.getTask(task.id as string) ?? task;
   }
 
-  /**
-   * Validates a single task update and returns the op WITHOUT submitting it, so
-   * both updateTask (one op) and bulkUpdate (many ops, one upload) share the
-   * exact same validation + op shape.
-   */
-  private async _buildUpdateOp(
-    id: string,
-    changes: Record<string, unknown>,
-  ): Promise<SuperSyncOperation> {
-    if (!this.getTask(id)) {
-      throw err('Task not found', 404);
-    }
+  /** Splits a task edit into the app actions it means, refusing what the API doesn't write. */
+  private _taskEdit(id: string, changes: Record<string, unknown>): TaskEdit {
+    const task = this.getTask(id);
+    if (!task) throw err('Task not found', 404);
     const rejected = Object.keys(changes).filter((k) => !ALLOWED_TASK_FIELDS.has(k));
     if (rejected.length > 0) {
       throw err(`Field(s) not writable via API: ${rejected.join(', ')}`, 400);
     }
-    if (Object.keys(changes).length === 0) {
-      throw err('No changes given', 400);
+    if (Object.keys(changes).length === 0) throw err('No changes given', 400);
+
+    const edit: TaskEdit = { plain: {}, steps: [], legacy: {} };
+    for (const [key, value] of Object.entries(changes)) {
+      if (PLAIN_TASK_FIELDS.has(key)) edit.plain[key] = value;
+      if (LEGACY_TASK_FIELDS.has(key)) edit.legacy[key] = value;
     }
-    return this.ops.updateTask(id, changes, this.store.nextWriteClock());
+
+    const { dueDay, dueWithTime } = changes;
+    if (dueWithTime !== undefined && dueWithTime !== null) {
+      if (typeof dueWithTime !== 'number' || !Number.isFinite(dueWithTime)) {
+        throw err('dueWithTime must be a time in ms, or null', 400);
+      }
+      if (dueDay !== undefined && dueDay !== null) {
+        throw err(
+          'Give dueDay or dueWithTime, not both: a task has one or the other',
+          400,
+        );
+      }
+      edit.steps.push({
+        name: 'scheduleTaskWithTime',
+        input: { taskId: id, at: new Date(dueWithTime).toISOString() },
+      });
+    } else if (dueDay !== undefined && dueDay !== null) {
+      if (typeof dueDay !== 'string' || !DAY_RE.test(dueDay)) {
+        throw err('dueDay must be YYYY-MM-DD, or null', 400);
+      }
+      edit.steps.push({ name: 'planTaskForDay', input: { taskId: id, day: dueDay } });
+    } else if (dueDay === null || dueWithTime === null) {
+      edit.steps.push({ name: 'unscheduleTask', input: { taskId: id } });
+    }
+
+    if (changes.timeSpent !== undefined) {
+      const total = changes.timeSpent;
+      if (typeof total !== 'number' || !Number.isFinite(total) || total < 0) {
+        throw err('timeSpent must be a duration in ms', 400);
+      }
+      // A new total is the difference logged or removed on today.
+      const delta = Math.round(total - ((task.timeSpent as number | undefined) ?? 0));
+      if (delta > 0) {
+        edit.steps.push({ name: 'logTime', input: { taskId: id, duration: delta } });
+      } else if (delta < 0) {
+        edit.steps.push({
+          name: 'removeTimeSpent',
+          input: { taskId: id, duration: -delta },
+        });
+      }
+    }
+    return edit;
   }
 
+  /** The plain ops for the fields no app action offers yet. */
+  private _legacyTaskOps(id: string, legacy: Record<string, unknown>): OpThunk[] {
+    return Object.keys(legacy).length > 0
+      ? [() => this.ops.updateTask(id, legacy, this.store.nextWriteClock())]
+      : [];
+  }
+
+  /** Edits a task: the app's actions for every field they cover, built and uploaded together with any plain op. */
   async updateTask(
     id: string,
     changes: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    const op = await this._buildUpdateOp(id, changes);
-    await this.store.submitOps([op]);
+    const edit = this._taskEdit(id, changes);
+    const steps: ActStep[] =
+      Object.keys(edit.plain).length > 0
+        ? [{ name: 'updateTask', input: { taskId: id, changes: edit.plain } }]
+        : [];
+    await this._actSteps(
+      [...steps, ...edit.steps],
+      {},
+      this._legacyTaskOps(id, edit.legacy),
+    );
     return this.getTask(id) ?? {};
   }
 
   /**
-   * Applies per-task updates as N ops in a single upload+refresh. Every id is
-   * validated up front - if any is unknown or has an illegal field, nothing is
-   * submitted (all-or-nothing), so a bad item never partially applies.
+   * Edits many tasks in one build and one upload: the plain fields as the app's update of many tasks, then each task's other actions.
+   * Any refusal uploads nothing.
    */
   async bulkUpdate(
     updates: { id: string; changes: Record<string, unknown> }[],
@@ -345,31 +411,41 @@ export class BridgeCore {
     if (!Array.isArray(updates) || updates.length === 0) {
       throw err('updates must be a non-empty array', 400);
     }
-    const ops = [];
-    for (const u of updates) {
+    const edits = updates.map((u) => {
       if (!u || typeof u.id !== 'string') throw err('each update needs a string id', 400);
-      ops.push(await this._buildUpdateOp(u.id, u.changes ?? {}));
-    }
-    await this.store.submitOps(ops);
+      return { id: u.id, ...this._taskEdit(u.id, u.changes ?? {}) };
+    });
+    const plain = edits
+      .filter((e) => Object.keys(e.plain).length > 0)
+      .map((e) => ({ taskId: e.id, changes: e.plain }));
+    const steps: ActStep[] = [
+      ...(plain.length > 0
+        ? [{ name: 'updateManyTasks', input: { updates: plain } }]
+        : []),
+      ...edits.flatMap((e) => e.steps),
+    ];
+    await this._actSteps(
+      steps,
+      {},
+      edits.flatMap((e) => this._legacyTaskOps(e.id, e.legacy)),
+    );
     return updates.map((u) => this.getTask(u.id) ?? {});
   }
 
-  /** Marks many tasks done in one upload (sets doneOn=now on each). */
+  /** Marks many tasks done in one upload, as the app's update of many tasks. */
   async bulkComplete(ids: string[]): Promise<{ completed: string[] }> {
     if (!Array.isArray(ids) || ids.length === 0) {
       throw err('taskIds must be a non-empty array', 400);
     }
-    const now = Date.now();
-    const ops = [];
-    for (const id of ids) {
-      ops.push(await this._buildUpdateOp(id, { isDone: true, doneOn: now }));
-    }
-    await this.store.submitOps(ops);
+    await this.act('updateManyTasks', {
+      updates: ids.map((taskId) => ({ taskId, changes: { isDone: true } })),
+    });
     return { completed: ids };
   }
 
+  /** Marks a task done; the app stamps its done time. */
   async completeTask(id: string): Promise<Record<string, unknown>> {
-    return this.updateTask(id, { isDone: true, doneOn: Date.now() });
+    return this.updateTask(id, { isDone: true });
   }
 
   async deleteTask(id: string): Promise<{ deleted: string }> {
@@ -401,10 +477,23 @@ export class BridgeCore {
     input: unknown,
     when: ActionWhen = {},
   ): Promise<{ opIds: string[]; refs: Record<string, string> }> {
-    const built = await this.store.buildAction(name, input, when);
+    return this._actSteps([{ name, input }], when);
+  }
+
+  /** Builds app actions in order, each on the board the one before it left, and uploads their ops with any plain ops after them. */
+  private async _actSteps(
+    steps: ActStep[],
+    when: ActionWhen,
+    plainOps: OpThunk[] = [],
+  ): Promise<{ opIds: string[]; refs: Record<string, string> }> {
+    const built =
+      steps.length > 0
+        ? await this.store.buildActions(steps, when)
+        : { ops: [], refs: {} };
     const ops: SuperSyncOperation[] = [];
     for (const op of built.ops)
       ops.push(await this.ops.wrap(op, this.store.nextWriteClock()));
+    for (const plainOp of plainOps) ops.push(await plainOp());
     if (ops.length > 0) await this.store.submitOps(ops);
     return { opIds: ops.map((op) => op.id), refs: built.refs };
   }
@@ -617,7 +706,7 @@ export class BridgeCore {
     }
   }
 
-  /** Adds tasks to the TODAY list (plan for today). */
+  /** Adds tasks to the TODAY list (plan for today), on the caller's today if given. */
   async planTasksForToday(
     taskIds: string[],
     today?: string,
@@ -625,15 +714,10 @@ export class BridgeCore {
     if (!Array.isArray(taskIds) || taskIds.length === 0) {
       throw err('taskIds must be a non-empty array', 400);
     }
-    for (const id of taskIds) {
-      if (!this.getTask(id)) throw err(`Task not found: ${id}`, 404);
+    if (today !== undefined && (typeof today !== 'string' || !DAY_RE.test(today))) {
+      throw err('today must be YYYY-MM-DD', 400);
     }
-    const op = await this.ops.planTasksForToday(
-      taskIds,
-      today ?? localToday(),
-      this.store.nextWriteClock(),
-    );
-    await this.store.submitOps([op]);
+    await this.act('planTasksForToday', { taskIds }, today ? { today } : {});
     return { planned: taskIds };
   }
 
@@ -642,11 +726,7 @@ export class BridgeCore {
     if (!Array.isArray(taskIds) || taskIds.length === 0) {
       throw err('taskIds must be a non-empty array', 400);
     }
-    const op = await this.ops.removeTasksFromTodayTag(
-      taskIds,
-      this.store.nextWriteClock(),
-    );
-    await this.store.submitOps([op]);
+    await this.act('removeTasksFromTodayTag', { taskIds });
     return { removed: taskIds };
   }
 
@@ -873,8 +953,25 @@ export class BridgeCore {
     if (!existing) throw err('Project not found', 404);
     const bad = Object.keys(changes).filter((k) => !ALLOWED_PROJECT_FIELDS.has(k));
     if (bad.length) throw err(`Field(s) not writable: ${bad.join(', ')}`, 400);
-    const op = await this.ops.updateProject(id, changes, this.store.nextWriteClock());
-    await this.store.submitOps([op]);
+    const { isArchived, ...rest } = changes;
+    if (isArchived !== undefined && typeof isArchived !== 'boolean') {
+      throw err('isArchived must be true or false', 400);
+    }
+    // Archiving is the app's own action; the other fields are still a plain update.
+    const steps: ActStep[] =
+      isArchived === undefined
+        ? []
+        : [
+            {
+              name: isArchived ? 'archiveProject' : 'unarchiveProject',
+              input: { projectId: id },
+            },
+          ];
+    const plainOps: OpThunk[] =
+      Object.keys(rest).length > 0
+        ? [() => this.ops.updateProject(id, rest, this.store.nextWriteClock())]
+        : [];
+    await this._actSteps(steps, {}, plainOps);
     return this._bucket('PROJECT')[id] ?? existing;
   }
 

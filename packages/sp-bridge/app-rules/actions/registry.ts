@@ -4,11 +4,9 @@
  * A builder reads the board through the app's selectors and returns the app's action creators' actions, nothing hand-made.
  * What follows from them (completing a parent, scheduling a recurring task) is the app's effects' work, not a builder's.
  */
-import type { Action } from '@ngrx/store';
 import { nanoid } from 'nanoid';
 import { TaskSharedActions } from '../../../../src/app/root-store/meta/task-shared.actions';
 import {
-  selectTaskById,
   selectTaskByIdWithSubTaskData,
   selectTaskEntities,
 } from '../../../../src/app/features/tasks/store/task.selectors';
@@ -24,41 +22,44 @@ import {
 import { getDefaultSkipOverdue } from '../../../../src/app/features/task-repeat-cfg/dialog-edit-task-repeat-cfg/get-default-skip-overdue';
 import { selectReminderConfig } from '../../../../src/app/features/config/store/global-config.reducer';
 import { DEFAULT_GLOBAL_CONFIG } from '../../../../src/app/features/config/default-global-config.const';
+import { updateGlobalConfigSection } from '../../../../src/app/features/config/store/global-config.actions';
+import type {
+  GlobalConfigSectionKey,
+  GlobalSectionConfig,
+} from '../../../../src/app/features/config/global-config.model';
+import {
+  archiveProject,
+  unarchiveProject,
+} from '../../../../src/app/features/project/store/project.actions';
+import { selectProjectFeatureState } from '../../../../src/app/features/project/store/project.selectors';
+import { INBOX_PROJECT } from '../../../../src/app/features/project/project.const';
+import type { ProjectState } from '../../../../src/app/features/project/project.model';
 import { clockStringFromDate } from '../../../../src/app/ui/duration/clock-string-from-date';
 import { getDbDateStr } from '../../../../src/app/util/get-db-date-str';
 import { unique } from '../../../../src/app/util/unique';
 import type { ActionInput, ActionName } from '../../src/action-inputs';
-import type { RootState } from '../root-reducer';
+import {
+  ActionInputError,
+  built,
+  existingTask,
+  type BuildContext,
+  type BuiltActions,
+  type Builder,
+} from './build-context';
+import { SCHEDULE_BUILDERS } from './schedule-builders';
+import { TASK_BUILDERS } from './task-builders';
+import { SECTION_BUILDERS } from './section-builders';
 
-export interface BuildContext {
-  /** The board as the app's selectors read it, with props as the app's services pass them. */
-  select<T, P = undefined>(selector: (state: never, props: P) => T, props?: P): T;
-}
+const hasOwn = (o: object, key: string): boolean =>
+  Object.prototype.hasOwnProperty.call(o, key);
 
-export interface BuiltActions {
-  actions: Action[];
-  /** Ids the reply names, such as a new entity's. */
-  refs: Record<string, string>;
-}
-
-type Builder<N extends ActionName> = (
-  ctx: BuildContext,
-  input: ActionInput<N>,
-) => BuiltActions;
-
-export class ActionInputError extends Error {
-  constructor(
-    message: string,
-    readonly statusCode: 400 | 404 | 409,
-  ) {
-    super(message);
+const existingProjectId = (ctx: BuildContext, id: string): string => {
+  if (id === INBOX_PROJECT.id) {
+    throw new ActionInputError('The Inbox project is never archived.', 400);
   }
-}
-
-const existingTask = (ctx: BuildContext, id: string): Task => {
-  const task = ctx.select(selectTaskById as never, { id }) as Task | undefined;
-  if (!task) throw new ActionInputError(`Task not found: ${id}`, 404);
-  return task;
+  const projects = ctx.select(selectProjectFeatureState as never) as ProjectState;
+  if (!projects.entities[id]) throw new ActionInputError(`Project not found: ${id}`, 404);
+  return id;
 };
 
 const BUILDERS: { [N in ActionName]: Builder<N> } = {
@@ -137,17 +138,52 @@ const BUILDERS: { [N in ActionName]: Builder<N> } = {
       refs: { taskRepeatCfgId: id },
     };
   },
+
+  // As GlobalConfigService.updateSection from the settings page: only the fields given, which the reducer merges into the section.
+  updateGlobalConfigSection: (_ctx, { sectionKey, changes }) => {
+    if (sectionKey === 'sync') {
+      throw new ActionInputError(
+        'The sync settings are set in a browser, never through the API.',
+        400,
+      );
+    }
+    const defaults = hasOwn(DEFAULT_GLOBAL_CONFIG, sectionKey)
+      ? (DEFAULT_GLOBAL_CONFIG as Record<string, unknown>)[sectionKey]
+      : undefined;
+    if (typeof defaults !== 'object' || defaults === null) {
+      throw new ActionInputError(`No such settings section: ${sectionKey}`, 400);
+    }
+    // Only keys with a default are settings, which leaves out a browser's own screen preferences in misc.uiPrefs.
+    const unknownKeys = Object.keys(changes).filter((key) => !hasOwn(defaults, key));
+    if (unknownKeys.length > 0) {
+      throw new ActionInputError(
+        `Not a setting of ${sectionKey}: ${unknownKeys.join(', ')}`,
+        400,
+      );
+    }
+    return built(
+      updateGlobalConfigSection({
+        sectionKey: sectionKey as GlobalConfigSectionKey,
+        sectionCfg: changes as Partial<GlobalSectionConfig>,
+      }),
+    );
+  },
+
+  // The bare action: no browser dispatches it, since the UI's way to shelve a project is to complete it.
+  archiveProject: (ctx, { projectId }) =>
+    built(archiveProject({ id: existingProjectId(ctx, projectId) })),
+
+  // As ProjectService.unarchive, which also reopens a completed project.
+  unarchiveProject: (ctx, { projectId }) =>
+    built(unarchiveProject({ id: existingProjectId(ctx, projectId) })),
+
+  ...SCHEDULE_BUILDERS,
+  ...TASK_BUILDERS,
+  ...SECTION_BUILDERS,
 };
 
 export const buildAction = <N extends ActionName>(
   name: N,
-  state: RootState,
+  ctx: BuildContext,
   input: ActionInput<N>,
-): BuiltActions =>
-  (BUILDERS[name] as Builder<N>)(
-    {
-      select: (selector, props) =>
-        (selector as (s: RootState, p: unknown) => never)(state, props),
-    },
-    input,
-  );
+): Promise<BuiltActions> => Promise.resolve((BUILDERS[name] as Builder<N>)(ctx, input));

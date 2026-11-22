@@ -406,12 +406,36 @@ An app action is a change made the way the app makes it: the bridge runs the app
 
 Before anything is uploaded, the result is checked with the app's full validation. A change that would leave the board invalid is refused with `409` and the broken rules in `errors`; a board that was already invalid stays writable, and only what the change itself breaks counts.
 
-| Action                   | Input                                                                           | What it does, as in the app                                                    |
-| ------------------------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `deleteTasks`            | `{taskIds: string[]}`                                                           | deletes the tasks with their subtasks, as the multi-select delete              |
-| `deleteTask`             | `{taskId}`                                                                      | deletes the task with its subtasks, as the task's delete button                |
-| `updateTask`             | `{taskId, changes: {title?, notes?, isDone?, timeEstimate?}}`                   | edits the task; marking it done sets its done date and may complete its parent |
-| `addTaskRepeatCfgToTask` | `{taskId, ...}` with the fields of [make recurring](#post-apitasksidrepeat-cfg) | makes the task recurring, as the repeat dialog                                 |
+| Action                      | Input                                                                           | What it does, as in the app                                                                                                                                |
+| --------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deleteTasks`               | `{taskIds: string[]}`                                                           | deletes the tasks with their subtasks, as the multi-select delete                                                                                          |
+| `deleteTask`                | `{taskId}`                                                                      | deletes the task with its subtasks, as the task's delete button                                                                                            |
+| `updateTask`                | `{taskId, changes: {title?, notes?, isDone?, timeEstimate?}}`                   | edits the task; marking it done sets its done date, drops its reminders and may complete its parent                                                        |
+| `updateManyTasks`           | `{updates: [{taskId, changes}]}`, 1 to 100, `changes` as in `updateTask`        | edits each task as `updateTask` does, in one upload; any refusal uploads nothing                                                                           |
+| `addTaskRepeatCfgToTask`    | `{taskId, ...}` with the fields of [make recurring](#post-apitasksidrepeat-cfg) | makes the task recurring, as the repeat dialog                                                                                                             |
+| `updateGlobalConfigSection` | `{sectionKey, changes}`                                                         | saves the given settings of one section, as the settings page; see below                                                                                   |
+| `moveToArchive`             | `{taskIds: string[]}`                                                           | archives top-level tasks with their subtasks; a subtask `400`                                                                                              |
+| `restoreTask`               | `{taskId}`                                                                      | restores an archived top-level task with its subtasks, as the history page; not archived `404`, on the board `409`, an archived subtask `400`              |
+| `scheduleTaskWithTime`      | `{taskId, at, remind?, isMoveToBacklog?}`                                       | schedules the task at a time, as the schedule dialog; also a reschedule                                                                                    |
+| `unscheduleTask`            | `{taskId}`                                                                      | removes the task's day or time, as the schedule dialog's remove                                                                                            |
+| `setDeadline`               | `{taskId, day}` or `{taskId, at, remind?}`                                      | sets a deadline, as the deadline dialog; one due today plans the task for today                                                                            |
+| `removeDeadline`            | `{taskId}`                                                                      | removes the deadline                                                                                                                                       |
+| `planTaskForDay`            | `{taskId, day}`                                                                 | plans the task for a day without a time; a task already planned for that day changes nothing                                                               |
+| `planTasksForToday`         | `{taskIds: string[]}`                                                           | adds the tasks to Today on the action's day                                                                                                                |
+| `removeTasksFromTodayTag`   | `{taskIds: string[]}`                                                           | takes the tasks off Today                                                                                                                                  |
+| `logTime`                   | `{taskId, date?, duration}`                                                     | adds time worked on a day (default: the action's day), as the idle dialog; another device's tracking on the same day adds up                               |
+| `removeTimeSpent`           | `{taskId, date?, duration}`                                                     | removes time from a day; more than the day holds `409`                                                                                                     |
+| `addSection`                | `{title, projectId}` or `{title, today: true}`                                  | adds a section to a project or to Today; `refs.sectionId` names it                                                                                         |
+| `updateSection`             | `{sectionId, title}`                                                            | renames the section                                                                                                                                        |
+| `deleteSection`             | `{sectionId}`                                                                   | deletes the section; its tasks stay in their list                                                                                                          |
+| `addTaskToSection`          | `{sectionId, taskId, afterTaskId?}`                                             | moves a top-level task of the section's project (or of Today) into the section, out of any other; after `afterTaskId`, `null` for the top, default the end |
+| `removeTaskFromSection`     | `{sectionId, taskId, afterTaskId?}`                                             | moves the task out of the section into the tasks outside sections; after `afterTaskId`, default the top                                                    |
+| `archiveProject`            | `{projectId}`                                                                   | archives the project; the Inbox `400`                                                                                                                      |
+| `unarchiveProject`          | `{projectId}`                                                                   | unarchives the project and reopens it if it was completed; the Inbox `400`                                                                                 |
+
+Times (`at`) are ISO times with their offset, durations are in ms, days are `YYYY-MM-DD`. `remind` is one of `DoNotRemind`, `AtStart`, `m5`, `m10`, `m15`, `m30`, `h1`; without it a task that already has a time and reminder keeps the reminder's offset, and any other task takes the board's default reminder.
+
+`updateGlobalConfigSection` takes any section of `GET /api/config` except `sync`, and only the settings that section has by default: anything else, such as `misc.uiPrefs`, is refused with `400`, and a wrong type with `409`. Only the given settings are saved, so another device's change to a different setting of the section is kept. Moving the start of the day (`misc.startOfNextDayTime`) also moves the tasks planned for the old today to the new today, as the app does.
 
 Inputs take ids and the fields listed, nothing else: anything more is refused with `400`, so no call can send a malformed entity. The bridge fills in the rest from the board, as the app does. An input only ever gains fields, so a call that works now keeps working.
 
@@ -421,7 +445,7 @@ Lists every action with its input as JSON Schema, and the schema of `when`. Read
 
 ### `POST /api/actions/:name`
 
-Runs one action on your own board. Body: `{"input": {...}, "when": {...}}`. → `{"opIds": [...], "refs": {...}}`: the ids of the uploaded changes, in order, and the ids the action created (`taskRepeatCfgId` for a new config).
+Runs one action on your own board. Body: `{"input": {...}, "when": {...}}`. → `{"opIds": [...], "refs": {...}}`: the ids of the uploaded changes, in order, and the ids the action created (`taskRepeatCfgId` for a new config, `sectionId` for a new section).
 
 `when` is optional and says what time the action happens at, for the rules that depend on the day:
 
@@ -515,6 +539,19 @@ curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
 Updates a task. Body is a partial of the writable fields (see Conventions).
 Unknown/unwritable fields → `400` listing them; empty body → `400`.
 
+Each field is saved as the app saves it, through the [app actions](#app-actions), all in one upload:
+
+| Field                                      | Saved as                                                                                          |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| `title`, `notes`, `isDone`, `timeEstimate` | `updateTask`, with its follow-ups                                                                 |
+| `dueWithTime` (ms)                         | `scheduleTaskWithTime` at that time                                                               |
+| `dueDay`                                   | `planTaskForDay`                                                                                  |
+| `dueDay` or `dueWithTime` `null`           | `unscheduleTask`                                                                                  |
+| `timeSpent` (the new total)                | the difference as `logTime` or `removeTimeSpent` on today; removing more than today holds → `409` |
+| `doneOn`, `projectId`, `tagIds`            | a plain update, after the actions                                                                 |
+
+`dueDay` and `dueWithTime` together → `400`: a task has one or the other.
+
 ### `POST /api/tasks/:id/complete`
 
 Marks done, setting `doneOn` to now. No body.
@@ -540,12 +577,11 @@ curl -H "X-Api-Key: $KEY" -X DELETE http://host:18230/api/tasks/<id>
 
 ## Bulk operations
 
-Both routes build one operation per task and upload them together - cheaper and
-more consistent than looping single calls.
+Both routes save each task as [`PATCH /api/tasks/:id`](#patch-apitasksid) does and upload every change together, as the app's [`updateManyTasks`](#app-actions) action. Up to 100 tasks per call.
 
 ### `POST /api/tasks/bulk/complete`
 
-Body: `{"taskIds": ["id1","id2"]}` → `{"completed":[...]}`.
+Body: `{"taskIds": ["id1","id2"]}` → `{"completed":[...]}`. Each task is marked done as `updateTask` does, follow-ups included (a parent whose last open subtask is done, a reminder dropped).
 
 ### `POST /api/tasks/bulk/update`
 
@@ -650,7 +686,7 @@ their parent.
 
 ### `POST /api/today/plan`
 
-Adds tasks to the Today list. Body:
+Adds tasks to the Today list, as the app's [`planTasksForToday`](#app-actions) action. Body:
 `{"taskIds": ["..."], "today": "YYYY-MM-DD"}` (`today` optional, defaults to the
 server's current date). Unknown id → `404`.
 
@@ -661,7 +697,7 @@ curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
 
 ### `POST /api/today/remove`
 
-Removes tasks from the Today list. Body: `{"taskIds": ["..."]}`.
+Removes tasks from the Today list, as the app's [`removeTasksFromTodayTag`](#app-actions) action. Body: `{"taskIds": ["..."]}`. Unknown id → `404`.
 
 Read the list back with `GET /api/tasks?plannedForToday=true`.
 
@@ -723,7 +759,7 @@ Built exactly as the app's create-project dialog builds one: `color` becomes the
 
 ### `PATCH /api/projects/:id`
 
-Updates a project. Writable: `title`, `isEnableBacklog`, `isArchived`.
+Updates a project. Writable: `title`, `isEnableBacklog`, `isArchived`. `isArchived` runs the app's [`archiveProject` or `unarchiveProject`](#app-actions): unarchiving also reopens a completed project, and the Inbox can't be archived (`400`).
 
 ### `DELETE /api/projects/:id`
 

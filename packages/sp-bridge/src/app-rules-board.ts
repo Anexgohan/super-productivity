@@ -11,7 +11,7 @@
  */
 import { decrypt } from '@sp/sync-core';
 import type { SuperSyncServerOperation } from '@sp/shared-schema';
-import type { ActionWhen } from './action-inputs';
+import type { ActionWhen, ActStep } from './action-inputs';
 import type {
   AppRulesActResult,
   AppRulesApplyResult,
@@ -228,14 +228,16 @@ export class AppRulesBoard {
     return { seq: res.seq, size: res.size };
   }
 
-  /** The ops an app action would upload on this board as it stands. Throws the worker's refusal, with its status and reasons. */
-  async act(name: string, input: unknown, when: ActionWhen): Promise<AppRulesActResult> {
+  /**
+   * The ops app actions would upload on this board as it stands.
+   * Throws the worker's refusal, with its status and reasons.
+   */
+  async act(steps: ActStep[], when: ActionWhen): Promise<AppRulesActResult> {
     void this.view;
     const res = await this._worker.request({
       kind: 'act',
       board: this._opts.board,
-      name,
-      input,
+      steps,
       when,
     });
     if (res.kind !== 'act') throw new Error('unexpected act reply');

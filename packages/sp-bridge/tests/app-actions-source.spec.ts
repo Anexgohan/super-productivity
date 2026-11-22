@@ -82,8 +82,7 @@ describe('app actions from source', () => {
 
     const err = await act(
       { ...board, reducer: refusing },
-      'deleteTasks',
-      { taskIds: ['T'] },
+      [{ name: 'deleteTasks', input: { taskIds: ['T'] } }],
       {},
     ).catch((e: unknown) => e);
 
@@ -95,7 +94,11 @@ describe('app actions from source', () => {
 
   it("builds the op the app's own capture and upload build for the same action", async () => {
     const board = boardOf();
-    const { ops } = await act(board, 'deleteTasks', { taskIds: ['P', 'T'] }, {});
+    const { ops } = await act(
+      board,
+      [{ name: 'deleteTasks', input: { taskIds: ['P', 'T'] } }],
+      {},
+    );
     expect(ops).toHaveLength(1);
 
     // What a browser uploads: TaskService.removeMultipleTasks' action, through the capture and upload conversions.
@@ -170,5 +173,31 @@ describe('app actions from source', () => {
     expect(subs).toHaveLength(3);
     expect(dispatched).toEqual(['saved']);
     expect(failed).toEqual(['fails$']);
+  });
+
+  it('subscribes only the effects a class is limited to, and refuses a name it lacks', () => {
+    class Effects {
+      saves$ = createEffect(() => of({ type: 'saved' }));
+      other$ = createEffect(() => of({ type: 'other' }));
+    }
+    const dispatched: string[] = [];
+
+    const subs = subscribeEffects(
+      new Effects(),
+      (a) => dispatched.push(a.type),
+      () => undefined,
+      ['saves$'],
+    );
+
+    expect(subs).toHaveLength(1);
+    expect(dispatched).toEqual(['saved']);
+    expect(() =>
+      subscribeEffects(
+        new Effects(),
+        () => undefined,
+        () => undefined,
+        ['renamed$'],
+      ),
+    ).toThrow('No such effect on Effects: renamed$');
   });
 });

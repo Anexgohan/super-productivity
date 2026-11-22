@@ -196,3 +196,16 @@ export class HeadlessTrackingInterval {
     return this._dateService.todayStr();
   }
 }
+
+/** A service the build's follow-ups inject but never reach: calling it fails the build, rather than running UI code headless. */
+export const unreachable = (name: string): object =>
+  new Proxy(
+    {},
+    {
+      // The injector's own checks read plain object properties and Angular's lifecycle hooks; those stay as on any object.
+      get: (target, prop, receiver) =>
+        typeof prop === 'symbol' || prop in target || prop.startsWith('ng')
+          ? Reflect.get(target, prop, receiver)
+          : () => notHeadless(`${name}.${prop}`),
+    },
+  );

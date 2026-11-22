@@ -15,6 +15,15 @@ export default defineConfig({
         find: '@sp/sync-core',
         replacement: fileURLToPath(new URL('../sync-core/src/index.ts', import.meta.url)),
       },
+      {
+        find: '@sp/keyboard-config',
+        replacement: fileURLToPath(
+          new URL(
+            '../../electron/shared-with-frontend/keyboard-config.model.ts',
+            import.meta.url,
+          ),
+        ),
+      },
       // Some app files import from the repo root (`src/...`), as the app's baseUrl allows; the worker build resolves them the same way.
       {
         find: /^src\//,

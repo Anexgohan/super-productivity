@@ -89,7 +89,7 @@ const handle = async (req: AppRulesRequest): Promise<AppRulesResponse> => {
       id: req.id,
       ok: true,
       kind: 'act',
-      result: await board.rules.act(req.name, req.input, req.when),
+      result: await board.rules.act(req.steps, req.when),
     };
   }
   if (req.kind === 'checkpoint') {

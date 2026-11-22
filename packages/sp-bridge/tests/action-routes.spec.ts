@@ -5,6 +5,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import { createRestServer, type AuthWiring } from '../src/rest';
+import { ACTION_INPUTS } from '../src/action-inputs';
 import { formatApiKey } from '../src/auth/api-key';
 import { SessionManager } from '../src/auth/session';
 import type { ApiKeyRow, AuthStore, UserRow } from '../src/auth/store';
@@ -176,14 +177,19 @@ describe('app action routes', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = res.json() as {
-      actions: Record<string, { input: { type: string; properties: object } }>;
+      actions: Record<string, { input: Record<string, unknown> }>;
     };
-    expect(Object.keys(body.actions).sort()).toEqual(
-      ['addTaskRepeatCfgToTask', 'deleteTask', 'deleteTasks', 'updateTask'].sort(),
-    );
+    expect(Object.keys(body.actions).sort()).toEqual(Object.keys(ACTION_INPUTS).sort());
     expect(body.actions.deleteTasks.input).toMatchObject({
       type: 'object',
       properties: { taskIds: { type: 'array' } },
+    });
+    // An action with more than one input shape lists each.
+    expect(body.actions.setDeadline.input).toMatchObject({
+      anyOf: [
+        { properties: { day: { type: 'string' } } },
+        { properties: { at: { type: 'string', format: 'date-time' } } },
+      ],
     });
   });
 });

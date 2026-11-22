@@ -388,39 +388,6 @@ export class OpFactory {
     });
   }
 
-  /** [Task Shared] planTasksForToday - add tasks to the TODAY list (bulk). */
-  planTasksForToday(
-    taskIds: string[],
-    today: string,
-    vectorClock: Record<string, number>,
-  ): Promise<SuperSyncOperation> {
-    return this._makeOp({
-      actionType: '[Task Shared] planTasksForToday',
-      opType: 'UPD',
-      entityType: 'TASK',
-      entityId: taskIds[0],
-      entityIds: taskIds,
-      actionPayload: { taskIds, today, isShowSnack: false },
-      vectorClock,
-    });
-  }
-
-  /** [Task Shared] removeTasksFromTodayTag - remove tasks from the TODAY list (bulk). */
-  removeTasksFromTodayTag(
-    taskIds: string[],
-    vectorClock: Record<string, number>,
-  ): Promise<SuperSyncOperation> {
-    return this._makeOp({
-      actionType: '[Task Shared] removeTasksFromTodayTag',
-      opType: 'UPD',
-      entityType: 'TASK',
-      entityId: taskIds[0],
-      entityIds: taskIds,
-      actionPayload: { taskIds },
-      vectorClock,
-    });
-  }
-
   // ── Tags ────────────────────────────────────────────────────────────────────
 
   /** [Tag] Add Tag - full Tag entity in { tag }. */

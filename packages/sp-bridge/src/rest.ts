@@ -78,7 +78,7 @@ const DOCS = {
     'GET /api/actions':
       'the app actions POST /api/actions/:name runs, each with its input as JSON Schema',
     'POST /api/actions/:name':
-      "run an app action as a browser does, built by the app's own code with its follow-ups (deleting a parent's last open subtask completes the parent, making a task recurring schedules it) and uploaded together; body: {input, when?: {today: YYYY-MM-DD} | {now: ISO time with offset}}; answers {opIds, refs}. 400 bad input, 404 unknown action or entity, 409 refused by the app's rules or validation, with the reasons in errors",
+      "run an app action as a browser does, built by the app's own code with its follow-ups (deleting a parent's last open subtask completes the parent, making a task recurring schedules it) and uploaded together; body: {input, when?: {today: YYYY-MM-DD} | {now: ISO time with offset}}; answers {opIds, refs} (refs names a new entity's id: taskRepeatCfgId, sectionId). 400 bad input, 404 unknown action or entity, 409 refused by the app's rules or validation, with the reasons in errors",
     'GET /api/entities': 'list materialized entity types (raw superset access)',
     'GET /api/entities/:type': 'raw entity map for a type',
     'POST /api/sync/refresh': 'force an op-log pull now',
@@ -103,17 +103,17 @@ const DOCS = {
     'POST /api/tasks/reorder':
       'reorder a task list (permutation only); body: {taskIds: string[]} + exactly one of {projectId} | {parentId} | {today: true}',
     'POST /api/today/plan':
-      'add tasks to the TODAY list; body: {taskIds: string[], today?: YYYY-MM-DD}',
+      "add tasks to the TODAY list, as the app's planTasksForToday action; body: {taskIds: string[], today?: YYYY-MM-DD}",
     'POST /api/today/remove':
-      'remove tasks from the TODAY list; body: {taskIds: string[]}',
+      "remove tasks from the TODAY list, as the app's removeTasksFromTodayTag action; body: {taskIds: string[]}; unknown id 404",
     'POST /api/tasks/bulk/complete':
-      'complete many tasks in one upload; body: {taskIds: string[]}',
+      "complete up to 100 tasks in one upload, as the app's updateManyTasks action with its follow-ups; body: {taskIds: string[]}",
     'POST /api/tasks/bulk/update':
-      'apply per-task updates in one upload (all-or-nothing); body: {updates: [{id, ...allowed task fields}]}',
+      'apply per-task updates in one upload (all-or-nothing), each field as PATCH /api/tasks/:id builds it; body: {updates: [{id, ...allowed task fields}]}',
     'POST /api/tasks':
       'create task; body: {title (required), projectId?, notes?, timeEstimate?, tagIds?, dueDay?, dueWithTime?}',
     'PATCH /api/tasks/:id':
-      'update task; body: partial of {title, notes, isDone, doneOn, timeEstimate, timeSpent, projectId, tagIds, dueDay, dueWithTime}',
+      "update task through the app's actions, in one upload: title/notes/isDone/timeEstimate as updateTask, dueWithTime as scheduleTaskWithTime, dueDay as planTaskForDay, either null as unscheduleTask, timeSpent (a new total) as logTime or removeTimeSpent on today; doneOn, projectId and tagIds are a plain update after them. body: partial of {title, notes, isDone, doneOn, timeEstimate, timeSpent, projectId, tagIds, dueDay, dueWithTime}; dueDay and dueWithTime together 400",
     'POST /api/tasks/:id/complete': 'mark task done (sets doneOn=now)',
     'POST /api/tasks/:id/complete-on':
       'mark done with explicit date; body: {doneOn: "YYYY-MM-DD"}',
@@ -129,7 +129,7 @@ const DOCS = {
     'POST /api/projects':
       'create project; body: {title (required), color?, isEnableBacklog?}',
     'PATCH /api/projects/:id':
-      'update project; body: partial of {title, isEnableBacklog, isArchived}',
+      "update project; body: partial of {title, isEnableBacklog, isArchived}; isArchived runs the app's archiveProject or unarchiveProject (unarchiving reopens a completed project; the Inbox 400)",
     'GET /api/boards':
       'list boards with their panels; an account that has never edited a board gets the app defaults rather than [], so this matches what its owner sees in a browser. [] means every board was deleted',
     'GET /api/boards/:id': 'single board by id',

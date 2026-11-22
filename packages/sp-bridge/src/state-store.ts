@@ -14,7 +14,7 @@ import type { SuperSyncOperation } from '@sp/shared-schema';
 import { encrypt, encryptBytes } from '@sp/sync-core';
 import type { AppRulesWorker } from './app-rules-worker';
 import { AppRulesBoard, type AppRulesBoardStatus } from './app-rules-board';
-import type { ActionWhen } from './action-inputs';
+import type { ActionWhen, ActStep } from './action-inputs';
 import type { AppRulesActResult } from './app-rules-protocol';
 import type { EntityMap } from './state-view';
 import { CheckpointTracker, type CheckpointState } from './checkpoints';
@@ -412,17 +412,13 @@ export class StateStore {
   }
 
   /**
-   * The ops an app action would upload, built by the app rules on the board as the server has it now (anex/app-actions).
+   * The ops app actions would upload, built by the app rules on the board as the server has it now (anex/app-actions).
    * Nothing is uploaded here: the caller stamps and submits them.
    */
-  async buildAction(
-    name: string,
-    input: unknown,
-    when: ActionWhen,
-  ): Promise<AppRulesActResult> {
+  async buildActions(steps: ActStep[], when: ActionWhen): Promise<AppRulesActResult> {
     this._assertWritable();
     await this.refresh();
-    return this._worker.exclusive(() => this._board.act(name, input, when));
+    return this._worker.exclusive(() => this._board.act(steps, when));
   }
 
   private _assertWritable(): void {

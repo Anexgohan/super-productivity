@@ -4,7 +4,7 @@
  * One worker holds the app rules of every resident board; each request names its board.
  * Types only, no runtime code: the worker bundle imports this file, and nothing here may pull bridge or app modules across the thread boundary.
  */
-import type { ActionWhen } from './action-inputs';
+import type { ActionWhen, ActStep } from './action-inputs';
 
 /**
  * A downloaded op, decrypted on the bridge's main thread before it crosses to the worker.
@@ -40,13 +40,12 @@ export type AppRulesRequest =
   | { id: number; board: string; kind: 'export-file'; path: string }
   /** Checks a backup file for an import into `board`, as the app checks one; the bytes are transferred, not copied. */
   | { id: number; board: string; kind: 'import-check'; bytes: ArrayBuffer }
-  /** Builds an app action into the ops a browser would upload for it; the board itself is left as it is. */
+  /** Builds app actions, in order, into the ops a browser would upload for them; the board itself is left as it is. */
   | {
       id: number;
       board: string;
       kind: 'act';
-      name: string;
-      input: unknown;
+      steps: ActStep[];
       when: ActionWhen;
     };
 

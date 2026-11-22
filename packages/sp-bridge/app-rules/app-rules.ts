@@ -80,7 +80,7 @@ import { logicalDayChange } from './logical-day';
 import { nextCheckpointHold } from '../src/checkpoints';
 import { encodeBackup, validationErrorsOf } from './board-transfer';
 import { act } from './actions/act';
-import type { ActionWhen } from '../src/action-inputs';
+import type { ActionWhen, ActStep } from '../src/action-inputs';
 
 /** Bump when the cache shape changes; an older cache is then discarded and the app rules rebuild from seq 0. */
 export const APP_RULES_CACHE_VERSION = 2;
@@ -438,8 +438,8 @@ export class AppRules {
     };
   }
 
-  /** The ops a browser would upload for an app action on this board, as it stands; the board itself is left as it is. */
-  act(name: string, input: unknown, when: ActionWhen): Promise<AppRulesActResult> {
+  /** The ops a browser would upload for app actions on this board, as it stands; the board itself is left as it is. */
+  act(steps: ActStep[], when: ActionWhen): Promise<AppRulesActResult> {
     return act(
       {
         clientId: this._clientId,
@@ -447,8 +447,7 @@ export class AppRules {
         reducer: this._reducer,
         archive: this._archive,
       },
-      name,
-      input,
+      steps,
       when,
     );
   }

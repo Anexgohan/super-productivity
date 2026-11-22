@@ -3,8 +3,9 @@
  *
  *  1. check the input, then build the app's actions from the board (registry.ts);
  *  2. dispatch them on a copy of the board, with the app's follow-up effects listening, as in a browser;
- *  3. check the board they leave with the app's full validation;
- *  4. turn every saved action, follow-ups included, into an op with the app's own code (operationFromAction, syncOpFromOperation).
+ *  3. build and dispatch each further step on the board the one before it left;
+ *  4. check the board they leave with the app's full validation;
+ *  5. turn every saved action, follow-ups included, into an op with the app's own code (operationFromAction, syncOpFromOperation).
  *
  * The board itself never changes here: it changes only from downloaded ops, when the uploaded ones come back.
  */
@@ -21,6 +22,16 @@ import { WorkContextService } from '../../../../src/app/features/work-context/wo
 import { TaskArchiveService } from '../../../../src/app/features/archive/task-archive.service';
 import { TaskInternalEffects } from '../../../../src/app/features/tasks/store/task-internal.effects';
 import { TaskRepeatCfgEffects } from '../../../../src/app/features/task-repeat-cfg/store/task-repeat-cfg.effects';
+import { GlobalConfigEffects } from '../../../../src/app/features/config/store/global-config.effects';
+import { TaskReminderEffects } from '../../../../src/app/features/tasks/store/task-reminder.effects';
+import { LanguageService } from '../../../../src/app/core/language/language.service';
+import { SnackService } from '../../../../src/app/core/snack/snack.service';
+import { UserProfileService } from '../../../../src/app/features/user-profile/user-profile.service';
+import { KeyboardLayoutService } from '../../../../src/app/core/keyboard-layout/keyboard-layout.service';
+import { LocaleDatePipe } from '../../../../src/app/ui/pipes/locale-date.pipe';
+import { IS_ELECTRON_TOKEN } from '../../../../src/app/app.constants';
+import { IS_MAC_TOKEN } from '../../../../src/app/util/is-mac';
+import { IS_ANDROID_WEB_VIEW_TOKEN } from '../../../../src/app/util/is-android-web-view';
 import { ArchiveStoreService } from '../../../../src/app/op-log/persistence/archive-store.service';
 import { StateSnapshotService } from '../../../../src/app/op-log/backup/state-snapshot.service';
 import { OperationCaptureService } from '../../../../src/app/op-log/capture/operation-capture.service';
@@ -42,13 +53,17 @@ import {
   ACTION_INPUTS,
   inputErrorsOf,
   isActionName,
+  type ActionInput,
+  type ActionName,
   type ActionWhen,
+  type ActStep,
 } from '../../src/action-inputs';
 import type { AppRulesActResult, BuiltOp } from '../../src/app-rules-protocol';
 import type { RootState } from '../root-reducer';
 import { logicalDayChange } from '../logical-day';
 import { validationErrorsOf } from '../board-transfer';
-import { ActionInputError, buildAction } from './registry';
+import { buildAction } from './registry';
+import { ActionInputError, type BuildContext } from './build-context';
 import { realNow, withCallerClock } from './clock';
 import {
   HeadlessMatDialog,
@@ -56,12 +71,23 @@ import {
   HeadlessTaskService,
   HeadlessTrackingInterval,
   HeadlessWorkContextService,
+  unreachable,
 } from './headless';
 
+/** An app effect class whose follow-ups a build runs, limited to the effects named when the others do device or screen work. */
+export interface FollowUpEffects {
+  effects: Type<object>;
+  only?: string[];
+}
+
 /** The app's effect classes whose follow-ups a build runs: each one saves changes the API must make too. */
-export const FOLLOW_UP_EFFECTS: Type<object>[] = [
-  TaskInternalEffects,
-  TaskRepeatCfgEffects,
+export const FOLLOW_UP_EFFECTS: FollowUpEffects[] = [
+  { effects: TaskInternalEffects },
+  { effects: TaskRepeatCfgEffects },
+  // Moving the start of the day moves today's tasks to the new today, which only the device that changes it does.
+  { effects: GlobalConfigEffects, only: ['setStartOfNextDayDiffOnChange'] },
+  // A task marked done drops its reminders, which only the device that marks it does.
+  { effects: TaskReminderEffects, only: ['unscheduleDoneTask$'] },
 ];
 
 /** Rounds of the event loop a build waits for follow-ups that read the archive or another promise; none of them waits on a timer. */
@@ -72,9 +98,18 @@ export const subscribeEffects = (
   instance: object,
   dispatch: (action: Action) => void,
   onError: (propertyName: string, err: unknown) => void,
+  only?: string[],
 ): Subscription[] => {
   const effects = instance as Record<string, Observable<unknown>>;
-  return Object.entries(getEffectsMetadata(effects)).map(([propertyName, config]) => {
+  const all = Object.entries(getEffectsMetadata(effects));
+  const missing = (only ?? []).filter((name) => !all.some(([n]) => n === name));
+  if (missing.length > 0) {
+    throw new Error(
+      `No such effect on ${instance.constructor.name}: ${missing.join(', ')}`,
+    );
+  }
+  const metadata = all.filter(([propertyName]) => !only || only.includes(propertyName));
+  return metadata.map(([propertyName, config]) => {
     const dispatches = config?.dispatch !== false;
     return effects[propertyName].subscribe({
       next: (out) => {
@@ -158,43 +193,41 @@ export interface ActBoard {
   archive: ArchiveReader;
 }
 
+interface ParsedStep {
+  name: ActionName;
+  input: ActionInput<ActionName>;
+}
+
 export const act = async (
   board: ActBoard,
-  name: string,
-  rawInput: unknown,
+  steps: ActStep[],
   when: ActionWhen,
 ): Promise<AppRulesActResult> => {
-  if (!isActionName(name)) throw new ActError(`No such action: ${name}`, 404);
-  const parsed = ACTION_INPUTS[name].safeParse(rawInput ?? {});
-  if (!parsed.success) {
-    throw new ActError(
-      'The input is not valid for this action.',
-      400,
-      inputErrorsOf(parsed.error),
-    );
-  }
-  return withCallerClock(callerNowOf(when, board.state), () =>
-    build(board, name, parsed.data),
-  );
+  if (steps.length === 0) throw new ActError('No action given.', 400);
+  const parsed: ParsedStep[] = steps.map(({ name, input }, i) => {
+    if (!isActionName(name)) throw new ActError(`No such action: ${name}`, 404);
+    const result = ACTION_INPUTS[name].safeParse(input ?? {});
+    if (!result.success) {
+      const prefix = steps.length > 1 ? `steps.${i}.${name}.` : '';
+      throw new ActError(
+        'The input is not valid for this action.',
+        400,
+        inputErrorsOf(result.error).map((e) => prefix + e),
+      );
+    }
+    return { name, input: result.data as ActionInput<ActionName> };
+  });
+  return withCallerClock(callerNowOf(when, board.state), () => build(board, parsed));
 };
 
 const build = async (
   board: ActBoard,
-  name: Parameters<typeof buildAction>[0],
-  input: Parameters<typeof buildAction>[2],
+  steps: ParsedStep[],
 ): Promise<AppRulesActResult> => {
   let state = board.state;
   // The day a browser would count as today at this moment, as the app sets it before acting.
   const dayChange = logicalDayChange(state, Date.now());
   if (dayChange) state = board.reducer(state, dayChange);
-
-  let built;
-  try {
-    built = buildAction(name, state, input);
-  } catch (err) {
-    if (err instanceof ActionInputError) throw new ActError(err.message, err.statusCode);
-    throw err;
-  }
 
   const state$ = new BehaviorSubject<RootState>(state);
   const actions$ = new Subject<Action>();
@@ -248,35 +281,72 @@ const build = async (
           new HeadlessTaskService(store, archive),
         deps: [TaskArchiveService],
       },
-      ...FOLLOW_UP_EFFECTS.map((effects) => ({ provide: effects, useClass: effects })),
+      ...[
+        LanguageService,
+        SnackService,
+        UserProfileService,
+        KeyboardLayoutService,
+        LocaleDatePipe,
+      ].map((service) => ({ provide: service, useValue: unreachable(service.name) })),
+      { provide: IS_ELECTRON_TOKEN, useValue: false },
+      { provide: IS_MAC_TOKEN, useValue: false },
+      { provide: IS_ANDROID_WEB_VIEW_TOKEN, useValue: false },
+      ...FOLLOW_UP_EFFECTS.map(({ effects }) => ({
+        provide: effects,
+        useClass: effects,
+      })),
     ],
   });
   const misc = normalizeStartOfNextDayConfig(selectMiscConfig(state as never));
-  injector
-    .get(DateService)
-    .setStartOfNextDayDiff(misc.startOfNextDayTime, misc.startOfNextDay);
+  const dateService = injector.get(DateService);
+  dateService.setStartOfNextDayDiff(misc.startOfNextDayTime, misc.startOfNextDay);
   const capture = injector.get(OperationCaptureService);
   setOperationCaptureService(capture);
+  const ctx: BuildContext = {
+    select: (selector, props) =>
+      (selector as (s: RootState, p: unknown) => never)(state, props),
+    archive: injector.get(TaskArchiveService),
+    dateService,
+  };
 
-  const subscriptions = FOLLOW_UP_EFFECTS.flatMap((effectsClass) =>
-    subscribeEffects(injector.get(effectsClass), dispatch, (propertyName, err) => {
-      failure ??=
-        err instanceof ActError
-          ? err
-          : new ActError(
-              `The follow-up ${effectsClass.name}.${propertyName} failed: ${(err instanceof Error ? err.message : String(err)).slice(0, 200)}`,
-              (err as { statusCode?: number }).statusCode ?? 500,
-            );
-    }),
+  const subscriptions = FOLLOW_UP_EFFECTS.flatMap(({ effects, only }) =>
+    subscribeEffects(
+      injector.get(effects),
+      dispatch,
+      (propertyName, err) => {
+        failure ??=
+          err instanceof ActError
+            ? err
+            : new ActError(
+                `The follow-up ${effects.name}.${propertyName} failed: ${(err instanceof Error ? err.message : String(err)).slice(0, 200)}`,
+                (err as { statusCode?: number }).statusCode ?? 500,
+              );
+      },
+      only,
+    ),
   );
 
+  const refs: Record<string, string> = {};
   try {
-    for (const action of built.actions) dispatch(action);
-    // Some follow-ups read the archive first; wait until a round passes with nothing new.
-    let seen = -1;
-    for (let round = 0; round < SETTLE_ROUNDS && seen !== dispatched; round++) {
-      seen = dispatched;
-      await new Promise((resolve) => setTimeout(resolve, 0));
+    for (const step of steps) {
+      let built;
+      try {
+        built = await buildAction(step.name, ctx, step.input);
+      } catch (err) {
+        if (err instanceof ActionInputError) {
+          throw new ActError(err.message, err.statusCode);
+        }
+        throw err;
+      }
+      Object.assign(refs, built.refs);
+      for (const action of built.actions) dispatch(action);
+      // Some follow-ups read the archive first; wait until a round passes with nothing new.
+      let seen = -1;
+      for (let round = 0; round < SETTLE_ROUNDS && seen !== dispatched; round++) {
+        seen = dispatched;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      if (failure !== null) break;
     }
   } finally {
     subscriptions.forEach((s) => s.unsubscribe());
@@ -328,5 +398,5 @@ const build = async (
     const { id, clientId, vectorClock, ...rest } = wire;
     ops.push(rest as BuiltOp);
   }
-  return { ops, refs: built.refs, validationMs };
+  return { ops, refs, validationMs };
 };
