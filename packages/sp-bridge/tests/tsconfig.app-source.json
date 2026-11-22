@@ -8,6 +8,9 @@
     "./server-order-bring-backs.spec.ts",
     "./checkpoint-apply.spec.ts",
     "./bring-back-refusal.spec.ts",
-    "../../../src/app/core/window-ea.d.ts"
+    "./app-actions-source.spec.ts",
+    "./app-action-decisions.spec.ts",
+    "../../../src/app/core/window-ea.d.ts",
+    "../../../src/app/rxjs-to-promise.polyfill.ts"
   ]
 }

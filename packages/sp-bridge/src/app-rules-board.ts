@@ -11,7 +11,9 @@
  */
 import { decrypt } from '@sp/sync-core';
 import type { SuperSyncServerOperation } from '@sp/shared-schema';
+import type { ActionWhen } from './action-inputs';
 import type {
+  AppRulesActResult,
   AppRulesApplyResult,
   AppRulesCheckpoint,
   AppRulesImportCheck,
@@ -224,6 +226,20 @@ export class AppRulesBoard {
     });
     if (res.kind !== 'export-file') throw new Error('unexpected export-file reply');
     return { seq: res.seq, size: res.size };
+  }
+
+  /** The ops an app action would upload on this board as it stands. Throws the worker's refusal, with its status and reasons. */
+  async act(name: string, input: unknown, when: ActionWhen): Promise<AppRulesActResult> {
+    void this.view;
+    const res = await this._worker.request({
+      kind: 'act',
+      board: this._opts.board,
+      name,
+      input,
+      when,
+    });
+    if (res.kind !== 'act') throw new Error('unexpected act reply');
+    return res.result;
   }
 
   /** Checks a backup file for an import into this board. `body` may be unusable afterwards: its bytes move to the worker. */

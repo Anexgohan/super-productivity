@@ -9,7 +9,7 @@ const RealDate = Date;
 /** The container's real clock, for what must never take the caller's time: op timestamps. */
 export const realNow = (): number => RealDate.now();
 
-/** Runs `build` with the worker's clock reading `callerNow`, advancing in step with the real clock, and restores it afterwards, even after a throw. */
+/** Runs `build` with the worker's clock reading `callerNow`, in step with the real clock, and puts the real clock back, after a throw too. */
 export const withCallerClock = async <T>(
   callerNow: number | null,
   build: () => Promise<T>,
@@ -18,16 +18,17 @@ export const withCallerClock = async <T>(
   const offset = callerNow - RealDate.now();
   const now = (): number => RealDate.now() + offset;
   // Only the no-argument forms read the clock; every other form names its moment and stays as it was.
-  const CallerDate = function (this: unknown, ...args: unknown[]): Date | string {
-    if (!new.target) return new RealDate(now()).toString();
-    return args.length === 0
-      ? new RealDate(now())
-      : new (RealDate as unknown as new (...a: unknown[]) => Date)(...args);
-  } as unknown as DateConstructor;
-  Object.setPrototypeOf(CallerDate, RealDate);
-  Object.defineProperty(CallerDate, 'prototype', { value: RealDate.prototype });
-  Object.defineProperty(CallerDate, 'now', { value: now });
-  globalThis.Date = CallerDate;
+  class CallerDate extends RealDate {
+    constructor(...args: unknown[]) {
+      if (args.length === 0) super(now());
+      else super(...(args as [string]));
+    }
+
+    static override now(): number {
+      return now();
+    }
+  }
+  globalThis.Date = CallerDate as DateConstructor;
   try {
     return await build();
   } finally {

@@ -144,7 +144,16 @@ export class AppRulesWorker {
       clearTimeout(entry.timer);
       this._pending.delete(res.id);
       if (res.ok) entry.resolve(res);
-      else entry.reject(new Error(res.error));
+      else {
+        entry.reject(
+          Object.assign(
+            new Error(res.error),
+            res.statusCode === undefined
+              ? {}
+              : { statusCode: res.statusCode, errors: res.errors ?? [] },
+          ),
+        );
+      }
     });
     // Events from a worker already replaced must not touch its successor.
     worker.on('error', (err) => this._fail(worker, `worker error: ${err.message}`));

@@ -24,6 +24,7 @@ import {
   sanitizePanelCfg,
 } from '@sp/shared-schema';
 import type { BoardMatchMode, BoardPanelCfg, BoardSortField } from '@sp/shared-schema';
+import type { BuiltOp } from './app-rules-protocol';
 
 export const CURRENT_SCHEMA_VERSION = 4;
 
@@ -159,68 +160,6 @@ export const buildNoteEntity = (input: NewNoteInput): Record<string, unknown> =>
   };
 };
 
-export interface NewTaskRepeatCfgInput {
-  repeatCycle?: string;
-  repeatEvery?: number;
-  startDate?: string;
-  startTime?: string;
-  isPaused?: boolean;
-  monday?: boolean;
-  tuesday?: boolean;
-  wednesday?: boolean;
-  thursday?: boolean;
-  friday?: boolean;
-  saturday?: boolean;
-  sunday?: boolean;
-  defaultEstimate?: number;
-  notes?: string;
-  tagIds?: string[];
-  order?: number;
-  repeatFromCompletionDate?: boolean;
-  waitForCompletion?: boolean;
-}
-
-/**
- * Templated from DEFAULT_TASK_REPEAT_CFG in the client, field for field.
- *
- * Title and projectId come from the task being made recurring rather than from input, because that is what the UI does: the config describes
- * how a task repeats, not a second place to name it.
- *
- * Deliberately narrow. The monthly Nth-weekday and last-day anchors, sub-task templates and reminders are omitted: they carry interdependent rules
- * (the anchors are mutually exclusive, and a malformed pair silently changes the recurrence) that are better set in the UI than guessed at over HTTP.
- */
-export const buildTaskRepeatCfgEntity = (
-  input: NewTaskRepeatCfgInput,
-  from: { title: unknown; projectId: unknown; tagIds?: unknown },
-): Record<string, unknown> => ({
-  id: nanoid(),
-  projectId: (from.projectId as string | null) ?? null,
-  title: (from.title as string | null) ?? null,
-  lastTaskCreation: Date.now(),
-  lastTaskCreationDay: new Date().toLocaleDateString('en-CA'),
-  tagIds: input.tagIds ?? (Array.isArray(from.tagIds) ? (from.tagIds as string[]) : []),
-  order: input.order ?? 0,
-  isPaused: input.isPaused ?? false,
-  quickSetting: 'CUSTOM',
-  repeatCycle: input.repeatCycle ?? 'WEEKLY',
-  repeatEvery: input.repeatEvery ?? 1,
-  monday: input.monday ?? true,
-  tuesday: input.tuesday ?? true,
-  wednesday: input.wednesday ?? true,
-  thursday: input.thursday ?? true,
-  friday: input.friday ?? true,
-  saturday: input.saturday ?? false,
-  sunday: input.sunday ?? false,
-  repeatFromCompletionDate: input.repeatFromCompletionDate ?? false,
-  waitForCompletion: input.waitForCompletion ?? false,
-  shouldInheritSubtasks: false,
-  disableAutoUpdateSubtasks: false,
-  notes: input.notes,
-  defaultEstimate: input.defaultEstimate,
-  startDate: input.startDate,
-  startTime: input.startTime,
-});
-
 /** Panel filter fields; anything omitted takes the board editor's default (`DEFAULT_PANEL_CFG`). */
 export interface NewPanelInput {
   title: string;
@@ -325,6 +264,21 @@ export class OpFactory {
     } as SuperSyncOperation;
   }
 
+  /** An op the app rules built (anex/app-actions), with this bridge's identity and the clock it is written at. */
+  async wrap(
+    built: BuiltOp,
+    vectorClock: Record<string, number>,
+  ): Promise<SuperSyncOperation> {
+    return {
+      ...built,
+      id: uuidv7(),
+      clientId: this.clientId,
+      vectorClock,
+      payload: await encrypt(JSON.stringify(built.payload), this.encryptionPassword),
+      isPayloadEncrypted: true,
+    } as SuperSyncOperation;
+  }
+
   /**
    * [Task Shared] addTask - clone of the live client template. The task is added
    * to its own PROJECT context (not forced into the Today view); planning to
@@ -363,25 +317,6 @@ export class OpFactory {
       entityType: 'TASK',
       entityId: id,
       actionPayload: { task: { id, changes } },
-      vectorClock,
-    });
-  }
-
-  /** [Task Shared] deleteTask - expects the full task (with subTasks array). */
-  deleteTask(
-    task: Record<string, unknown>,
-    vectorClock: Record<string, number>,
-  ): Promise<SuperSyncOperation> {
-    const subTaskIds = Array.isArray(task.subTaskIds)
-      ? (task.subTaskIds as string[])
-      : [];
-    return this._makeOp({
-      actionType: '[Task Shared] deleteTask',
-      opType: 'DEL',
-      entityType: 'TASK',
-      entityId: task.id as string,
-      entityIds: [task.id as string, ...subTaskIds],
-      actionPayload: { task: { ...task, subTasks: [] } },
       vectorClock,
     });
   }
@@ -754,28 +689,6 @@ export class OpFactory {
   }
 
   // ── Recurring tasks ─────────────────────────────────────────────────────────
-
-  /**
-   * [TaskRepeatCfg][Task] Add TaskRepeatCfg to Task - the client's ONLY
-   * persistent create for a repeat config: you make an existing task recurring
-   * rather than conjuring a config from nothing. `Upsert TaskRepeatCfg` carries
-   * no op metadata at all, so it never reaches the log and is not an
-   * alternative. Mirrored exactly, taskId included.
-   */
-  addTaskRepeatCfgToTask(
-    taskId: string,
-    taskRepeatCfg: Record<string, unknown>,
-    vectorClock: Record<string, number>,
-  ): Promise<SuperSyncOperation> {
-    return this._makeOp({
-      actionType: '[TaskRepeatCfg][Task] Add TaskRepeatCfg to Task',
-      opType: 'CRT',
-      entityType: 'TASK_REPEAT_CFG',
-      entityId: taskRepeatCfg.id as string,
-      actionPayload: { taskId, taskRepeatCfg },
-      vectorClock,
-    });
-  }
 
   /** [TaskRepeatCfg] Update TaskRepeatCfg - NgRx Update shape { taskRepeatCfg: { id, changes } }. */
   updateTaskRepeatCfg(

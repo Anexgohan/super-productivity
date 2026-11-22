@@ -25,6 +25,7 @@ export const ACTION_INPUTS = {
       })
       .refine((c) => Object.keys(c).length > 0, 'expected at least one change'),
   }),
+  // The monthly anchors, subtask templates and reminders are left to the app's dialog: their rules depend on each other.
   addTaskRepeatCfgToTask: z.strictObject({
     taskId: id,
     repeatCycle: z.enum(['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY']).optional(),

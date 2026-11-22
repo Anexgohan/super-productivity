@@ -14,6 +14,8 @@ import type { SuperSyncOperation } from '@sp/shared-schema';
 import { encrypt, encryptBytes } from '@sp/sync-core';
 import type { AppRulesWorker } from './app-rules-worker';
 import { AppRulesBoard, type AppRulesBoardStatus } from './app-rules-board';
+import type { ActionWhen } from './action-inputs';
+import type { AppRulesActResult } from './app-rules-protocol';
 import type { EntityMap } from './state-view';
 import { CheckpointTracker, type CheckpointState } from './checkpoints';
 import { CURRENT_SCHEMA_VERSION, uuidv7 } from './op-factory';
@@ -403,6 +405,27 @@ export class StateStore {
    * Refused while the app rules cannot answer: a write the server cannot then read back would be blind.
    */
   async submitOps(ops: SuperSyncOperation[]): Promise<void> {
+    this._assertWritable();
+    void this._board.view;
+    await this._client.uploadOps(ops, this._board.seq);
+    await this.refresh();
+  }
+
+  /**
+   * The ops an app action would upload, built by the app rules on the board as the server has it now (anex/app-actions).
+   * Nothing is uploaded here: the caller stamps and submits them.
+   */
+  async buildAction(
+    name: string,
+    input: unknown,
+    when: ActionWhen,
+  ): Promise<AppRulesActResult> {
+    this._assertWritable();
+    await this.refresh();
+    return this._worker.exclusive(() => this._board.act(name, input, when));
+  }
+
+  private _assertWritable(): void {
     if (this._importing || this._writesClosed) {
       throw Object.assign(
         new Error(
@@ -412,9 +435,6 @@ export class StateStore {
         { statusCode: 409 },
       );
     }
-    void this._board.view;
-    await this._client.uploadOps(ops, this._board.seq);
-    await this.refresh();
   }
 
   /** The former rewritten copy's cache: dead data now, removed so it cannot mislead anyone reading the data folder. */

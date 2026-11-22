@@ -36,6 +36,8 @@ import {
   ImportError,
   readSavedFile,
 } from './board-transfer';
+import { z } from 'zod';
+import { ACTION_INPUTS, ACTION_WHEN, inputErrorsOf, isActionName } from './action-inputs';
 
 const DOCS = {
   name: 'sp-bridge API',
@@ -73,6 +75,10 @@ const DOCS = {
     'PATCH /api/task-repeat-cfgs/:id': 'update a recurring config (same writable fields)',
     'DELETE /api/task-repeat-cfgs/:id':
       'stop a recurring config; tasks already created from it are left alone',
+    'GET /api/actions':
+      'the app actions POST /api/actions/:name runs, each with its input as JSON Schema',
+    'POST /api/actions/:name':
+      "run an app action as a browser does, built by the app's own code with its follow-ups (deleting a parent's last open subtask completes the parent, making a task recurring schedules it) and uploaded together; body: {input, when?: {today: YYYY-MM-DD} | {now: ISO time with offset}}; answers {opIds, refs}. 400 bad input, 404 unknown action or entity, 409 refused by the app's rules or validation, with the reasons in errors",
     'GET /api/entities': 'list materialized entity types (raw superset access)',
     'GET /api/entities/:type': 'raw entity map for a type',
     'POST /api/sync/refresh': 'force an op-log pull now',
@@ -743,10 +749,12 @@ export const createRestServer = (
     reply: { status: (c: number) => { send: (b: unknown) => unknown } },
     err: unknown,
   ): unknown => {
-    const e = err as { statusCode?: number; message?: string };
-    return reply
-      .status(e.statusCode ?? 500)
-      .send({ error: e.message ?? 'Internal error' });
+    const e = err as { statusCode?: number; message?: string; errors?: unknown };
+    return reply.status(e.statusCode ?? 500).send({
+      error: e.message ?? 'Internal error',
+      // An app action's refusal says where: which input, or which rule of the app's validation.
+      ...(Array.isArray(e.errors) && e.errors.length > 0 ? { errors: e.errors } : {}),
+    });
   };
 
   app.post<{ Body: { text?: string; projectId?: string } }>(
@@ -1049,6 +1057,46 @@ export const createRestServer = (
     }
   });
 
+  // ── App actions (anex/app-actions) ───────────────────────────────────────
+  app.get('/api/actions', async () => ({
+    actions: Object.fromEntries(
+      Object.entries(ACTION_INPUTS).map(([name, schema]) => [
+        name,
+        { input: z.toJSONSchema(schema) },
+      ]),
+    ),
+    when: z.toJSONSchema(ACTION_WHEN),
+  }));
+
+  app.post<{ Params: { name: string }; Body: { input?: unknown; when?: unknown } }>(
+    '/api/actions/:name',
+    async (req, reply) => {
+      const { name } = req.params;
+      if (!isActionName(name)) {
+        return reply
+          .status(404)
+          .send({ error: `No such action: ${name}. GET /api/actions lists them.` });
+      }
+      const body = req.body ?? {};
+      const input = ACTION_INPUTS[name].safeParse(body.input ?? {});
+      const when = ACTION_WHEN.safeParse(body.when ?? {});
+      if (!input.success || !when.success) {
+        return reply.status(400).send({
+          error: 'The request is not valid for this action.',
+          errors: [
+            ...(input.success ? [] : inputErrorsOf(input.error).map((e) => `input.${e}`)),
+            ...(when.success ? [] : inputErrorsOf(when.error).map((e) => `when.${e}`)),
+          ],
+        });
+      }
+      try {
+        return await (await coreFor(req)).act(name, input.data, when.data);
+      } catch (err) {
+        return sendError(reply, err);
+      }
+    },
+  );
+
   // ── Recurring tasks (write) ───────────────────────────────────────────────
   // Created against a task, never standalone: that is the only shape the client
   // itself produces, and inventing a second one would put an op on the log that
@@ -1060,9 +1108,7 @@ export const createRestServer = (
         return reply
           .status(201)
           .send(
-            await (
-              await coreFor(req)
-            ).createTaskRepeatCfg(req.params.id, (req.body ?? {}) as never),
+            await (await coreFor(req)).createTaskRepeatCfg(req.params.id, req.body ?? {}),
           );
       } catch (err) {
         return sendError(reply, err);

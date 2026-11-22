@@ -23,7 +23,7 @@ For the concepts behind it, the op-log, why boards are tags, and what the Today 
 a body**. Do _not_ send it on bodyless `DELETE`s; the server rejects an empty
 body declared as JSON (`400 FST_ERR_CTP_EMPTY_JSON_BODY`).
 
-**Errors** - a uniform shape: `{"error": "<message>"}` with the status code.
+**Errors** - a uniform shape: `{"error": "<message>"}` with the status code. When a refusal has reasons to name, such as which input field is wrong or which rule of the app's validation a change breaks, they come as `errors`, a list of strings. The values you sent are never echoed back.
 
 | Code  | Meaning                                                                               |
 | ----- | ------------------------------------------------------------------------------------- |
@@ -153,6 +153,8 @@ Sharing is all-or-nothing and applies to everyone signed in, not only to viewers
 **Archive** · [list](#get-apiarchivetasks) · [single](#get-apiarchivetasksid)
 
 **Notes** · [list](#get-apinotes) · [single](#get-apinotesid) · [create](#post-apinotes) · [update](#patch-apinotesid) · [delete](#delete-apinotesid)
+
+**App actions** · [list](#get-apiactions) · [run](#post-apiactionsname)
 
 **Recurring tasks** · [make recurring](#post-apitasksidrepeat-cfg) · [update](#patch-apitask-repeat-cfgsid) · [delete](#delete-apitask-repeat-cfgsid)
 
@@ -398,19 +400,64 @@ Writable: `content`, `isPinnedToToday`, `backgroundColor`, `imgUrl`, `isLock`, `
 
 ---
 
+## App actions
+
+An app action is a change made the way the app makes it: the bridge runs the app's own code for it, the same code a browser runs, and uploads what that code saves. That includes the follow-up changes the app makes on its own. For example, marking the last open subtask done also completes its parent when the board's "mark parent as done" setting is on, and making a task recurring also schedules it. Every change of one action goes up in one upload, so the API never saves half of what a browser would.
+
+Before anything is uploaded, the result is checked with the app's full validation. A change that would leave the board invalid is refused with `409` and the broken rules in `errors`; a board that was already invalid stays writable, and only what the change itself breaks counts.
+
+| Action                   | Input                                                                           | What it does, as in the app                                                    |
+| ------------------------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `deleteTasks`            | `{taskIds: string[]}`                                                           | deletes the tasks with their subtasks, as the multi-select delete              |
+| `deleteTask`             | `{taskId}`                                                                      | deletes the task with its subtasks, as the task's delete button                |
+| `updateTask`             | `{taskId, changes: {title?, notes?, isDone?, timeEstimate?}}`                   | edits the task; marking it done sets its done date and may complete its parent |
+| `addTaskRepeatCfgToTask` | `{taskId, ...}` with the fields of [make recurring](#post-apitasksidrepeat-cfg) | makes the task recurring, as the repeat dialog                                 |
+
+Inputs take ids and the fields listed, nothing else: anything more is refused with `400`, so no call can send a malformed entity. The bridge fills in the rest from the board, as the app does. An input only ever gains fields, so a call that works now keeps working.
+
+### `GET /api/actions`
+
+Lists every action with its input as JSON Schema, and the schema of `when`. Readers may call it.
+
+### `POST /api/actions/:name`
+
+Runs one action on your own board. Body: `{"input": {...}, "when": {...}}`. → `{"opIds": [...], "refs": {...}}`: the ids of the uploaded changes, in order, and the ids the action created (`taskRepeatCfgId` for a new config).
+
+`when` is optional and says what time the action happens at, for the rules that depend on the day:
+
+| `when`                                 | The action runs as if it were        |
+| -------------------------------------- | ------------------------------------ |
+| absent or `{}`                         | now, in the container's time zone    |
+| `{"today": "YYYY-MM-DD"}`              | that day, at the current time of day |
+| `{"now": "2031-03-03T09:30:00+01:00"}` | that moment; the offset is required  |
+
+The day counts from the board's "start of next day" setting, as in the app. The time stamped on each uploaded change is always the container's real clock, whatever `when` says.
+
+`400` bad input or `when`, with the wrong fields in `errors` · `404` unknown action or task · `409` refused by the app's rules or validation, or the board is being imported · `501` a follow-up the container cannot make yet (changing archived tasks, for one), so nothing is saved.
+
+```bash
+curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
+  -X POST http://host:18230/api/actions/deleteTasks \
+  -d '{"input":{"taskIds":["<id>","<id>"]}}'
+```
+
+---
+
 ## Recurring tasks
 
 Reading is [`GET /api/task-repeat-cfgs`](#get-apitask-repeat-cfgs).
 
 ### `POST /api/tasks/:id/repeat-cfg`
 
-Makes an existing task recurring. There is no route that creates a config on its own, because the app has no such action either: a config always describes how a particular task repeats. The task's `title`, `projectId` and `tagIds` are inherited and are not accepted in the body.
+Makes an existing task recurring. There is no route that creates a config on its own, because the app has no such action either: a config always describes how a particular task repeats. It runs the [`addTaskRepeatCfgToTask`](#app-actions) app action, so the result is what the app's repeat dialog saves.
 
-Body, all optional: `{repeatCycle: DAILY|WEEKLY|MONTHLY|YEARLY, repeatEvery, startDate, startTime, monday…sunday, defaultEstimate, notes, tagIds, order, isPaused, repeatFromCompletionDate, waitForCompletion}`. Defaults match the app's own: weekly, every 1, Monday to Friday.
+Body, all optional: `{repeatCycle: DAILY|WEEKLY|MONTHLY|YEARLY, repeatEvery, startDate, startTime, monday…sunday, defaultEstimate, notes, tagIds, order, isPaused, repeatFromCompletionDate, waitForCompletion}`. Anything you leave out takes the dialog's default for a new config: weekly, every 1, Monday to Friday, starting on the task's due day (or today), with the task's title, notes, tags and estimate. The project always comes from the task.
 
-`404` if the task is unknown · `409` if it already repeats · `400` on an unknown cycle or `repeatEvery` below 1. → `201` with the config.
+What the app does next happens too, in the same upload: the task is scheduled for its first occurrence (its due day, and its created date moved to that day so no second instance is made), the task's subtasks become the config's subtask templates, and the config's title, tags and estimate are written onto the task.
 
-The monthly Nth-weekday and last-day anchors, sub-task templates and reminder options are deliberately not settable here: their rules are interdependent, and a malformed pair silently changes the recurrence. Set those in the UI.
+`404` if the task is unknown · `409` if it already repeats, or if the app's validation refuses the result (an unknown tag in `tagIds`, for one) · `400` on an unknown field or value, naming it in `errors`. → `201` with the config.
+
+The monthly Nth-weekday and last-day anchors and the reminder options are deliberately not settable here: their rules are interdependent, and a malformed pair silently changes the recurrence. Set those in the UI.
 
 ### `PATCH /api/task-repeat-cfgs/:id`
 
@@ -479,7 +526,7 @@ day. Body: `{"doneOn": "YYYY-MM-DD"}` (other formats → `400`).
 
 ### `DELETE /api/tasks/:id`
 
-Deletes a task. Returns `{"deleted": "<id>"}`.
+Deletes a task, built by the app's own code as its delete button does ([`deleteTask`](#app-actions)). Returns `{"deleted": "<id>"}`.
 
 **Guard:** `409` if the task still has live subtasks - delete them first. (Stale
 ids for already-deleted children do not block the parent.) Deletion also detaches

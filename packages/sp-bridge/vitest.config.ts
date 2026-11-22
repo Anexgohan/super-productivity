@@ -4,14 +4,23 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   // Shared rules are tested from source, so a stale shared-schema `dist/` can never test old rules.
   resolve: {
-    alias: {
-      '@sp/shared-schema': fileURLToPath(
-        new URL('../shared-schema/src/index.ts', import.meta.url),
-      ),
-      '@sp/sync-core': fileURLToPath(
-        new URL('../sync-core/src/index.ts', import.meta.url),
-      ),
-    },
+    alias: [
+      {
+        find: '@sp/shared-schema',
+        replacement: fileURLToPath(
+          new URL('../shared-schema/src/index.ts', import.meta.url),
+        ),
+      },
+      {
+        find: '@sp/sync-core',
+        replacement: fileURLToPath(new URL('../sync-core/src/index.ts', import.meta.url)),
+      },
+      // Some app files import from the repo root (`src/...`), as the app's baseUrl allows; the worker build resolves them the same way.
+      {
+        find: /^src\//,
+        replacement: fileURLToPath(new URL('../../src/', import.meta.url)),
+      },
+    ],
   },
   test: {
     globals: true,

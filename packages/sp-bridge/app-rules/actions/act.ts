@@ -67,6 +67,24 @@ export const FOLLOW_UP_EFFECTS: Type<object>[] = [
 /** Rounds of the event loop a build waits for follow-ups that read the archive or another promise; none of them waits on a timer. */
 const SETTLE_ROUNDS = 20;
 
+/** Subscribes one effects instance as the app's effects runner does: a dispatching effect's output is dispatched, a `dispatch: false` one's not. */
+export const subscribeEffects = (
+  instance: object,
+  dispatch: (action: Action) => void,
+  onError: (propertyName: string, err: unknown) => void,
+): Subscription[] => {
+  const effects = instance as Record<string, Observable<unknown>>;
+  return Object.entries(getEffectsMetadata(effects)).map(([propertyName, config]) => {
+    const dispatches = config?.dispatch !== false;
+    return effects[propertyName].subscribe({
+      next: (out) => {
+        if (dispatches) dispatch(out as Action);
+      },
+      error: (err: unknown) => onError(propertyName, err),
+    });
+  });
+};
+
 export class ActError extends Error {
   constructor(
     message: string,
@@ -240,29 +258,17 @@ const build = async (
   const capture = injector.get(OperationCaptureService);
   setOperationCaptureService(capture);
 
-  const subscriptions: Subscription[] = [];
-  for (const effectsClass of FOLLOW_UP_EFFECTS) {
-    const instance = injector.get(effectsClass) as Record<string, Observable<unknown>>;
-    for (const [propertyName, config] of Object.entries(getEffectsMetadata(instance))) {
-      const dispatches = config?.dispatch !== false;
-      subscriptions.push(
-        (instance[propertyName] as Observable<unknown>).subscribe({
-          next: (out) => {
-            if (dispatches) dispatch(out as Action);
-          },
-          error: (err: unknown) => {
-            failure ??=
-              err instanceof ActError
-                ? err
-                : new ActError(
-                    `The follow-up ${effectsClass.name}.${String(propertyName)} failed: ${(err instanceof Error ? err.message : String(err)).slice(0, 200)}`,
-                    (err as { statusCode?: number }).statusCode ?? 500,
-                  );
-          },
-        }),
-      );
-    }
-  }
+  const subscriptions = FOLLOW_UP_EFFECTS.flatMap((effectsClass) =>
+    subscribeEffects(injector.get(effectsClass), dispatch, (propertyName, err) => {
+      failure ??=
+        err instanceof ActError
+          ? err
+          : new ActError(
+              `The follow-up ${effectsClass.name}.${propertyName} failed: ${(err instanceof Error ? err.message : String(err)).slice(0, 200)}`,
+              (err as { statusCode?: number }).statusCode ?? 500,
+            );
+    }),
+  );
 
   try {
     for (const action of built.actions) dispatch(action);

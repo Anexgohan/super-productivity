@@ -18,7 +18,6 @@ import {
   buildBoardEntity,
   buildPanelEntity,
   buildNoteEntity,
-  buildTaskRepeatCfgEntity,
   nanoid,
   OpFactory,
   type NewTaskInput,
@@ -27,9 +26,9 @@ import {
   type NewBoardInput,
   type NewPanelInput,
   type NewNoteInput,
-  type NewTaskRepeatCfgInput,
 } from './op-factory';
 import { getArchiveTask, listArchiveTasks, type ArchiveTaskFilter } from './archive';
+import type { ActionWhen } from './action-inputs';
 
 const ALLOWED_TAG_FIELDS = new Set(['title', 'color', 'icon']);
 const ALLOWED_PROJECT_FIELDS = new Set(['title', 'isEnableBacklog', 'isArchived']);
@@ -389,9 +388,25 @@ export class BridgeCore {
         { statusCode: 409 },
       );
     }
-    const op = await this.ops.deleteTask(existing, this.store.nextWriteClock());
-    await this.store.submitOps([op]);
+    await this.act('deleteTask', { taskId: id });
     return { deleted: id };
+  }
+
+  /**
+   * Runs an app action as a browser would (anex/app-actions): the app rules build its ops, follow-ups included, and they
+   * are uploaded together. Returns the uploaded op ids and the ids the action names, such as a new entity's.
+   */
+  async act(
+    name: string,
+    input: unknown,
+    when: ActionWhen = {},
+  ): Promise<{ opIds: string[]; refs: Record<string, string> }> {
+    const built = await this.store.buildAction(name, input, when);
+    const ops: SuperSyncOperation[] = [];
+    for (const op of built.ops)
+      ops.push(await this.ops.wrap(op, this.store.nextWriteClock()));
+    if (ops.length > 0) await this.store.submitOps(ops);
+    return { opIds: ops.map((op) => op.id), refs: built.refs };
   }
 
   /**
@@ -1241,26 +1256,11 @@ export class BridgeCore {
    */
   async createTaskRepeatCfg(
     taskId: string,
-    input: NewTaskRepeatCfgInput,
+    input: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    const task = this._bucket('TASK')[taskId];
-    if (!task) throw err('Task not found', 404);
-    if (task.repeatCfgId) {
-      throw err('That task already repeats. Update its config instead.', 409);
-    }
-    this._validateRepeatCfg(input as Record<string, unknown>);
-    const cfg = buildTaskRepeatCfgEntity(input, {
-      title: task.title,
-      projectId: task.projectId,
-      tagIds: task.tagIds,
-    });
-    const op = await this.ops.addTaskRepeatCfgToTask(
-      taskId,
-      cfg,
-      this.store.nextWriteClock(),
-    );
-    await this.store.submitOps([op]);
-    return this._bucket('TASK_REPEAT_CFG')[cfg.id as string] ?? cfg;
+    const { refs } = await this.act('addTaskRepeatCfgToTask', { ...input, taskId });
+    const id = refs.taskRepeatCfgId;
+    return this._bucket('TASK_REPEAT_CFG')[id] ?? { id };
   }
 
   async updateTaskRepeatCfg(
