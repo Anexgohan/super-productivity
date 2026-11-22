@@ -124,11 +124,11 @@ curl -s -H "X-Api-Key: $SP_KEY" -H 'Content-Type: application/json' \
   }'
 ```
 
-There is also `POST /api/tasks/from-syntax`, which parses the app's shorthand (`Fix the header #frontend +Website @tomorrow 1h`) out of a single string. It is convenient for a quick capture, with one caveat covered below.
+There is also `POST /api/tasks/from-syntax`, which parses the app's shorthand (`Fix the header #frontend +Website @tomorrow 1h`) out of a single string, with the app's own parser and your short-syntax settings, as the add-task bar does. It is convenient for a quick capture, with one caveat covered below.
 
 ### Updating
 
-`PATCH` accepts any of `title`, `notes`, `isDone`, `doneOn`, `timeEstimate`, `timeSpent`, `projectId`, `tagIds`, `dueDay` and `dueWithTime`:
+`PATCH` accepts any of `title`, `notes`, `isDone`, `doneOn`, `timeEstimate`, `timeSpent`, `projectId`, `tagIds`, `dueDay` and `dueWithTime`. Most of them are saved through the app's own actions, so a `dueDay` plans the task as the app would and a `timeSpent` is logged as time; send `dueDay` and `dueWithTime` in separate requests, since both together is a `400`:
 
 ```bash
 curl -s -H "X-Api-Key: $SP_KEY" -H 'Content-Type: application/json' \
@@ -222,6 +222,22 @@ curl -s -H "X-Api-Key: $SP_KEY" -H 'Content-Type: application/json' \
 
 The provider id identifies which configured integration the issue belongs to. The simplest way to find yours is to read it off a card the plugin already imported, using the `fields` query above.
 
+## App actions
+
+Beyond the routes above, the API can make most changes the way the app itself makes them. `GET /api/actions` lists the actions with the input each one takes, and `POST /api/actions/<name>` runs one:
+
+```bash
+curl -s -H "X-Api-Key: $SP_KEY" -H 'Content-Type: application/json' \
+  -X POST "$SP_API/actions/deleteTask" \
+  -d '{"input": {"taskId": "'"$TASK_ID"'"}}'
+```
+
+The reply is `{opIds, refs}`: the ids of the changes it saved, and the ids of anything it created, such as `refs.taskId`. The bridge runs the app's own code, follow-up changes included, and saves all of it in one upload or nothing. Agents use it for what the friendly routes do not cover: deleting with subtasks, scheduling and planning, archiving, sections, logging time, notes, folders, counters, restoring a deleted task and adding a task from short syntax. The inputs and answers for each action are in the [App actions](api-reference.md#app-actions) section of the reference.
+
+## Export and import
+
+`GET /api/export` downloads your board as the app's own backup file, the same file **Settings > Import/Export** writes. An admin's `POST /api/import` takes that file back and replaces the board with it, after saving the current board so the import can be undone. The same pair moves a board to a new install. The details are in the reference's [Export and import](api-reference.md#export-and-import) and [Moving a board to a new install](api-reference.md#moving-a-board-to-a-new-install).
+
 ## Things that will trip you up
 
 **`tagIds` on `PATCH` replaces everything.** Covered above, and worth repeating because it is the single most common way to quietly damage a board.
@@ -234,15 +250,15 @@ The provider id identifies which configured integration the issue belongs to. Th
 
 **Time values are milliseconds.** `timeEstimate` and `timeSpent` both. An hour is `3600000`.
 
-**The shorthand route creates tags you did not mean to create.** `POST /api/tasks/from-syntax` treats `#`, `+` and `@` as markup wherever they appear. A title like `PR #61: fix the header` produces a tag literally named `61:` and drops it from the title. If your text might contain those characters, use `POST /api/tasks` with explicit `tagIds` instead.
+**The shorthand route creates tags you did not mean to create.** `POST /api/tasks/from-syntax` treats a `#`, `+` or `@` after a space as markup, and creates any tag it does not know. A title like `PR #61: fix the header` produces a tag literally named `61:` and drops it from the title. A `+Project` it does not know stays in the title. If your text might contain those characters, use `POST /api/tasks` with explicit `tagIds` instead.
 
-**Tasks with live subtasks cannot be deleted.** You get a `409`. Delete or reparent the children first.
+**Tasks with live subtasks cannot be deleted.** `DELETE /api/tasks/<id>` answers `409`. Delete or reparent the children first, or use the `deleteTask` app action, which deletes the task with its subtasks as the app's delete button does.
 
 **Bulk update is all or nothing.** `POST /api/tasks/bulk/update` applies every change or none, so one bad id fails the batch. Similarly `POST /api/tasks/reorder` expects an exact permutation of the list's current members, not a partial ordering.
 
 **Deleting a project deletes its tasks, permanently.** There is no undo and no archive to recover from. The Inbox project and the `TODAY` tag are protected and cannot be deleted at all.
 
-**Somebody else's board is read-only.** Add `?boardOf=<accountId>` to any data route to read a board its owner shared, and `GET /api/auth/public-boards` lists the ones open to you. Writes there are refused whatever your role, so an admin reading an operator's board is a reader like anyone else.
+**Somebody else's board is read-only.** Add `?boardOf=<accountId>` to any data route to read a board its owner shared, and `GET /api/auth/public-boards` lists the ones open to you. Writes there are refused whatever your role, so an admin reading an operator's board is a reader like anyone else. The one exception is an admin's `POST /api/import`, which takes `?boardOf=` to replace another account's board.
 
 **Switching boards in the browser does not carry over to a key.** `POST /api/auth/viewing` stores a choice in your login session; a script has no session, so it uses `?boardOf=` per request instead.
 

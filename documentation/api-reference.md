@@ -9,7 +9,7 @@ Routes live in packages/sp-bridge/src/{rest.ts,auth/routes.ts}; GET /api/docs is
 
 # sp-bridge REST API Reference
 
-The complete endpoint contract for the containerized Super Productivity API (`sp-bridge`, v1): **62 data routes** plus **23 account routes**.
+The complete endpoint contract for the containerized Super Productivity API (`sp-bridge`, v1): **64 data routes** plus **23 account routes**.
 
 For the concepts behind it, the op-log, why boards are tags, and what the Today list is, read [`super-productivity-explainer.md`](./super-productivity-explainer.md) first.
 

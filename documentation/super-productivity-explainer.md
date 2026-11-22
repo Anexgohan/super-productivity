@@ -560,6 +560,10 @@ device applies on the next reload.
 > reconciled - and widening it is mechanical now the precedence rule is settled.
 > Until that lands, the control is more global-looking than it is global.
 
+### Boards have a title filter
+
+On Boards the header carries a filter box, which the search shortcut (Shift+F by default) focuses. It matches card titles fuzzily, puts the best matches first in each column, and highlights the matched letters. Dragging is paused while a filter is on. The filter lives in this browser tab only: it is never stored or synced, and a reload clears it. It is hidden at phone width.
+
 ### Starter boards exist before they are stored
 
 The two boards a fresh install shows, the Eisenhower Matrix and a Kanban, are not data. They are `DEFAULT_BOARDS`, the NgRx initial state, and nothing is written to the op-log until somebody edits a board for the first time.
