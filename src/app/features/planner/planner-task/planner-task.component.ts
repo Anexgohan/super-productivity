@@ -30,6 +30,7 @@ import { hasLinkHints, RenderLinksPipe } from '../../../ui/pipes/render-links.pi
 import { DoneToggleComponent } from '../../../ui/done-toggle/done-toggle.component';
 import { SwipeBlockComponent } from '../../../ui/swipe-block/swipe-block.component';
 import { TranslatePipe } from '@ngx-translate/core';
+import type { TitleSegment } from '../../boards/boards.util';
 
 @Component({
   selector: 'planner-task',
@@ -79,6 +80,8 @@ export class PlannerTaskComponent implements OnInit, OnDestroy, AfterViewInit {
   // TODO remove
   readonly day = input<string | undefined>();
   readonly tagsToHide = input<string[]>();
+  /** The title as plain and matched runs while the Boards filter is on; unset everywhere else. */
+  readonly titleMatch = input<TitleSegment[] | undefined>();
   // Opt-in DOM focusability (only the Planner overdue list needs it, for the
   // schedule-today shortcut). Off everywhere else to avoid stray Tab stops.
   readonly focusable = input<boolean>(false);

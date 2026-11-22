@@ -1,5 +1,6 @@
 import {
   buildBoardProjectAssignment,
+  buildTitleSegments,
   buildComparator,
   buildDuplicatedBoard,
   doesTaskMatchPanel,
@@ -1014,5 +1015,39 @@ describe('doesTaskMatchPanel', () => {
     expect(doesTaskMatchPanel({ ...matching, id: 'not-b' }, panel, inBacklog)).toBe(
       false,
     );
+  });
+});
+
+describe('buildTitleSegments', () => {
+  it('splits a title around its matched ranges, whatever their order', () => {
+    expect(
+      buildTitleSegments('Call the plumber', [
+        [9, 15],
+        [0, 3],
+      ]),
+    ).toEqual([
+      { text: 'Call', isMatch: true },
+      { text: ' the ', isMatch: false },
+      { text: 'plumber', isMatch: true },
+    ]);
+  });
+
+  it('returns the whole title as one plain run when nothing matched', () => {
+    expect(buildTitleSegments('Buy groceries', [])).toEqual([
+      { text: 'Buy groceries', isMatch: false },
+    ]);
+  });
+
+  it('merges overlapping and touching ranges, and clips ranges past the end', () => {
+    expect(
+      buildTitleSegments('abcdef', [
+        [1, 3],
+        [2, 4],
+        [5, 99],
+      ]),
+    ).toEqual([
+      { text: 'a', isMatch: false },
+      { text: 'bcdef', isMatch: true },
+    ]);
   });
 });

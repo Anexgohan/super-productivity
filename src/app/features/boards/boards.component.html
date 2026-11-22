@@ -1,31 +1,3 @@
-<div class="board-filter">
-  <mat-form-field
-    class="board-filter-field"
-    appearance="outline"
-    subscriptSizing="dynamic"
-  >
-    <mat-icon matPrefix>search</mat-icon>
-    <input
-      #filterInput
-      matInput
-      [value]="boardSearch.query()"
-      (input)="boardSearch.setQuery(filterInput.value)"
-      [placeholder]="T.F.BOARDS.V.FILTER_CARDS | translate"
-      [attr.aria-label]="T.F.BOARDS.V.FILTER_CARDS | translate"
-    />
-    @if (boardSearch.query()) {
-      <button
-        mat-icon-button
-        matSuffix
-        (click)="boardSearch.setQuery('')"
-        [attr.aria-label]="T.G.CLEAR | translate"
-      >
-        <mat-icon>clear</mat-icon>
-      </button>
-    }
-  </mat-form-field>
-</div>
-
 <mat-tab-group
   mat-stretch-tabs="false"
   dynamicHeight="true"

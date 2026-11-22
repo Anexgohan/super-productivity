@@ -1,0 +1,32 @@
+:host {
+  display: flex;
+  align-items: center;
+  flex: 0 1 240px;
+  min-width: 0;
+  height: var(--header-button-size, 40px);
+  margin: 0 var(--s2);
+  padding-left: var(--s);
+  border: 1px solid var(--extra-border-color);
+  border-radius: calc(var(--header-button-size, 40px) / 2);
+}
+
+.search-icon {
+  flex: 0 0 auto;
+  opacity: 0.6;
+}
+
+.filter-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0 var(--s-half);
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.clear-btn {
+  flex: 0 0 auto;
+}

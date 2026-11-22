@@ -356,3 +356,40 @@ export const buildComparator = (
       return NO_OP_COMPARATOR;
   }
 };
+
+export interface TitleSegment {
+  text: string;
+  isMatch: boolean;
+}
+
+/** Splits a title into plain and matched runs, from inclusive [start, end] ranges in any order. */
+export const buildTitleSegments = (
+  title: string,
+  ranges: readonly (readonly [number, number])[],
+): TitleSegment[] => {
+  const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
+  const segments: TitleSegment[] = [];
+  let pos = 0;
+  for (const [start, end] of sorted) {
+    const from = Math.max(start, pos);
+    const to = Math.min(end + 1, title.length);
+    if (from >= to) {
+      continue;
+    }
+    const last = segments[segments.length - 1];
+    if (from > pos) {
+      segments.push({ text: title.slice(pos, from), isMatch: false });
+      segments.push({ text: title.slice(from, to), isMatch: true });
+    } else if (last?.isMatch) {
+      // Touching ranges extend the previous run, so one word gets one mark.
+      last.text += title.slice(from, to);
+    } else {
+      segments.push({ text: title.slice(from, to), isMatch: true });
+    }
+    pos = to;
+  }
+  if (pos < title.length) {
+    segments.push({ text: title.slice(pos), isMatch: false });
+  }
+  return segments;
+};

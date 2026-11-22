@@ -4,6 +4,10 @@
 
     <page-title></page-title>
 
+    @if (isBoardsPage() && !isXs()) {
+      <board-filter-input></board-filter-input>
+    }
+
     <nav class="action-nav-right">
       <div class="counters-action-group">
         @if (isTimeTrackingEnabled()) {

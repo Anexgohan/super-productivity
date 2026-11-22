@@ -1,0 +1,20 @@
+<mat-icon class="search-icon">search</mat-icon>
+<input
+  #filterInput
+  class="filter-input"
+  [value]="boardSearch.query()"
+  (input)="boardSearch.setQuery(filterInput.value)"
+  (keydown.escape)="clear()"
+  [placeholder]="T.F.BOARDS.V.FILTER_CARDS | translate"
+  [attr.aria-label]="T.F.BOARDS.V.FILTER_CARDS | translate"
+/>
+@if (boardSearch.query()) {
+  <button
+    mat-icon-button
+    class="clear-btn"
+    (click)="clear()"
+    [attr.aria-label]="T.G.CLEAR | translate"
+  >
+    <mat-icon>clear</mat-icon>
+  </button>
+}

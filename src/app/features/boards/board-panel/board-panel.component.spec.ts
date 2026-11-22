@@ -526,6 +526,37 @@ describe('BoardPanelComponent - Tag match mode, sort, inline-create computeds', 
       expect(component.tasks().map((t) => t.id)).toEqual(['plumber', 'groceries']);
       expect(component.isFiltering()).toBeFalse();
     });
+
+    it('puts the best match first while filtering, and the saved order back after', async () => {
+      await setup([
+        mkTask({ id: 'typo', title: 'Plumbr invoice' }),
+        mkTask({ id: 'exact', title: 'Call the plumber' }),
+      ]);
+      fixture.componentRef.setInput('panelCfg', {
+        id: 'p',
+        title: 'P',
+        taskIds: ['typo', 'exact'],
+        includedTagIds: [],
+        excludedTagIds: [],
+        taskDoneState: 1,
+        scheduledState: 1,
+        isParentTasksOnly: false,
+        projectIds: [''],
+      } as BoardPanelCfg);
+      fixture.detectChanges();
+      const boardSearch = TestBed.inject(BoardSearchService);
+
+      await boardSearch.setQuery('plumber');
+      expect(component.tasks().map((t) => t.id)).toEqual(['exact', 'typo']);
+      expect(component.titleSegments()['exact']).toEqual([
+        { text: 'Call the ', isMatch: false },
+        { text: 'plumber', isMatch: true },
+      ]);
+
+      await boardSearch.setQuery('');
+      expect(component.tasks().map((t) => t.id)).toEqual(['typo', 'exact']);
+      expect(component.titleSegments()['exact']).toBeUndefined();
+    });
   });
 
   describe('additionalTaskFields - projectId assignment', () => {

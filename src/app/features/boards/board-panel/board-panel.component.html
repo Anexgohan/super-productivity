@@ -47,6 +47,7 @@
       [cdkDragStartDelay]="dragDelayForTouch()"
       [task]="task"
       [tagsToHide]="panelCfg().includedTagIds || []"
+      [titleMatch]="titleSegments()[task.id]"
     >
       @if (task.remindAt) {
         <button

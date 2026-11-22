@@ -22,6 +22,8 @@ import { SimpleCounter } from '../../features/simple-counter/simple-counter.mode
 import { SyncWrapperService } from '../../imex/sync/sync-wrapper.service';
 import { SnackService } from '../../core/snack/snack.service';
 import { NavigationEnd, Router } from '@angular/router';
+import { BoardFilterInputComponent } from '../../features/boards/board-filter-input/board-filter-input.component';
+import { isBoardsUrl } from '../../features/boards/board-search.service';
 import { GlobalConfigService } from '../../features/config/global-config.service';
 import { KeyboardConfig, keyboardConfigOrEmpty } from '@sp/keyboard-config';
 import { MatIconButton } from '@angular/material/button';
@@ -80,6 +82,7 @@ import { ConflictJournalService } from '../../op-log/sync/conflict-journal.servi
     UserProfileButtonComponent,
     AccountMenuComponent,
     FocusButtonComponent,
+    BoardFilterInputComponent,
   ],
 })
 export class MainHeaderComponent implements OnDestroy {
@@ -147,6 +150,14 @@ export class MainHeaderComponent implements OnDestroy {
     startWith(true), // Always true since right-panel is now global
   );
   isRouteWithSidePanel = toSignal(this._isRouteWithSidePanel$, { initialValue: true });
+
+  isBoardsPage = toSignal(
+    this._router.events.pipe(
+      filter((event): event is NavigationEnd => event instanceof NavigationEnd),
+      map((event) => isBoardsUrl(event.urlAfterRedirects)),
+    ),
+    { initialValue: isBoardsUrl(this._router.url) },
+  );
 
   // Convert more observables to signals
 

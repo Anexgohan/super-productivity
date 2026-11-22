@@ -152,6 +152,7 @@ export class BoardPanelComponent {
 
   // A column saves its order from the cards it shows, so dragging among hidden cards would reorder them.
   isFiltering = this._boardSearch.isFiltering;
+  titleSegments = this._boardSearch.titleSegments;
 
   /**
    * The panel's own project scope narrows the global one; it never widens it.
@@ -239,6 +240,12 @@ export class BoardPanelComponent {
       const dir = panelCfg.sortDir === 'desc' ? -1 : 1;
       const cmp = buildComparator(panelCfg.sortBy);
       merged.sort((a, b) => dir * cmp(a, b));
+    }
+
+    // While filtering the best matches lead; the sort is stable, so equal scores keep the saved order.
+    const scores = this._boardSearch.matchScores();
+    if (scores) {
+      merged.sort((a, b) => (scores.get(a.id) ?? 1) - (scores.get(b.id) ?? 1));
     }
 
     return merged;

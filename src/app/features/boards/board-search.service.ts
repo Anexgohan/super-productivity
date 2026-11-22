@@ -5,16 +5,30 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import type Fuse from 'fuse.js';
 import { selectAllTasksInActiveProjects } from '../tasks/store/task.selectors';
 import { Log } from '../../core/log';
+import { buildTitleSegments, TitleSegment } from './boards.util';
 
 interface TitleEntry {
   id: string;
   title: string;
 }
 
+interface FilterResult {
+  ids: Set<string>;
+  /** Fuse's score per matching card, from 0 for an exact match up to 1. */
+  scores: Map<string, number>;
+  segments: Record<string, TitleSegment[]>;
+}
+
 type FuseCtor = typeof Fuse;
+
+const NO_SEGMENTS: Record<string, TitleSegment[]> = {};
 
 const isSameEntries = (a: TitleEntry[], b: TitleEntry[]): boolean =>
   a.length === b.length && a.every((e, i) => e.id === b[i].id && e.title === b[i].title);
+
+/** True for the Boards page, whatever its query string or hash. */
+export const isBoardsUrl = (url: string | undefined): boolean =>
+  (url ?? '').split(/[?#]/)[0] === '/boards';
 
 /** The Boards page's title filter: in memory only, never stored or synced. */
 @Injectable({ providedIn: 'root' })
@@ -45,20 +59,43 @@ export class BoardSearchService {
           keys: ['title'],
           ignoreLocation: true,
           threshold: 0.4,
+          includeMatches: true,
+          includeScore: true,
         })
       : null;
   });
 
-  /** Ids of the cards whose title matches, or null when every card shows. */
-  readonly matchingIds = computed<Set<string> | null>(() => {
+  private _result = computed<FilterResult | null>(() => {
     const query = this.query().trim();
     const index = this._index();
     // Until Fuse has loaded every card stays, rather than the board going blank for a moment.
     if (!query || !index) {
       return null;
     }
-    return new Set(index.search(query).map((r) => r.item.id));
+    // Lone matched letters read as noise, so they are marked only for a one-letter query.
+    const minRun = Math.min(2, query.length);
+    const ids = new Set<string>();
+    const scores = new Map<string, number>();
+    const segments: Record<string, TitleSegment[]> = {};
+    for (const r of index.search(query)) {
+      ids.add(r.item.id);
+      scores.set(r.item.id, r.score ?? 1);
+      const ranges = (r.matches ?? [])
+        .flatMap((m) => m.indices)
+        .filter(([start, end]) => end - start + 1 >= minRun);
+      segments[r.item.id] = buildTitleSegments(r.item.title, ranges);
+    }
+    return { ids, scores, segments };
   });
+
+  /** Ids of the cards whose title matches, or null when every card shows. */
+  readonly matchingIds = computed(() => this._result()?.ids ?? null);
+
+  /** Each matching card's score, lower is better, or null when every card shows. */
+  readonly matchScores = computed(() => this._result()?.scores ?? null);
+
+  /** Each matching card's title as plain and matched runs; empty when there is no filter. */
+  readonly titleSegments = computed(() => this._result()?.segments ?? NO_SEGMENTS);
 
   /** Resolves once Fuse has loaded, which is only waited on in tests. */
   setQuery(query: string): Promise<void> {

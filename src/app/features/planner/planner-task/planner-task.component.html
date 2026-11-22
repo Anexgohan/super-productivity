@@ -23,7 +23,17 @@
           <div class="parent-title">{{ parentTitle }}</div>
         }
 
-        @if (titleHasLinks()) {
+        @if (titleMatch(); as segments) {
+          <div class="title">
+            @for (segment of segments; track $index) {
+              @if (segment.isMatch) {
+                <mark class="title-match">{{ segment.text }}</mark>
+              } @else {
+                <span>{{ segment.text }}</span>
+              }
+            }
+          </div>
+        } @else if (titleHasLinks()) {
           <div
             class="title"
             [innerHTML]="task().title | renderLinks"

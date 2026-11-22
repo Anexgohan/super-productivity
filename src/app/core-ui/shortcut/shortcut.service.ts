@@ -21,7 +21,10 @@ import { fromEvent, merge, Observable, of } from 'rxjs';
 import { PluginBridgeService } from '../../plugins/plugin-bridge.service';
 import { TaskShortcutService } from '../../features/tasks/task-shortcut.service';
 import { TODAY_TAG } from '../../features/tag/tag.const';
-import { BoardSearchService } from '../../features/boards/board-search.service';
+import {
+  BoardSearchService,
+  isBoardsUrl,
+} from '../../features/boards/board-search.service';
 
 // NOTE: Relying on Angular CDK overlay CSS class names keeps shortcut suppression simple.
 // If CDK changes these class names we only need to adjust the helpers below.
@@ -157,7 +160,7 @@ export class ShortcutService {
       //   this._router.navigate(['/focus-view']);
     } else if (checkKeyCombo(ev, keys.showSearchBar)) {
       // On Boards the search filters the cards in place.
-      if (this._router.url.split(/[?#]/)[0] === '/boards') {
+      if (isBoardsUrl(this._router.url)) {
         this._boardSearch.focusRequests$.next();
       } else {
         this._router.navigate(['/search']);
