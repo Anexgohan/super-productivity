@@ -38,6 +38,13 @@ export interface SyncImportConflictData {
    */
   remoteSummary?: { label: string; count: number }[];
   localSummary?: { label: string; count: number }[];
+  /** Server changes downloaded after its full state, so the server side is not shown as the old full state alone. */
+  remoteLaterChanges?: { count: number; latestTimestamp: number | null };
+  /**
+   * Set when this browser holds an unsent full state of its own, usually a backup it just imported.
+   * Then the server's full state is not news from another device, so the dialog names both sides with their times and recommends neither.
+   */
+  localImport?: { timestamp: number; summary: { label: string; count: number }[] };
 }
 
 export type SyncImportConflictResolution = 'USE_LOCAL' | 'USE_REMOTE' | 'CANCEL';
@@ -89,6 +96,9 @@ export class DialogSyncImportConflictComponent {
   }
 
   get messageKey(): string {
+    if (this.isOwnImport) {
+      return T.F.SYNC.D_SYNC_IMPORT_CONFLICT.MSG_OWN_IMPORT;
+    }
     if (this.data.scenario === 'INCOMING_IMPORT') {
       return this.data.filteredOpCount > 0
         ? T.F.SYNC.D_SYNC_IMPORT_CONFLICT.MSG_INCOMING
@@ -101,8 +111,19 @@ export class DialogSyncImportConflictComponent {
     return this.data.scenario === 'INCOMING_IMPORT';
   }
 
+  /** This browser's own import against the server's data: no side is recommended. */
+  get isOwnImport(): boolean {
+    return this.isIncomingImport && !!this.data.localImport;
+  }
+
+  /** The server side and the buttons favour the server only when the incoming full state is news from another device. */
+  get isServerRecommended(): boolean {
+    return this.isIncomingImport && !this.isOwnImport;
+  }
+
+  /** An import replaces this browser's sync history, so "never synced" would be wrong after one. */
   get isNeverSynced(): boolean {
-    return !!this.data.isNeverSynced;
+    return !!this.data.isNeverSynced && !this.isOwnImport;
   }
 
   /**
@@ -119,6 +140,18 @@ export class DialogSyncImportConflictComponent {
   }
 
   close(result?: SyncImportConflictResolution): void {
+    // Both choices lose one side for every device, so each is confirmed in words that name what goes.
+    if (this.isOwnImport && (result === 'USE_LOCAL' || result === 'USE_REMOTE')) {
+      const key =
+        result === 'USE_LOCAL'
+          ? T.F.SYNC.D_SYNC_IMPORT_CONFLICT.OWN_IMPORT_USE_LOCAL_CONFIRM
+          : T.F.SYNC.D_SYNC_IMPORT_CONFLICT.OWN_IMPORT_USE_REMOTE_CONFIRM;
+      if (!confirmDialog(this._translateService.instant(key))) {
+        return;
+      }
+      this._matDialogRef.close(result);
+      return;
+    }
     // Guard the destructive choice on a never-synced client: USE_LOCAL here would
     // overwrite the populated remote with this device's throwaway startup data.
     // Require an explicit confirmation so it can't be triggered by a misclick.

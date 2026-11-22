@@ -139,6 +139,89 @@ describe('DialogSyncImportConflictComponent', () => {
     });
   });
 
+  describe("this browser's own import against the server", () => {
+    const ownImport: Partial<SyncImportConflictData> = {
+      scenario: 'INCOMING_IMPORT',
+      filteredOpCount: 1,
+      isNeverSynced: true,
+      localImport: { timestamp: 5000, summary: [{ label: 'tasks', count: 3 }] },
+    };
+
+    it('recommends no side and does not call the browser never-synced', () => {
+      const cmp = setup(ownImport).componentInstance;
+
+      expect(cmp.isOwnImport).toBeTrue();
+      expect(cmp.isServerRecommended).toBeFalse();
+      expect(cmp.isNeverSynced).toBeFalse();
+      expect(cmp.messageKey).toBe('F.SYNC.D_SYNC_IMPORT_CONFLICT.MSG_OWN_IMPORT');
+    });
+
+    it('confirms USE_LOCAL in words about the import', () => {
+      const cmp = setup(ownImport).componentInstance;
+
+      cmp.close('USE_LOCAL');
+
+      expect(confirmSpy).toHaveBeenCalledOnceWith(
+        'F.SYNC.D_SYNC_IMPORT_CONFLICT.OWN_IMPORT_USE_LOCAL_CONFIRM',
+      );
+      expect(closeSpy).toHaveBeenCalledOnceWith('USE_LOCAL');
+    });
+
+    it('confirms USE_REMOTE as discarding the import, and stays open on cancel', () => {
+      confirmSpy.and.returnValue(false);
+      const cmp = setup(ownImport).componentInstance;
+
+      cmp.close('USE_REMOTE');
+
+      expect(confirmSpy).toHaveBeenCalledOnceWith(
+        'F.SYNC.D_SYNC_IMPORT_CONFLICT.OWN_IMPORT_USE_REMOTE_CONFIRM',
+      );
+      expect(closeSpy).not.toHaveBeenCalled();
+    });
+
+    it('renders both sides with their times, and no recommendation or initial focus', () => {
+      TestBed.configureTestingModule({
+        imports: [DialogSyncImportConflictComponent, TranslateModule.forRoot()],
+        providers: [
+          provideNoopAnimations(),
+          { provide: MatDialogRef, useValue: { close: () => {}, disableClose: false } },
+          {
+            provide: MAT_DIALOG_DATA,
+            useValue: {
+              ...ownImport,
+              localImportTimestamp: 1000,
+              remoteSummary: [{ label: 'tasks', count: 2 }],
+              localSummary: [{ label: 'all', count: 1 }],
+              remoteLaterChanges: { count: 170, latestTimestamp: 3000 },
+            } as SyncImportConflictData,
+          },
+          {
+            provide: DateTimeFormatService,
+            useValue: { currentLocale: () => 'en-US', formatTime: () => '00:00' },
+          },
+        ],
+      });
+      const fixture = TestBed.createComponent(DialogSyncImportConflictComponent);
+      fixture.detectChanges();
+      const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+
+      // Without loaded translations the pipe renders keys, so the keys show which lines are on screen.
+      expect(text).toContain('SIDE_SERVER_DATA');
+      expect(text).toContain('STAMP_FULL_STATE_SAVED');
+      expect(text).toContain('STAMP_LATER_CHANGES');
+      expect(text).toContain('SIDE_OWN_IMPORT');
+      expect(text).toContain('STAMP_IMPORTED');
+      expect(text).not.toContain('RECOMMEND_SERVER');
+      expect(text).not.toContain('FIRST_SYNC_WARNING');
+      expect(text).not.toContain('REASON_');
+      expect(text).not.toContain('AT_RISK');
+      expect(
+        (fixture.nativeElement as HTMLElement).querySelectorAll('[cdkFocusInitial]')
+          .length,
+      ).toBe(0);
+    });
+  });
+
   describe('initial focus (cdkFocusInitial) follows the safe/primary button per scenario', () => {
     // Renders the real template so we assert which button the Material focus trap
     // will actually focus (it queries `[cdkFocusInitial]`). Regression guard: a

@@ -12,11 +12,13 @@
     {{ messageKey | translate: { filteredOpCount: data.filteredOpCount } }}
   </p>
 
-  <p class="reason">
-    {{ reasonKey | translate }}
-  </p>
+  @if (!isOwnImport) {
+    <p class="reason">
+      {{ reasonKey | translate }}
+    </p>
+  }
 
-  @if (isIncomingImport) {
+  @if (isServerRecommended) {
     <p class="recommendation">
       {{ T.F.SYNC.D_SYNC_IMPORT_CONFLICT.RECOMMEND_SERVER | translate }}
     </p>
@@ -38,7 +40,12 @@
       <section class="side side--remote">
         <h2>
           <mat-icon aria-hidden="true">cloud</mat-icon>
-          {{ T.F.SYNC.D_SYNC_IMPORT_CONFLICT.SIDE_SERVER | translate }}
+          {{
+            (isOwnImport
+              ? T.F.SYNC.D_SYNC_IMPORT_CONFLICT.SIDE_SERVER_DATA
+              : T.F.SYNC.D_SYNC_IMPORT_CONFLICT.SIDE_SERVER
+            ) | translate
+          }}
         </h2>
         <ul>
           @for (row of data.remoteSummary; track row.label) {
@@ -52,18 +59,38 @@
           }
         </ul>
         <p class="stamp">
+          @if (isOwnImport) {
+            {{ T.F.SYNC.D_SYNC_IMPORT_CONFLICT.STAMP_FULL_STATE_SAVED | translate }}
+          }
           {{ data.localImportTimestamp | localeDate: 'shortDate' : undefined : locale() }}
           {{ data.localImportTimestamp | shortTime }}
         </p>
+        @if (data.remoteLaterChanges?.count; as laterCount) {
+          <p class="stamp">
+            {{
+              T.F.SYNC.D_SYNC_IMPORT_CONFLICT.STAMP_LATER_CHANGES
+                | translate: { count: laterCount }
+            }}
+            @if (data.remoteLaterChanges?.latestTimestamp; as latest) {
+              {{ latest | localeDate: 'shortDate' : undefined : locale() }}
+              {{ latest | shortTime }}
+            }
+          </p>
+        }
       </section>
 
       <section class="side side--local">
         <h2>
           <mat-icon aria-hidden="true">computer</mat-icon>
-          {{ T.F.SYNC.D_SYNC_IMPORT_CONFLICT.SIDE_THIS_DEVICE | translate }}
+          {{
+            (isOwnImport
+              ? T.F.SYNC.D_SYNC_IMPORT_CONFLICT.SIDE_OWN_IMPORT
+              : T.F.SYNC.D_SYNC_IMPORT_CONFLICT.SIDE_THIS_DEVICE
+            ) | translate
+          }}
         </h2>
         <ul>
-          @for (row of data.localSummary; track row.label) {
+          @for (row of data.localImport?.summary ?? data.localSummary; track row.label) {
             <li>
               <strong>{{ row.count }}</strong> {{ row.label }}
             </li>
@@ -73,12 +100,20 @@
             </li>
           }
         </ul>
-        <p class="stamp at-risk">
-          {{
-            T.F.SYNC.D_SYNC_IMPORT_CONFLICT.AT_RISK
-              | translate: { count: data.filteredOpCount }
-          }}
-        </p>
+        @if (data.localImport; as own) {
+          <p class="stamp">
+            {{ T.F.SYNC.D_SYNC_IMPORT_CONFLICT.STAMP_IMPORTED | translate }}
+            {{ own.timestamp | localeDate: 'shortDate' : undefined : locale() }}
+            {{ own.timestamp | shortTime }}
+          </p>
+        } @else {
+          <p class="stamp at-risk">
+            {{
+              T.F.SYNC.D_SYNC_IMPORT_CONFLICT.AT_RISK
+                | translate: { count: data.filteredOpCount }
+            }}
+          </p>
+        }
       </section>
     </div>
 
@@ -86,13 +121,20 @@
       <p>
         <mat-icon aria-hidden="true">cloud_download</mat-icon>
         <span>{{
-          T.F.SYNC.D_SYNC_IMPORT_CONFLICT.OUTCOME_REMOTE
-            | translate: { count: data.filteredOpCount }
+          (isOwnImport
+            ? T.F.SYNC.D_SYNC_IMPORT_CONFLICT.OUTCOME_REMOTE_OWN_IMPORT
+            : T.F.SYNC.D_SYNC_IMPORT_CONFLICT.OUTCOME_REMOTE
+          ) | translate: { count: data.filteredOpCount }
         }}</span>
       </p>
       <p>
         <mat-icon aria-hidden="true">cloud_upload</mat-icon>
-        <span>{{ T.F.SYNC.D_SYNC_IMPORT_CONFLICT.OUTCOME_LOCAL | translate }}</span>
+        <span>{{
+          (isOwnImport
+            ? T.F.SYNC.D_SYNC_IMPORT_CONFLICT.OUTCOME_LOCAL_OWN_IMPORT
+            : T.F.SYNC.D_SYNC_IMPORT_CONFLICT.OUTCOME_LOCAL
+          ) | translate
+        }}</span>
       </p>
       <p>
         <mat-icon aria-hidden="true">schedule</mat-icon>
@@ -132,8 +174,8 @@
     </button>
     <button
       (click)="close('USE_REMOTE')"
-      [color]="isIncomingImport ? 'primary' : undefined"
-      [attr.cdkFocusInitial]="isIncomingImport ? '' : null"
+      [color]="isServerRecommended ? 'primary' : undefined"
+      [attr.cdkFocusInitial]="isServerRecommended ? '' : null"
       mat-stroked-button
     >
       <mat-icon aria-hidden="true">cloud_download</mat-icon>

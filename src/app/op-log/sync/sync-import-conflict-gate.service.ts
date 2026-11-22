@@ -123,6 +123,43 @@ const summarizePendingOps = (
     .sort((a, b) => b.count - a.count);
 };
 
+/** The server's changes after its full state, in download order; the full state alone is an old count. */
+const summarizeLaterChanges = (
+  incomingOps: Operation[],
+  fullStateOp: Operation,
+): { count: number; latestTimestamp: number | null } => {
+  const later = incomingOps
+    .slice(incomingOps.indexOf(fullStateOp) + 1)
+    .filter((op) => !FULL_STATE_OP_TYPES.has(op.opType));
+  const stamps = later.map((op) => op.timestamp).filter((t) => typeof t === 'number');
+  return {
+    count: later.length,
+    latestTimestamp: stamps.length ? Math.max(...stamps) : null,
+  };
+};
+
+/**
+ * This browser's own unsent full state, usually a backup it just imported.
+ * An import starts a fresh vector clock, so nothing tells an old server snapshot from a new one.
+ * The dialog states both sides and leaves the choice open.
+ */
+const describeOwnImport = (
+  pendingOps: OperationLogEntry[],
+): { timestamp: number; summary: { label: string; count: number }[] } | undefined => {
+  // A repair or a password change of this browser's own is a full state too, but nothing the person imported.
+  const own = pendingOps
+    .filter(
+      (entry) =>
+        entry.op.opType === OpType.BackupImport ||
+        (FULL_STATE_OP_TYPES.has(entry.op.opType as OpType) &&
+          (entry.op.syncImportReason === 'BACKUP_RESTORE' ||
+            entry.op.syncImportReason === 'FILE_IMPORT')),
+    )
+    .at(-1);
+  if (!own) return undefined;
+  return { timestamp: own.op.timestamp, summary: summarizeFullState(own.op) };
+};
+
 interface PendingOpClassificationOptions {
   hasCompletedInitialSync: boolean;
 }
@@ -313,6 +350,8 @@ export class SyncImportConflictGateService {
         isNeverSynced,
         remoteSummary: summarizeFullState(fullStateOp),
         localSummary: summarizePendingOps(pendingOps),
+        remoteLaterChanges: summarizeLaterChanges(incomingOps, fullStateOp),
+        localImport: describeOwnImport(pendingOps),
       },
     };
   }

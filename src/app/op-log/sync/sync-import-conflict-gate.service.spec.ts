@@ -414,6 +414,98 @@ describe('SyncImportConflictGateService', () => {
     });
   });
 
+  it("describes this browser's own import and the server's changes after its full state", async () => {
+    // After a backup import the browser downloads from 0 and meets the server's last full state, which can be days old.
+    const serverRepair = createOperation({
+      id: 'server-repair',
+      opType: OpType.Repair,
+      syncImportReason: 'REPAIR',
+      timestamp: 1000,
+      payload: { task: { ids: ['a', 'b'] } },
+    });
+    const laterEdit = (id: string, timestamp: number): Operation =>
+      createOperation({
+        id,
+        actionType: 'test' as ActionType,
+        opType: OpType.Update,
+        entityType: 'TASK',
+        entityId: 'a',
+        timestamp,
+      });
+    opLogStoreSpy.getUnsynced.and.resolveTo([
+      createEntry(
+        createOperation({
+          id: 'own-backup-import',
+          clientId: 'client-A',
+          opType: OpType.BackupImport,
+          syncImportReason: 'BACKUP_RESTORE',
+          timestamp: 5000,
+          payload: { task: { ids: ['x', 'y', 'z'] }, project: { ids: ['p'] } },
+        }),
+      ),
+    ]);
+
+    const result = await service.checkIncomingFullStateConflict([
+      serverRepair,
+      laterEdit('edit-1', 2000),
+      laterEdit('edit-2', 3000),
+    ]);
+
+    expect(result.dialogData?.localImport).toEqual({
+      timestamp: 5000,
+      summary: [
+        { label: 'tasks', count: 3 },
+        { label: 'projects', count: 1 },
+      ],
+    });
+    expect(result.dialogData?.remoteLaterChanges).toEqual({
+      count: 2,
+      latestTimestamp: 3000,
+    });
+  });
+
+  it("names no own import for this browser's own repair", async () => {
+    opLogStoreSpy.getUnsynced.and.resolveTo([
+      createEntry(
+        createOperation({
+          id: 'own-repair',
+          clientId: 'client-A',
+          opType: OpType.Repair,
+          syncImportReason: 'REPAIR',
+        }),
+      ),
+    ]);
+
+    const result = await service.checkIncomingFullStateConflict([createOperation()]);
+
+    expect(result.dialogData).toBeDefined();
+    expect(result.dialogData?.localImport).toBeUndefined();
+  });
+
+  it('names no own import when only ordinary edits are pending', async () => {
+    opLogStoreSpy.getUnsynced.and.resolveTo([
+      createEntry(
+        createOperation({
+          id: 'local-task-update',
+          actionType: 'test' as ActionType,
+          opType: OpType.Update,
+          entityType: 'TASK',
+          entityId: 'task-1',
+          clientId: 'client-A',
+        }),
+      ),
+    ]);
+
+    const result = await service.checkIncomingFullStateConflict([createOperation()]);
+
+    expect(result.dialogData).toBeDefined();
+    expect(result.dialogData?.localImport).toBeUndefined();
+    expect(result.dialogData?.remoteLaterChanges).toEqual({
+      count: 0,
+      latestTimestamp: null,
+    });
+  });
+
   it('should treat pending full-state ops as meaningful', async () => {
     const incomingSyncImport = createOperation({
       id: 'incoming-sync-import',
