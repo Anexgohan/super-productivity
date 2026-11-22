@@ -7,7 +7,7 @@ import '../app-rules/globals';
 import { describe, expect, it, vi } from 'vitest';
 import type { Action } from '@ngrx/store';
 import { createEffect } from '@ngrx/effects';
-import { of, throwError } from 'rxjs';
+import { of, throwError, type Observable } from 'rxjs';
 import { TaskSharedActions } from '../../../src/app/root-store/meta/task-shared.actions';
 import { addSubTask } from '../../../src/app/features/tasks/store/task.actions';
 import { DEFAULT_TASK, type Task } from '../../../src/app/features/tasks/task.model';
@@ -154,7 +154,9 @@ describe('app actions from source', () => {
       looksOnly$ = createEffect(() => of({ type: 'not dispatched' }), {
         dispatch: false,
       });
-      fails$ = createEffect(() => throwError(() => new Error('broke')));
+      fails$ = createEffect(
+        (): Observable<Action> => throwError(() => new Error('broke')),
+      );
     }
     const dispatched: string[] = [];
     const failed: string[] = [];

@@ -133,7 +133,7 @@ const seedTasks = async (
   await importInitialState(sync);
   const parent = buildTaskEntity({ title: 'parent' });
   sync.push(await browser.addTask(parent, nextClock()));
-  const sub = { ...buildTaskEntity({ title: 'sub' }), parentId: parent.id };
+  const sub: Row = { ...buildTaskEntity({ title: 'sub' }), parentId: parent.id };
   sync.push(await browser.addSubTask(sub, parent.id as string, nextClock()));
   const other = buildTaskEntity({ title: 'other' });
   sync.push(await browser.addTask(other, nextClock()));
